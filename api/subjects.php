@@ -51,8 +51,9 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
     $subcategoryId = (int)($_POST['subcategory_id'] ?? $_POST['subcategoria_id'] ?? 0);
-    if ($subcategoryId <= 0 || !$permService->canEditSubcategory($userId, $subcategoryId)) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão de edição nesta subcategoria.']);
+    if ($subcategoryId <= 0 || !$permService->canCreateSubject($userId, $subcategoryId)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão para criar assuntos nesta subcategoria.']);
         exit;
     }
 

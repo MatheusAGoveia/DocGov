@@ -363,19 +363,21 @@ if ($isLogged) {
             $subjectId = (int)$stmtRes->fetchColumn();
         }
 
-        // VALIDAÇÃO DE AUTORIZAÇÃO POR GRUPO NO BACKEND (AccessService)
-        require_once __DIR__ . '/../services/AccessService.php';
-        $accessService = new AccessService($pdo);
+        // VALIDAÇÃO DE AUTORIZAÇÃO NO BACKEND (canCreateDocument / canEditDocument)
         $editorUserId = (int)($loggedUser['id'] ?? 0);
 
-        if ($subjectId > 0 && !$accessService->canAccessSubject($editorUserId, $subjectId)) {
-            $errorMessage = "Acesso Negado: Seu perfil não possui permissão no seu grupo para criar ou publicar conteúdos neste Assunto.";
-        } elseif ($id && $id > 0) {
-            $stmtCheckExistingDoc = $pdo->prepare("SELECT subject_id FROM documents WHERE id = ?");
-            $stmtCheckExistingDoc->execute([$id]);
-            $existSubjId = (int)$stmtCheckExistingDoc->fetchColumn();
-            if ($existSubjId > 0 && !$accessService->canAccessSubject($editorUserId, $existSubjId)) {
-                $errorMessage = "Acesso Negado: Seu perfil não possui permissão no seu grupo para editar este documento.";
+        if (!$id || $id <= 0) {
+            if ($subjectId <= 0 || !$permService->canCreateDocument($editorUserId, $subjectId)) {
+                http_response_code(403);
+                $errorMessage = "Acesso Negado: Você não possui permissão para criar documentos neste Assunto.";
+            }
+        } else {
+            if (!$permService->canEditDocument($editorUserId, $id)) {
+                http_response_code(403);
+                $errorMessage = "Acesso Negado: Você não possui permissão para editar este documento.";
+            } elseif ($subjectId > 0 && !$permService->canCreateDocument($editorUserId, $subjectId)) {
+                http_response_code(403);
+                $errorMessage = "Acesso Negado: Você não possui permissão no Assunto de destino especificado.";
             }
         }
 
@@ -606,8 +608,14 @@ if ($isLogged) {
         $assId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'assuntos');
 
-        if ($loggedUser['role'] !== 'admin') {
-            $errorMessage = "Usuários com perfil 'Editor' possuem acesso apenas à gestão de conteúdos.";
+        $userId = (int)($loggedUser['id'] ?? 0);
+
+        if (!$assId && ($subId <= 0 || !$permService->canCreateSubject($userId, $subId))) {
+            http_response_code(403);
+            $errorMessage = "Acesso negado. Você não possui permissão para criar assuntos nesta subcategoria.";
+        } elseif ($assId && !$permService->canEditSubject($userId, $assId)) {
+            http_response_code(403);
+            $errorMessage = "Acesso negado. Você não possui permissão para editar este assunto.";
         } elseif (!empty($nome) && $subId > 0) {
             $slug = slugify($nome);
             if ($assId) {

@@ -57,4 +57,16 @@ class AccessService {
     public function canCreateSubcategory(int $userId, int $categoryId): bool {
         return $this->permService->canCreateSubcategory($userId, $categoryId);
     }
+
+    public function canCreateSubject(int $userId, int $subcategoryId): bool {
+        return $this->permService->canCreateSubject($userId, $subcategoryId);
+    }
+
+    public function canCreateDocument(int $userId, int $subjectId): bool {
+        return $this->permService->canCreateDocument($userId, $subjectId);
+    }
+
+    public function canEditDocument(int $userId, int $documentId): bool {
+        return $this->permService->canEditDocument($userId, $documentId);
+    }
 }

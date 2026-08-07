@@ -71,10 +71,26 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
+    $docId = (int)($_POST['id'] ?? $_POST['document_id'] ?? 0);
     $subjectId = (int)($_POST['subject_id'] ?? $_POST['assunto_id'] ?? 0);
-    if ($subjectId <= 0 || !$permService->canEditSubject($userId, $subjectId)) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão de edição neste assunto.']);
-        exit;
+
+    if ($docId > 0) {
+        if (!$permService->canEditDocument($userId, $docId)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão para editar este documento.']);
+            exit;
+        }
+        if ($subjectId > 0 && !$permService->canCreateDocument($userId, $subjectId)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão no assunto especificado.']);
+            exit;
+        }
+    } else {
+        if ($subjectId <= 0 || !$permService->canCreateDocument($userId, $subjectId)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão para criar documentos neste assunto.']);
+            exit;
+        }
     }
 
     $title = trim($_POST['title'] ?? $_POST['titulo'] ?? '');

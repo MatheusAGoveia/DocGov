@@ -1154,16 +1154,48 @@ class PermissionService {
     }
 
     public function canEditSubject(?int $userId, int $subjectId): bool {
-        return $this->canEdit((int)$userId, 'subject', $subjectId);
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $subjectId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveSubjectPermission($userId, $subjectId);
+        return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
+    }
+
+    public function canCreateDocument(?int $userId, int $subjectId): bool {
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $subjectId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveSubjectPermission($userId, $subjectId);
+        return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
     }
 
     public function canEditDocument(?int $userId, int $documentId): bool {
         $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $documentId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
         $stmtDoc = $this->pdo->prepare("SELECT subject_id FROM documents WHERE id = ?");
         $stmtDoc->execute([$documentId]);
         $subjectId = (int)$stmtDoc->fetchColumn();
         if (!$subjectId) return false;
-        return $this->canEdit($userId, 'subject', $subjectId);
+        return $this->canCreateDocument($userId, $subjectId);
     }
 
     public function canAdminCategory(?int $userId, int $categoryId): bool {
@@ -1211,6 +1243,24 @@ class PermissionService {
         }
 
         $perm = $this->getEffectiveCategoryPermission($userId, $categoryId);
+        return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
+    }
+
+    /**
+     * Verifica se o usuário possui permissão para criar um Assunto dentro de uma Subcategoria.
+     * Regra: Admin Geral OU permissão efetiva da Subcategoria >= Edit.
+     */
+    public function canCreateSubject(?int $userId, int $subcategoryId): bool {
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $subcategoryId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveSubcategoryPermission($userId, $subcategoryId);
         return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
     }
 }
