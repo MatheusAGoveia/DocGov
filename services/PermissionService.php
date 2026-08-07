@@ -1185,4 +1185,22 @@ class PermissionService {
     public function canCreateCategory(?int $userId): bool {
         return $this->isGlobalAdmin($userId);
     }
+
+    /**
+     * Verifica se o usuário possui permissão para criar uma Subcategoria dentro de uma Categoria.
+     * Regra: Admin Geral OU permissão efetiva da Categoria >= Edit.
+     */
+    public function canCreateSubcategory(?int $userId, int $categoryId): bool {
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $categoryId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveCategoryPermission($userId, $categoryId);
+        return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
+    }
 }
