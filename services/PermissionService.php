@@ -762,4 +762,239 @@ class PermissionService {
 
         return $tree;
     }
+
+    /**
+     * Calcula e explica todos os acessos efetivos de um usuário para fins de suporte e diagnóstico.
+     * NÃO salva nada no banco e NÃO duplica herança.
+     */
+    public function getUserEffectiveAccessDiagnosis(int $userId, string $filter = 'all'): array {
+        if ($userId <= 0) {
+            return [
+                'user' => null,
+                'is_global_admin' => false,
+                'active_groups' => [],
+                'resources' => []
+            ];
+        }
+
+        // 1. Buscar dados do usuário
+        $stmtU = $this->pdo->prepare("SELECT id, name, username, email, role, active FROM users WHERE id = ?");
+        $stmtU->execute([$userId]);
+        $userData = $stmtU->fetch(PDO::FETCH_ASSOC);
+
+        if (!$userData) {
+            return [
+                'user' => null,
+                'is_global_admin' => false,
+                'active_groups' => [],
+                'resources' => []
+            ];
+        }
+
+        // 2. Se for Admin Global
+        if (strtolower($userData['role']) === 'admin') {
+            $stmtG = $this->pdo->prepare("
+                SELECT g.id, g.name, g.description
+                FROM groups g
+                JOIN user_groups ug ON g.id = ug.group_id
+                WHERE ug.user_id = ? AND g.active = TRUE
+                ORDER BY g.name ASC
+            ");
+            $stmtG->execute([$userId]);
+            $activeGroups = $stmtG->fetchAll(PDO::FETCH_ASSOC);
+
+            return [
+                'user' => $userData,
+                'is_global_admin' => true,
+                'active_groups' => $activeGroups,
+                'resources' => []
+            ];
+        }
+
+        // 3. Buscar grupos ATIVOS do usuário
+        $stmtG = $this->pdo->prepare("
+            SELECT g.id, g.name, g.description
+            FROM groups g
+            JOIN user_groups ug ON g.id = ug.group_id
+            WHERE ug.user_id = ? AND g.active = TRUE
+            ORDER BY g.name ASC
+        ");
+        $stmtG->execute([$userId]);
+        $activeGroups = $stmtG->fetchAll(PDO::FETCH_ASSOC);
+        $activeGroupIds = array_column($activeGroups, 'id');
+
+        // 4. Mapear regras diretas do usuário e regras dos grupos ATIVOS
+        $whereClauses = ["p.user_id = ?"];
+        $params = [$userId];
+
+        if (!empty($activeGroupIds)) {
+            $inClause = implode(',', array_fill(0, count($activeGroupIds), '?'));
+            $whereClauses[] = "p.group_id IN ($inClause)";
+            $params = array_merge($params, $activeGroupIds);
+        }
+
+        $whereSql = implode(' OR ', $whereClauses);
+
+        $sql = "
+            SELECT 
+                p.id AS permission_id,
+                p.user_id,
+                p.group_id,
+                p.category_id,
+                p.subcategory_id,
+                p.subject_id,
+                p.permission_level,
+                g.name AS group_name
+            FROM permissions p
+            LEFT JOIN groups g ON p.group_id = g.id
+            WHERE ($whereSql)
+        ";
+
+        $stmtP = $this->pdo->prepare($sql);
+        $stmtP->execute($params);
+        $appliedRules = $stmtP->fetchAll(PDO::FETCH_ASSOC);
+
+        // 5. Carregar toda a estrutura documental ativa (Categorias -> Subcategorias -> Assuntos)
+        $structure = $this->getResourceTree();
+
+        $resourceDiagnoses = [];
+
+        foreach ($structure as $cat) {
+            $catId = $cat['id'];
+            $catPath = $cat['name'];
+
+            // Analisar Categoria
+            $catSources = [];
+            foreach ($appliedRules as $rule) {
+                if (!empty($rule['category_id']) && (int)$rule['category_id'] === $catId) {
+                    $isUser = !empty($rule['user_id']);
+                    $catSources[] = [
+                        'type' => $isUser ? 'direct' : 'group',
+                        'level' => strtolower($rule['permission_level']),
+                        'description' => $isUser ? "Acesso direto na Categoria {$cat['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Categoria {$cat['name']}"
+                    ];
+                }
+            }
+
+            if (!empty($catSources)) {
+                $diag = $this->buildResourceDiagnosis('category', $catId, $catPath, 'Categoria', $catSources, $filter);
+                if ($diag) $resourceDiagnoses[] = $diag;
+            }
+
+            foreach ($cat['subcategories'] as $sub) {
+                $subId = $sub['id'];
+                $subPath = "{$cat['name']} / {$sub['name']}";
+
+                $subSources = [];
+                // 1. Regras diretas da Categoria (herança para Subcategoria)
+                foreach ($catSources as $cs) {
+                    $subSources[] = [
+                        'type' => 'inherited',
+                        'level' => $cs['level'],
+                        'description' => "Herdado da Categoria {$cat['name']} (" . $cs['description'] . ")"
+                    ];
+                }
+                // 2. Regras diretas da Subcategoria
+                foreach ($appliedRules as $rule) {
+                    if (!empty($rule['subcategory_id']) && (int)$rule['subcategory_id'] === $subId) {
+                        $isUser = !empty($rule['user_id']);
+                        $subSources[] = [
+                            'type' => $isUser ? 'direct' : 'group',
+                            'level' => strtolower($rule['permission_level']),
+                            'description' => $isUser ? "Acesso direto na Subcategoria {$sub['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Subcategoria {$sub['name']}"
+                        ];
+                    }
+                }
+
+                if (!empty($subSources)) {
+                    $diag = $this->buildResourceDiagnosis('subcategory', $subId, $subPath, 'Subcategoria', $subSources, $filter);
+                    if ($diag) $resourceDiagnoses[] = $diag;
+                }
+
+                foreach ($sub['subjects'] as $subj) {
+                    $subjId = $subj['id'];
+                    $subjPath = "{$cat['name']} / {$sub['name']} / {$subj['name']}";
+
+                    $subjSources = [];
+                    // 1. Regras da Subcategoria (herdadas ou diretas na Subcat/Cat)
+                    foreach ($subSources as $ss) {
+                        $subjSources[] = [
+                            'type' => 'inherited',
+                            'level' => $ss['level'],
+                            'description' => "Herdado de ancestral (" . $ss['description'] . ")"
+                        ];
+                    }
+                    // 2. Regras diretas do Assunto
+                    foreach ($appliedRules as $rule) {
+                        if (!empty($rule['subject_id']) && (int)$rule['subject_id'] === $subjId) {
+                            $isUser = !empty($rule['user_id']);
+                            $subjSources[] = [
+                                'type' => $isUser ? 'direct' : 'group',
+                                'level' => strtolower($rule['permission_level']),
+                                'description' => $isUser ? "Acesso direto no Assunto {$subj['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " no Assunto {$subj['name']}"
+                            ];
+                        }
+                    }
+
+                    if (!empty($subjSources)) {
+                        $diag = $this->buildResourceDiagnosis('subject', $subjId, $subjPath, 'Assunto', $subjSources, $filter);
+                        if ($diag) $resourceDiagnoses[] = $diag;
+                    }
+                }
+            }
+        }
+
+        return [
+            'user' => $userData,
+            'is_global_admin' => false,
+            'active_groups' => $activeGroups,
+            'resources' => array_values($resourceDiagnoses)
+        ];
+    }
+
+    private function buildResourceDiagnosis(string $resType, int $resId, string $resPath, string $typeLabel, array $sources, string $filter): ?array {
+        $levelWeights = ['view' => 1, 'edit' => 2, 'admin' => 3];
+        $maxWeight = 0;
+        $effectiveLevel = 'none';
+
+        $hasDirect = false;
+        $hasGroup = false;
+        $hasInherited = false;
+
+        foreach ($sources as $src) {
+            $w = $levelWeights[$src['level']] ?? 0;
+            if ($w > $maxWeight) {
+                $maxWeight = $w;
+                $effectiveLevel = $src['level'];
+            }
+
+            if ($src['type'] === 'direct') $hasDirect = true;
+            if ($src['type'] === 'group') $hasGroup = true;
+            if ($src['type'] === 'inherited') $hasInherited = true;
+        }
+
+        // Aplicar Filtro do Usuário
+        if ($filter === 'direct' && !$hasDirect) return null;
+        if ($filter === 'groups' && !$hasGroup) return null;
+        if ($filter === 'inherited' && !$hasInherited) return null;
+
+        // Construir explicação quando houver múltiplas fontes
+        $explanation = '';
+        if (count($sources) > 1) {
+            $explanation = "Nível " . strtoupper($effectiveLevel) . " prevaleceu por ser a permissão de maior nível (MAX) entre as " . count($sources) . " fontes ativas encontradas.";
+        }
+
+        return [
+            'resource_type' => $resType,
+            'resource_id' => $resId,
+            'resource_path' => $resPath,
+            'resource_type_label' => $typeLabel,
+            'effective_level' => $effectiveLevel,
+            'sources' => $sources,
+            'explanation' => $explanation,
+            'has_direct' => $hasDirect,
+            'has_group' => $hasGroup,
+            'has_inherited' => $hasInherited
+        ];
+    }
 }

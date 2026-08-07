@@ -3931,6 +3931,246 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     <?php } ?>
                 <?php endif; ?>
 
+                <!-- TAB: LISTAGEM DE USUÁRIOS DO SISTEMA -->
+                <?php if ($activeTab === 'usuarios'): ?>
+                    <?php
+                        $stmtUsers = $pdo->query("
+                            SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
+                                   COUNT(DISTINCT ug.group_id) AS total_grupos
+                            FROM users u
+                            LEFT JOIN user_groups ug ON u.id = ug.user_id
+                            GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
+                            ORDER BY u.name ASC
+                        ");
+                        $usersList = $stmtUsers->fetchAll(PDO::FETCH_ASSOC);
+                    ?>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-[#454956]">
+                            <div>
+                                <nav class="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-0.5">
+                                    <span>Gestão de Acesso</span>
+                                    <span>/</span>
+                                    <span class="font-bold text-slate-900 dark:text-slate-100">Usuários</span>
+                                </nav>
+                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100">Usuários do Sistema</h1>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Diagnóstico de permissões e controle de acesso individual.</p>
+                            </div>
+                        </div>
+
+                        <div class="bg-white dark:bg-[#353842] rounded border border-slate-200 dark:border-[#454956] shadow-xs overflow-hidden">
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left text-xs border-collapse">
+                                    <thead>
+                                        <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                            <th class="py-2.5 px-4">Usuário</th>
+                                            <th class="py-2.5 px-4">E-mail / Username</th>
+                                            <th class="py-2.5 px-4 text-center">Perfil</th>
+                                            <th class="py-2.5 px-4 text-center">Grupos Ativos</th>
+                                            <th class="py-2.5 px-4 text-center">Status</th>
+                                            <th class="py-2.5 px-4 text-right">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                        <?php foreach ($usersList as $uRow): ?>
+                                            <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
+                                                <td class="py-2.5 px-4 font-bold text-slate-900 dark:text-slate-100">
+                                                    <?= htmlspecialchars($uRow['name']) ?>
+                                                </td>
+                                                <td class="py-2.5 px-4 text-slate-500 dark:text-slate-400 font-mono">
+                                                    @<?= htmlspecialchars($uRow['username']) ?> • <?= htmlspecialchars($uRow['email']) ?>
+                                                </td>
+                                                <td class="py-2.5 px-4 text-center">
+                                                    <?php if (strtolower($uRow['role']) === 'admin'): ?>
+                                                        <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 uppercase">Admin Global</span>
+                                                    <?php else: ?>
+                                                        <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 uppercase">Usuário</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td class="py-2.5 px-4 text-center font-mono font-bold">
+                                                    <?= $uRow['total_grupos'] ?>
+                                                </td>
+                                                <td class="py-2.5 px-4 text-center">
+                                                    <?php if ($uRow['active']): ?>
+                                                        <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 uppercase">Ativo</span>
+                                                    <?php else: ?>
+                                                        <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-200 dark:bg-slate-700 text-slate-500 uppercase">Inativo</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td class="py-2.5 px-4 text-right">
+                                                    <a href="index.php?tab=editar_usuario&id=<?= $uRow['id'] ?>&user_tab=access" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-semibold hover:opacity-90 transition shadow-xs">
+                                                        <span>🔍 Acessos Efetivos</span>
+                                                    </a>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- TAB: DIAGNÓSTICO DE ACESSOS EFETIVOS DO USUÁRIO -->
+                <?php if ($activeTab === 'editar_usuario'): ?>
+                    <?php
+                        require_once __DIR__ . '/../services/PermissionService.php';
+                        $permService = new PermissionService($pdo);
+
+                        $targetUserId = (int)($_GET['id'] ?? 0);
+                        $userTab = trim($_GET['user_tab'] ?? 'access');
+                        $accessFilter = strtolower(trim($_GET['filter'] ?? 'all'));
+                        if (!in_array($accessFilter, ['all', 'direct', 'groups', 'inherited'])) {
+                            $accessFilter = 'all';
+                        }
+
+                        $diagnosis = $permService->getUserEffectiveAccessDiagnosis($targetUserId, $accessFilter);
+                        $uData = $diagnosis['user'];
+
+                        if (!$uData) {
+                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Usuário não encontrado.</div>";
+                        } else {
+                    ?>
+                    <div class="space-y-4">
+                        <!-- BREADCRUMB E CABEÇALHO DO USUÁRIO -->
+                        <div>
+                            <nav class="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-1">
+                                <a href="index.php?tab=usuarios" class="hover:underline">Gestão de Usuários</a>
+                                <span>/</span>
+                                <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($uData['name']) ?></span>
+                                <span>/</span>
+                                <span class="text-slate-500">Acessos Efetivos</span>
+                            </nav>
+                            <div class="flex items-center justify-between">
+                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                                    <span><?= htmlspecialchars($uData['name']) ?></span>
+                                    <span class="text-xs font-mono text-slate-400 font-normal">(@<?= htmlspecialchars($uData['username']) ?>)</span>
+                                </h1>
+                            </div>
+                        </div>
+
+                        <!-- CARD RESUMO DO USUÁRIO & GRUPOS ATIVOS -->
+                        <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
+                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-[#454956] text-xs">
+                                <div>
+                                    <span class="font-bold text-slate-900 dark:text-slate-100 block">Grupos Ativos do Usuário:</span>
+                                    <?php if (empty($diagnosis['active_groups'])): ?>
+                                        <span class="text-slate-400 text-[11px] block mt-0.5">Nenhum grupo ativo associado a este usuário.</span>
+                                    <?php else: ?>
+                                        <div class="flex flex-wrap gap-1.5 mt-1">
+                                            <?php foreach ($diagnosis['active_groups'] as $ag): ?>
+                                                <span class="px-2 py-0.5 text-[11px] font-semibold rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#454956]">
+                                                    👥 <?= htmlspecialchars($ag['name']) ?>
+                                                </span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="text-right">
+                                    <span class="text-[10px] text-slate-400 font-mono block">E-mail: <?= htmlspecialchars($uData['email']) ?></span>
+                                    <span class="text-[10px] text-slate-400 font-mono block uppercase">Perfil: <?= htmlspecialchars($uData['role']) ?></span>
+                                </div>
+                            </div>
+
+                            <!-- BANNER PARA ADMIN GLOBAL -->
+                            <?php if ($diagnosis['is_global_admin']): ?>
+                                <div class="p-4 bg-purple-500/10 border border-purple-500/30 rounded text-xs space-y-1">
+                                    <div class="flex items-center gap-2 font-bold text-purple-700 dark:text-purple-300 text-sm">
+                                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                        <span>Administrador Global — Acesso Completo</span>
+                                    </div>
+                                    <p class="text-purple-900 dark:text-purple-200 leading-relaxed">
+                                        Este usuário possui perfil de <strong>Administrador Global</strong> (<code>role = 'admin'</code>). Ele possui privilégio total e irrestrito (<strong>View, Edit e Admin</strong>) sobre todas as categorias, subcategorias, assuntos e documentos do sistema.
+                                    </p>
+                                </div>
+                            <?php else: ?>
+
+                                <!-- SELETOR DE FILTROS -->
+                                <div class="flex items-center justify-between pt-2">
+                                    <div class="flex items-center gap-1 bg-slate-100 dark:bg-[#2c2e33] p-1 rounded border border-slate-200 dark:border-[#454956] text-xs">
+                                        <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=all" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'all' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
+                                            Todos os Acessos
+                                        </a>
+                                        <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=direct" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'direct' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
+                                            Diretos
+                                        </a>
+                                        <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=groups" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'groups' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
+                                            Via Grupos
+                                        </a>
+                                        <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=inherited" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'inherited' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
+                                            Herdados
+                                        </a>
+                                    </div>
+                                    <span class="text-xs font-bold text-slate-500">
+                                        <?= count($diagnosis['resources']) ?> área(s) encontrada(s)
+                                    </span>
+                                </div>
+
+                                <!-- TABELA DE DIAGNÓSTICO DE ACESSOS EFETIVOS -->
+                                <?php if (empty($diagnosis['resources'])): ?>
+                                    <div class="p-8 text-center text-slate-400 text-xs bg-slate-50 dark:bg-[#2c2e33] rounded">
+                                        Nenhuma permissão efetiva encontrada para os filtros selecionados.
+                                    </div>
+                                <?php else: ?>
+                                    <div class="overflow-x-auto pt-2">
+                                        <table class="w-full text-left text-xs border-collapse">
+                                            <thead>
+                                                <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                                    <th class="py-2.5 px-4">Recurso / Área</th>
+                                                    <th class="py-2.5 px-4 text-center w-36">Acesso Efetivo</th>
+                                                    <th class="py-2.5 px-4 text-left">Origem e Fontes Detalhadas</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                                <?php foreach ($diagnosis['resources'] as $resDiag): ?>
+                                                    <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
+                                                        <td class="py-3 px-4">
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block text-xs">
+                                                                <?= htmlspecialchars($resDiag['resource_path']) ?>
+                                                            </span>
+                                                            <span class="text-[10px] text-slate-400 font-mono block">
+                                                                <?= htmlspecialchars($resDiag['resource_type_label']) ?>
+                                                            </span>
+                                                        </td>
+                                                        <td class="py-3 px-4 text-center">
+                                                            <?php
+                                                                $effLvl = $resDiag['effective_level'];
+                                                                $effClass = 'bg-slate-100 text-slate-700';
+                                                                if ($effLvl === 'view') $effClass = 'bg-blue-500/15 text-blue-700 border-blue-500/30';
+                                                                if ($effLvl === 'edit') $effClass = 'bg-amber-500/15 text-amber-700 border-amber-500/30';
+                                                                if ($effLvl === 'admin') $effClass = 'bg-red-500/15 text-red-700 border-red-500/30';
+                                                            ?>
+                                                            <span class="px-3 py-1 text-[11px] font-bold rounded border uppercase <?= $effClass ?>">
+                                                                <?= strtoupper($effLvl) ?>
+                                                            </span>
+                                                        </td>
+                                                        <td class="py-3 px-4 text-left space-y-1">
+                                                            <?php foreach ($resDiag['sources'] as $srcItem): ?>
+                                                                <div class="flex items-center gap-2 text-xs">
+                                                                    <span class="w-2 h-2 rounded-full bg-slate-400 shrink-0"></span>
+                                                                    <span class="text-slate-700 dark:text-slate-300">
+                                                                        <?= htmlspecialchars($srcItem['description']) ?>
+                                                                    </span>
+                                                                </div>
+                                                            <?php endforeach; ?>
+
+                                                            <?php if (!empty($resDiag['explanation'])): ?>
+                                                                <div class="mt-1.5 p-2 bg-amber-500/10 border border-amber-500/20 rounded text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5 font-medium">
+                                                                    <span>💡 <?= htmlspecialchars($resDiag['explanation']) ?></span>
+                                                                </div>
+                                                            <?php endif; ?>
+                                                        </td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <?php } ?>
+                <?php endif; ?>
+
             </main>
         </div>
 
