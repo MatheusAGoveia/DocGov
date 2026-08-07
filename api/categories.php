@@ -1,24 +1,38 @@
 <?php
-// api/categories.php - Endpoint JSON para Categorias (PostgreSQL)
-if (session_status() === PHP_SESSION_NONE) {
+// api/categories.php - Endpoint JSON para Categorias (PostgreSQL com PermissionService)
+if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
     session_start();
 }
 require_once __DIR__ . '/../config/db.php';
-header('Content-Type: application/json');
+require_once __DIR__ . '/../services/PermissionService.php';
+
+if (!headers_sent()) {
+    header('Content-Type: application/json');
+}
+
+$loggedUser = $_SESSION['user'] ?? null;
+$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
+$permService = new PermissionService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $stmt = $pdo->query("SELECT id, name, slug, description, active, created_at FROM categories WHERE active = TRUE ORDER BY name ASC");
-    $categories = $stmt->fetchAll();
+    $allowedCatIds = $permService->getAllowedCategoryIds($userId);
+    if (empty($allowedCatIds)) {
+        echo json_encode(['success' => true, 'data' => []]);
+        exit;
+    }
+
+    $inSql = implode(',', array_map('intval', $allowedCatIds));
+    $stmt = $pdo->query("SELECT id, name, slug, description, active, created_at FROM categories WHERE active = TRUE AND id IN ($inSql) ORDER BY name ASC");
+    $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
     echo json_encode(['success' => true, 'data' => $categories]);
     exit;
 }
 
 if ($method === 'POST') {
-    $loggedUser = $_SESSION['user'] ?? null;
-    if (!$loggedUser || ($loggedUser['role'] !== 'admin' && $loggedUser['role'] !== 'editor')) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores e editores podem criar categorias.']);
+    if (!$loggedUser || ($loggedUser['role'] !== 'admin' && !$permService->isGlobalAdmin($userId))) {
+        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores autorizados podem criar categorias.']);
         exit;
     }
 

@@ -1,16 +1,29 @@
 <?php
-// api/subjects.php - Endpoint JSON para Assuntos por Subcategoria (PostgreSQL)
-if (session_status() === PHP_SESSION_NONE) {
+// api/subjects.php - Endpoint JSON para Assuntos (PostgreSQL com PermissionService)
+if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
     session_start();
 }
 require_once __DIR__ . '/../config/db.php';
-header('Content-Type: application/json');
+require_once __DIR__ . '/../services/PermissionService.php';
+
+if (!headers_sent()) {
+    header('Content-Type: application/json');
+}
+
+$loggedUser = $_SESSION['user'] ?? null;
+$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
+$permService = new PermissionService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
+    $allowedSubjectIds = $permService->getAllowedSubjectIds($userId);
+    if (empty($allowedSubjectIds)) {
+        echo json_encode(['success' => true, 'data' => []]);
+        exit;
+    }
+
     $subcategoryId = (int)($_GET['subcategory_id'] ?? $_GET['subcategoria_id'] ?? 0);
-    
     if ($subcategoryId <= 0) {
         $subSlug = trim($_GET['subcategory_slug'] ?? $_GET['subcat'] ?? '');
         if (!empty($subSlug)) {
@@ -20,35 +33,32 @@ if ($method === 'GET') {
         }
     }
 
+    $inSql = implode(',', array_map('intval', $allowedSubjectIds));
+
     if ($subcategoryId <= 0) {
-        $stmt = $pdo->query("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE active = TRUE ORDER BY name ASC");
-        echo json_encode(['success' => true, 'data' => $stmt->fetchAll()]);
+        $stmt = $pdo->query("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE active = TRUE AND id IN ($inSql) ORDER BY name ASC");
+        echo json_encode(['success' => true, 'data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
         exit;
     }
 
-    $stmt = $pdo->prepare("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE subcategory_id = :sub_id AND active = TRUE ORDER BY name ASC");
+    $stmt = $pdo->prepare("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE subcategory_id = :sub_id AND active = TRUE AND id IN ($inSql) ORDER BY name ASC");
     $stmt->execute([':sub_id' => $subcategoryId]);
-    $subjects = $stmt->fetchAll();
+    $subjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     echo json_encode(['success' => true, 'data' => $subjects]);
     exit;
 }
 
 if ($method === 'POST') {
-    $loggedUser = $_SESSION['user'] ?? null;
-    if (!$loggedUser || ($loggedUser['role'] !== 'admin' && $loggedUser['role'] !== 'editor')) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores e editores podem criar assuntos.']);
+    $subcategoryId = (int)($_POST['subcategory_id'] ?? $_POST['subcategoria_id'] ?? 0);
+    if ($subcategoryId <= 0 || !$permService->canEditSubcategory($userId, $subcategoryId)) {
+        echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão de edição nesta subcategoria.']);
         exit;
     }
 
-    $subcategoryId = (int)($_POST['subcategory_id'] ?? $_POST['subcategoria_id'] ?? 0);
     $name = trim($_POST['name'] ?? $_POST['nome'] ?? '');
     $description = trim($_POST['description'] ?? $_POST['descricao'] ?? '');
 
-    if ($subcategoryId <= 0) {
-        echo json_encode(['success' => false, 'error' => 'Selecione uma subcategoria válida.']);
-        exit;
-    }
     if (empty($name)) {
         echo json_encode(['success' => false, 'error' => 'O nome do assunto é obrigatório.']);
         exit;

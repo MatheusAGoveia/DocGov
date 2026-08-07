@@ -2916,14 +2916,22 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <!-- ABA 3: PERMISSÕES (ESTILO GRAFANA FOLDER PERMISSIONS) -->
                         <?php if ($resTab === 'permissions'): ?>
                             <?php
-                                $resourcePermissions = $permService->getResourcePermissions($resType, $resId);
-
-                                // Buscar usuários e grupos para o modal de nova permissão
-                                $allUsersList = $pdo->query("SELECT id, name, username, email FROM users WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
-                                $allGroupsList = $pdo->query("SELECT id, name, description FROM groups WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+                                $canAdminFolder = $permService->canAdmin((int)($loggedUser['id'] ?? 0), $resType, $resId) || $permService->isGlobalAdmin((int)($loggedUser['id'] ?? 0));
+                                if (!$canAdminFolder):
                             ?>
-                            <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
-                                <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
+                                <div class="p-6 bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-md text-xs font-semibold">
+                                    Acesso Negado: É necessário privilégio Admin nesta pasta (ou ser Administrador Global) para gerenciar permissões de acesso.
+                                </div>
+                            <?php else: ?>
+                                <?php
+                                    $resourcePermissions = $permService->getResourcePermissions($resType, $resId);
+
+                                    // Buscar usuários e grupos para o modal de nova permissão
+                                    $allUsersList = $pdo->query("SELECT id, name, username, email FROM users WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+                                    $allGroupsList = $pdo->query("SELECT id, name, description FROM groups WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+                                ?>
+                                <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
+                                    <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
                                     <div>
                                         <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Gerenciar permissões</h3>
                                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Quem possui acesso a esta área.</p>
@@ -3305,6 +3313,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     </div>
                                 </div>
                             </div>
+                            <?php endif; ?>
                         <?php endif; ?>
 
                     </div>

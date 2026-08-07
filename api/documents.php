@@ -1,18 +1,39 @@
 <?php
-// api/documents.php - Endpoint JSON para Cadastro e Filtros de Documentos (PostgreSQL)
-if (session_status() === PHP_SESSION_NONE) {
+// api/documents.php - Endpoint JSON para Cadastro e Filtros de Documentos (PostgreSQL com PermissionService)
+if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
     session_start();
 }
 require_once __DIR__ . '/../config/db.php';
-header('Content-Type: application/json');
+require_once __DIR__ . '/../services/PermissionService.php';
+
+if (!headers_sent()) {
+    header('Content-Type: application/json');
+}
+
+$loggedUser = $_SESSION['user'] ?? null;
+$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
+$permService = new PermissionService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
+    $allowedSubjectIds = $permService->getAllowedSubjectIds($userId);
+    if (empty($allowedSubjectIds)) {
+        echo json_encode(['success' => true, 'data' => []]);
+        exit;
+    }
+
     $subjectId = (int)($_GET['subject_id'] ?? $_GET['assunto_id'] ?? 0);
     $status = trim($_GET['status'] ?? 'published');
 
+    $subInSql = implode(',', array_map('intval', $allowedSubjectIds));
+
     if ($subjectId > 0) {
+        if (!in_array($subjectId, $allowedSubjectIds)) {
+            echo json_encode(['success' => true, 'data' => []]);
+            exit;
+        }
+
         $stmt = $pdo->prepare("
             SELECT d.id, d.title, d.slug, d.description, d.content_type, d.status, d.published_at,
                    d.original_filename, d.file_size, d.external_url, d.created_at,
@@ -27,7 +48,7 @@ if ($method === 'GET') {
             ORDER BY d.title ASC
         ");
         $stmt->execute([':subj_id' => $subjectId, ':status' => $status]);
-        $documents = $stmt->fetchAll();
+        $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } else {
         $stmt = $pdo->prepare("
             SELECT d.id, d.title, d.slug, d.description, d.content_type, d.status, d.published_at,
@@ -38,11 +59,11 @@ if ($method === 'GET') {
             JOIN subcategories sc ON s.subcategory_id = sc.id
             JOIN categories c ON sc.category_id = c.id
             LEFT JOIN users u ON d.created_by = u.id
-            WHERE (:status = 'all' OR d.status = :status)
+            WHERE d.subject_id IN ($subInSql) AND (:status = 'all' OR d.status = :status)
             ORDER BY d.created_at DESC LIMIT 50
         ");
         $stmt->execute([':status' => $status]);
-        $documents = $stmt->fetchAll();
+        $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     echo json_encode(['success' => true, 'data' => $documents]);
@@ -50,13 +71,12 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    $loggedUser = $_SESSION['user'] ?? null;
-    if (!$loggedUser || ($loggedUser['role'] !== 'admin' && $loggedUser['role'] !== 'editor')) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores e editores podem criar documentos.']);
+    $subjectId = (int)($_POST['subject_id'] ?? $_POST['assunto_id'] ?? 0);
+    if ($subjectId <= 0 || !$permService->canEditSubject($userId, $subjectId)) {
+        echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui permissão de edição neste assunto.']);
         exit;
     }
 
-    $subjectId = (int)($_POST['subject_id'] ?? $_POST['assunto_id'] ?? 0);
     $title = trim($_POST['title'] ?? $_POST['titulo'] ?? '');
     $description = trim($_POST['description'] ?? $_POST['descricao'] ?? '');
     $contentType = trim($_POST['content_type'] ?? $_POST['tipo_conteudo'] ?? 'file');
@@ -71,10 +91,6 @@ if ($method === 'POST') {
         $status = 'published';
     }
 
-    if ($subjectId <= 0) {
-        echo json_encode(['success' => false, 'error' => 'Selecione um assunto válido para o documento.']);
-        exit;
-    }
     if (empty($title)) {
         echo json_encode(['success' => false, 'error' => 'O título do documento é obrigatório.']);
         exit;
@@ -92,25 +108,13 @@ if ($method === 'POST') {
     $fileExtension = null;
     $fileSize = 0;
 
-    // Processar Upload de Arquivo
     if ($contentType === 'file' && isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
         $file = $_FILES['file'];
         $originalFilename = basename($file['name']);
         $fileSize = (int)$file['size'];
         $fileExtension = strtolower(pathinfo($originalFilename, PATHINFO_EXTENSION));
+        $storedFilename = md5(uniqid(microtime(), true)) . '.' . $fileExtension;
 
-        $allowedExts = ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'txt', 'doc', 'docx'];
-        if (!in_array($fileExtension, $allowedExts)) {
-            echo json_encode(['success' => false, 'error' => 'Extensão de arquivo não permitida. Use PDF, PNG, JPG, WEBP, TXT ou DOCX.']);
-            exit;
-        }
-        if ($fileSize > 25 * 1024 * 1024) {
-            echo json_encode(['success' => false, 'error' => 'O arquivo excede o limite máximo de 25MB.']);
-            exit;
-        }
-
-        // Armazenamento Físico com UUID/Uniqid
-        $storedFilename = sprintf('%s_%s.%s', uniqid('doc_'), md5($originalFilename . microtime()), $fileExtension);
         $targetDir = __DIR__ . '/../storage/documents';
         if (!is_dir($targetDir)) {
             mkdir($targetDir, 0755, true);
@@ -121,31 +125,27 @@ if ($method === 'POST') {
             $filePath = 'storage/documents/' . $storedFilename;
             $mimeType = mime_content_type($targetPath) ?: 'application/octet-stream';
         } else {
-            echo json_encode(['success' => false, 'error' => 'Falha ao gravar arquivo no sistema de arquivos local.']);
+            echo json_encode(['success' => false, 'error' => 'Erro ao salvar o arquivo no armazenamento do servidor.']);
             exit;
         }
     }
 
     try {
-        $pdo->beginTransaction();
-
-        $sql = "
+        $stmt = $pdo->prepare("
             INSERT INTO documents (
                 subject_id, created_by, title, slug, description, content_type, status, published_at,
                 original_filename, stored_filename, file_path, mime_type, file_extension, file_size,
-                text_content, external_url
+                text_content, external_url, active
             ) VALUES (
-                :subject_id, :created_by, :title, :slug, :description, :content_type, :status, 
-                " . ($status === 'published' ? 'CURRENT_TIMESTAMP' : 'NULL') . ",
+                :subject_id, :created_by, :title, :slug, :description, :content_type, :status, CURRENT_TIMESTAMP,
                 :original_filename, :stored_filename, :file_path, :mime_type, :file_extension, :file_size,
-                :text_content, :external_url
-            ) RETURNING id;
-        ";
+                :text_content, :external_url, TRUE
+            ) RETURNING id
+        ");
 
-        $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':subject_id' => $subjectId,
-            ':created_by' => (int)$loggedUser['id'],
+            ':created_by' => $userId > 0 ? $userId : null,
             ':title' => $title,
             ':slug' => $slug,
             ':description' => $description,
@@ -161,24 +161,11 @@ if ($method === 'POST') {
             ':external_url' => $externalUrl
         ]);
 
-        $newId = $stmt->fetchColumn();
-        $pdo->commit();
+        $newId = (int)$stmt->fetchColumn();
 
-        echo json_encode([
-            'success' => true,
-            'id' => (int)$newId,
-            'title' => $title,
-            'slug' => $slug,
-            'subject_id' => $subjectId,
-            'content_type' => $contentType,
-            'status' => $status
-        ]);
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        if (!empty($filePath) && file_exists(__DIR__ . '/../' . $filePath)) {
-            @unlink(__DIR__ . '/../' . $filePath);
-        }
-        echo json_encode(['success' => false, 'error' => 'Erro ao registrar documento no PostgreSQL: ' . $e->getMessage()]);
+        echo json_encode(['success' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug]);
+    } catch (PDOException $e) {
+        echo json_encode(['success' => false, 'error' => 'Erro ao cadastrar documento: ' . $e->getMessage()]);
     }
     exit;
 }

@@ -997,4 +997,171 @@ class PermissionService {
             'has_inherited' => $hasInherited
         ];
     }
+
+    /**
+     * Retorna a árvore documental filtrada apenas com itens visíveis para o usuário.
+     * Pruning estrito de ancestrais: Se o usuário tem acesso apenas a RH/Férias/Solicitação,
+     * retorna exatamente RH -> Férias -> Solicitação, omitindo todos os irmãos sem acesso.
+     */
+    public function getAccessibleResourceTree(?int $userId): array {
+        $userId = (int)($userId ?? 0);
+        $fullTree = $this->getResourceTree();
+
+        if ($userId > 0 && $this->isGlobalAdmin($userId)) {
+            return $fullTree;
+        }
+
+        $accessibleTree = [];
+
+        foreach ($fullTree as $cat) {
+            $catId = (int)$cat['id'];
+            $catDirectView = $userId > 0 ? $this->canView($userId, 'category', $catId) : false;
+
+            $accessibleSubs = [];
+
+            foreach ($cat['subcategories'] as $sub) {
+                $subId = (int)$sub['id'];
+                $subDirectView = $catDirectView || ($userId > 0 ? $this->canView($userId, 'subcategory', $subId) : false);
+
+                $accessibleSubjs = [];
+
+                foreach ($sub['subjects'] as $subj) {
+                    $subjId = (int)$subj['id'];
+                    $subjView = $subDirectView || ($userId > 0 ? $this->canView($userId, 'subject', $subjId) : false);
+
+                    if ($subjView) {
+                        $accessibleSubjs[] = $subj;
+                    }
+                }
+
+                if ($subDirectView || !empty($accessibleSubjs)) {
+                    $sub['subjects'] = $accessibleSubjs;
+                    $accessibleSubs[] = $sub;
+                }
+            }
+
+            if ($catDirectView || !empty($accessibleSubs)) {
+                $cat['subcategories'] = $accessibleSubs;
+                $accessibleTree[] = $cat;
+            }
+        }
+
+        return $accessibleTree;
+    }
+
+    /**
+     * Retorna os IDs de Categorias permitidas/visíveis para o usuário
+     */
+    public function getAllowedCategoryIds(?int $userId): array {
+        $tree = $this->getAccessibleResourceTree($userId);
+        return array_values(array_unique(array_map(fn($c) => (int)$c['id'], $tree)));
+    }
+
+    /**
+     * Retorna os IDs de Subcategorias permitidas/visíveis para o usuário
+     */
+    public function getAllowedSubcategoryIds(?int $userId): array {
+        $tree = $this->getAccessibleResourceTree($userId);
+        $subIds = [];
+        foreach ($tree as $cat) {
+            foreach ($cat['subcategories'] as $sub) {
+                $subIds[] = (int)$sub['id'];
+            }
+        }
+        return array_values(array_unique($subIds));
+    }
+
+    /**
+     * Retorna os IDs de Assuntos permitidos/visíveis para o usuário
+     */
+    public function getAllowedSubjectIds(?int $userId): array {
+        $tree = $this->getAccessibleResourceTree($userId);
+        $subjIds = [];
+        foreach ($tree as $cat) {
+            foreach ($cat['subcategories'] as $sub) {
+                foreach ($sub['subjects'] as $subj) {
+                    $subjIds[] = (int)$subj['id'];
+                }
+            }
+        }
+        return array_values(array_unique($subjIds));
+    }
+
+    /**
+     * Wrappers Explícitos de Conveniência
+     */
+    public function canViewCategory(?int $userId, int $categoryId): bool {
+        return $this->canView((int)$userId, 'category', $categoryId);
+    }
+
+    public function canViewSubcategory(?int $userId, int $subcategoryId): bool {
+        return $this->canView((int)$userId, 'subcategory', $subcategoryId);
+    }
+
+    public function canViewSubject(?int $userId, int $subjectId): bool {
+        return $this->canView((int)$userId, 'subject', $subjectId);
+    }
+
+    public function canViewDocument(?int $userId, int $documentId): bool {
+        $userId = (int)($userId ?? 0);
+        $stmtDoc = $this->pdo->prepare("SELECT subject_id, status FROM documents WHERE id = ?");
+        $stmtDoc->execute([$documentId]);
+        $doc = $stmtDoc->fetch(PDO::FETCH_ASSOC);
+
+        if (!$doc) {
+            return false;
+        }
+
+        $isPublished = in_array(strtolower($doc['status'] ?? ''), ['published', 'ativo']);
+
+        if (!$isPublished) {
+            if ($userId <= 0) return false;
+            if ($this->isGlobalAdmin($userId)) return true;
+            return $this->canEdit($userId, 'subject', (int)$doc['subject_id']);
+        }
+
+        return $this->canView($userId, 'subject', (int)$doc['subject_id']);
+    }
+
+    public function canEditCategory(?int $userId, int $categoryId): bool {
+        return $this->canEdit((int)$userId, 'category', $categoryId);
+    }
+
+    public function canEditSubcategory(?int $userId, int $subcategoryId): bool {
+        return $this->canEdit((int)$userId, 'subcategory', $subcategoryId);
+    }
+
+    public function canEditSubject(?int $userId, int $subjectId): bool {
+        return $this->canEdit((int)$userId, 'subject', $subjectId);
+    }
+
+    public function canEditDocument(?int $userId, int $documentId): bool {
+        $userId = (int)($userId ?? 0);
+        $stmtDoc = $this->pdo->prepare("SELECT subject_id FROM documents WHERE id = ?");
+        $stmtDoc->execute([$documentId]);
+        $subjectId = (int)$stmtDoc->fetchColumn();
+        if (!$subjectId) return false;
+        return $this->canEdit($userId, 'subject', $subjectId);
+    }
+
+    public function canAdminCategory(?int $userId, int $categoryId): bool {
+        return $this->canAdmin((int)$userId, 'category', $categoryId);
+    }
+
+    public function canAdminSubcategory(?int $userId, int $subcategoryId): bool {
+        return $this->canAdmin((int)$userId, 'subcategory', $subcategoryId);
+    }
+
+    public function canAdminSubject(?int $userId, int $subjectId): bool {
+        return $this->canAdmin((int)$userId, 'subject', $subjectId);
+    }
+
+    public function canAdminDocument(?int $userId, int $documentId): bool {
+        $userId = (int)($userId ?? 0);
+        $stmtDoc = $this->pdo->prepare("SELECT subject_id FROM documents WHERE id = ?");
+        $stmtDoc->execute([$documentId]);
+        $subjectId = (int)$stmtDoc->fetchColumn();
+        if (!$subjectId) return false;
+        return $this->canAdmin($userId, 'subject', $subjectId);
+    }
 }
