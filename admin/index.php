@@ -54,6 +54,10 @@ if (!$loggedUser) {
 }
 
 $isLogged = isset($_SESSION['admin_logged']) && $_SESSION['admin_logged'] === true && !$accessDenied;
+
+require_once __DIR__ . '/../services/PermissionService.php';
+$permService = new PermissionService($pdo);
+
 $activeTab = trim($_GET['tab'] ?? 'visao_geral');
 // Alias: novo_conteudo é o novo nome do tab de criação
 if ($activeTab === 'novo_conteudo') $activeTab = 'novo_documento';
