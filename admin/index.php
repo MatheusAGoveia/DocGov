@@ -76,15 +76,22 @@ if ($isLogged) {
 
     // 0.0 PROCESSAMENTO DE GESTÃO DE PERMISSÕES POR RECURSO (CATEGORIA / SUBCATEGORIA / ASSUNTO)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['resource_permission_action'])) {
-        if (($loggedUser['role'] ?? '') !== 'admin') {
-            $errorMessage = "Apenas administradores podem alterar permissões dos recursos.";
-        } else {
-            require_once __DIR__ . '/../services/PermissionService.php';
-            $permService = new PermissionService($pdo);
-            $resPermAction = $_POST['resource_permission_action'];
-            $resType = trim($_POST['resource_type'] ?? '');
-            $resId = (int)($_POST['resource_id'] ?? 0);
+        // Extrair recurso primeiro para poder verificar permissão delegada
+        $resPermAction = $_POST['resource_permission_action'];
+        $resType = trim($_POST['resource_type'] ?? '');
+        $resId = (int)($_POST['resource_id'] ?? 0);
 
+        // Verificar autorização: Admin Global OU Admin delegado no recurso específico
+        $_managerUserId = (int)($loggedUser['id'] ?? 0);
+        $_isGlobalAdminAction = $permService->isGlobalAdmin($_managerUserId);
+        $_isDelegatedAdmin = (!$_isGlobalAdminAction && $resId > 0 && in_array($resType, ['category', 'subcategory', 'subject']))
+            ? $permService->canAdmin($_managerUserId, $resType, $resId)
+            : false;
+        $_canManagePermissions = $_isGlobalAdminAction || $_isDelegatedAdmin;
+
+        if (!$_canManagePermissions) {
+            $errorMessage = "Acesso negado. É necessário privilégio Admin neste recurso (ou ser Administrador Global) para gerenciar permissões.";
+        } else {
             if (!in_array($resType, ['category', 'subcategory', 'subject']) || $resId <= 0) {
                 $errorMessage = "Recurso inválido para configuração de permissão.";
             } else {
@@ -128,7 +135,7 @@ if ($isLogged) {
 
                         if (empty($errorMessage)) {
                             try {
-                                $permService->saveResourcePermission($resType, $resId, $userId, $groupId, $permLevel, (int)($loggedUser['id'] ?? 0));
+                                $permService->saveResourcePermission($resType, $resId, $userId, $groupId, $permLevel, $_managerUserId);
                                 header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_saved");
                                 exit;
                             } catch (Exception $e) {
@@ -143,19 +150,35 @@ if ($isLogged) {
                     $newLevel = trim($_POST['permission_level'] ?? 'view');
 
                     if ($permId > 0 && in_array($newLevel, ['view', 'edit', 'admin'])) {
-                        $stmtUpdLvl = $pdo->prepare("UPDATE permissions SET permission_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                        $stmtUpdLvl->execute([$newLevel, $permId]);
-                        header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_updated");
-                        exit;
+                        // Verificar que a permissão pertence EXATAMENTE ao recurso autorizado (evitar scope escalation)
+                        $colName = ($resType === 'category') ? 'category_id' : (($resType === 'subcategory') ? 'subcategory_id' : 'subject_id');
+                        $stmtChkPerm = $pdo->prepare("SELECT id FROM permissions WHERE id = ? AND {$colName} = ?");
+                        $stmtChkPerm->execute([$permId, $resId]);
+                        if (!$stmtChkPerm->fetchColumn()) {
+                            $errorMessage = "Permissão não encontrada ou não pertence a este recurso.";
+                        } else {
+                            $stmtUpdLvl = $pdo->prepare("UPDATE permissions SET permission_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                            $stmtUpdLvl->execute([$newLevel, $permId]);
+                            header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_updated");
+                            exit;
+                        }
                     }
                 }
 
                 if ($resPermAction === 'delete_permission') {
                     $permId = (int)($_POST['permission_id'] ?? 0);
                     if ($permId > 0) {
-                        $permService->deletePermission($permId);
-                        header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_deleted");
-                        exit;
+                        // Verificar que a permissão pertence EXATAMENTE ao recurso autorizado (evitar scope escalation)
+                        $colName = ($resType === 'category') ? 'category_id' : (($resType === 'subcategory') ? 'subcategory_id' : 'subject_id');
+                        $stmtChkPerm = $pdo->prepare("SELECT id FROM permissions WHERE id = ? AND {$colName} = ?");
+                        $stmtChkPerm->execute([$permId, $resId]);
+                        if ($stmtChkPerm->fetchColumn()) {
+                            $permService->deletePermission($permId);
+                            header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_deleted");
+                            exit;
+                        } else {
+                            $errorMessage = "Permissão não encontrada ou não pertence a este recurso.";
+                        }
                     }
                 }
             }
@@ -843,7 +866,7 @@ require_once __DIR__ . '/../services/AccessService.php';
 $accessServiceAdmin = new AccessService($pdo);
 $loggedAdminUserId = (int)($loggedUser['id'] ?? 0);
 
-if ($loggedUser && ($loggedUser['role'] ?? '') === 'editor') {
+if ($loggedUser && !$permService->isGlobalAdmin($loggedAdminUserId)) {
     $allowedCatIdsAdmin = $accessServiceAdmin->getAllowedCategoryIds($loggedAdminUserId);
     $allowedSubcatIdsAdmin = $accessServiceAdmin->getAllowedSubcategoryIds($loggedAdminUserId);
     $allowedSubjectIdsAdmin = $accessServiceAdmin->getAllowedSubjectIds($loggedAdminUserId);
@@ -2379,7 +2402,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         // Determine o tipo inicial: edição de documento ou tipo vindo da URL
                         $isEditMode = ($editDoc !== null);
                         $initialType = $isEditMode ? 'documento' : 'documento';
-                        $isAdmin = ($loggedUser['role'] === 'admin');
+                        $isAdmin = $permService->isGlobalAdmin((int)($loggedUser['id'] ?? 0));
                     ?>
                     <div class="max-w-3xl mx-auto">
 

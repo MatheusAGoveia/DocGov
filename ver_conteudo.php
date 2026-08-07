@@ -59,8 +59,10 @@ if (!$accessService->canAccessDocument($userId, $docId)) {
 }
 
 $canView = true;
-$canEdit = $loggedUser && ($loggedUser['role'] === 'admin' || $loggedUser['role'] === 'editor');
-$canDelete = $loggedUser && $loggedUser['role'] === 'admin';
+require_once __DIR__ . '/services/PermissionService.php';
+$_permSvcVC = new PermissionService($pdo);
+$canEdit = $loggedUser && $_permSvcVC->canEditDocument($userId, $docId);
+$canDelete = $loggedUser && $_permSvcVC->isGlobalAdmin($userId);
 
 $isFavorite = false;
 if ($loggedUser) {
