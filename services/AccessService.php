@@ -49,4 +49,8 @@ class AccessService {
     public function getAllowedSubjectIds(int $userId): array {
         return $this->permService->getAllowedSubjectIds($userId);
     }
+
+    public function canCreateCategory(int $userId): bool {
+        return $this->permService->canCreateCategory($userId);
+    }
 }

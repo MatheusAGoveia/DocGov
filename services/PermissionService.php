@@ -1166,4 +1166,13 @@ class PermissionService {
         if (!$subjectId) return false;
         return $this->canAdmin($userId, 'subject', $subjectId);
     }
+
+    /**
+     * Verifica se o usuário possui permissão para criar uma nova Categoria no nível raiz.
+     * Regra estrita: SOMENTE o Administrador Global (users.role = 'admin') pode criar Categorias.
+     * Administradores ou Editores de recurso (Categoria/Subcategoria/Assunto) NÃO podem criar novas Categorias de nível raiz.
+     */
+    public function canCreateCategory(?int $userId): bool {
+        return $this->isGlobalAdmin($userId);
+    }
 }
