@@ -89,20 +89,47 @@ if ($isLogged) {
                 if ($resPermAction === 'add_permission') {
                     $principalType = trim($_POST['principal_type'] ?? 'group');
                     $principalId = (int)($_POST['principal_id'] ?? 0);
-                    $permLevel = trim($_POST['permission_level'] ?? 'view');
+                    $permLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
 
                     $userId = ($principalType === 'user') ? $principalId : null;
                     $groupId = ($principalType === 'group') ? $principalId : null;
 
-                    if ($principalId <= 0) {
-                        $errorMessage = "Selecione o Usuário ou Grupo para conceder acesso.";
+                    if (!in_array($principalType, ['user', 'group']) || $principalId <= 0) {
+                        $errorMessage = "Selecione um Usuário ou Grupo válido para conceder acesso.";
+                    } elseif (!in_array($permLevel, ['view', 'edit', 'admin'])) {
+                        $errorMessage = "Nível de permissão inválido.";
                     } else {
-                        try {
-                            $permService->saveResourcePermission($resType, $resId, $userId, $groupId, $permLevel, (int)($loggedUser['id'] ?? 0));
-                            header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_saved");
-                            exit;
-                        } catch (Exception $e) {
-                            $errorMessage = "Erro ao salvar permissão: " . $e->getMessage();
+                        // Validação estrita da existência do recurso
+                        $resTable = ($resType === 'category') ? 'categories' : (($resType === 'subcategory') ? 'subcategories' : 'subjects');
+                        $checkR = $pdo->prepare("SELECT id FROM {$resTable} WHERE id = ?");
+                        $checkR->execute([$resId]);
+                        if (!$checkR->fetchColumn()) {
+                            $errorMessage = "O recurso informado não foi encontrado no banco de dados.";
+                        } else {
+                            // Validação estrita da existência do principal
+                            if ($principalType === 'user') {
+                                $checkP = $pdo->prepare("SELECT id FROM users WHERE id = ? AND active = TRUE");
+                                $checkP->execute([$principalId]);
+                                if (!$checkP->fetchColumn()) {
+                                    $errorMessage = "O Usuário selecionado não existe ou está inativo.";
+                                }
+                            } else {
+                                $checkP = $pdo->prepare("SELECT id FROM groups WHERE id = ? AND active = TRUE");
+                                $checkP->execute([$principalId]);
+                                if (!$checkP->fetchColumn()) {
+                                    $errorMessage = "O Grupo selecionado não existe ou está inativo.";
+                                }
+                            }
+                        }
+
+                        if (empty($errorMessage)) {
+                            try {
+                                $permService->saveResourcePermission($resType, $resId, $userId, $groupId, $permLevel, (int)($loggedUser['id'] ?? 0));
+                                header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_saved");
+                                exit;
+                            } catch (Exception $e) {
+                                $errorMessage = "Erro ao salvar permissão: " . $e->getMessage();
+                            }
                         }
                     }
                 }
@@ -2842,7 +2869,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Gerenciar permissões</h3>
                                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Quem possui acesso a esta área.</p>
                                     </div>
-                                    <button type="button" onclick="document.getElementById('modal-add-perm').classList.remove('hidden')" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
+                                    <button type="button" onclick="openAddPermModal()" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
                                         <span>+ Adicionar permissão</span>
                                     </button>
                                 </div>
@@ -2963,93 +2990,257 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     </div>
                                 <?php endif; ?>
 
-                                <!-- MODAL DE INCLUSÃO DE NOVA PERMISSÃO -->
-                                <div id="modal-add-perm" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4">
-                                    <div class="bg-white dark:bg-[#353842] max-w-md w-full p-5 rounded border border-slate-200 dark:border-[#454956] shadow-lg space-y-4">
+                                <!-- MODAL DE INCLUSÃO DE NOVA PERMISSÃO (REFINADO E ACESSÍVEL) -->
+                                <div id="modal-add-perm" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-add-perm-title">
+                                    <div id="modal-add-perm-card" class="bg-white dark:bg-[#353842] max-w-md w-full p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xl space-y-4 text-xs">
+                                        
+                                        <!-- CABEÇALHO DO MODAL -->
                                         <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-[#454956]">
-                                            <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Adicionar Permissão</h3>
-                                            <button type="button" onclick="document.getElementById('modal-add-perm').classList.add('hidden')" class="text-slate-400 hover:text-slate-600">✕</button>
+                                            <h3 id="modal-add-perm-title" class="text-sm font-bold text-slate-900 dark:text-slate-100">Conceder acesso para</h3>
+                                            <button type="button" onclick="closeAddPermModal()" class="text-slate-400 hover:text-slate-600 focus:outline-hidden text-sm p-1 rounded" aria-label="Fechar modal">✕</button>
                                         </div>
 
-                                        <form method="POST" action="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" class="space-y-4">
+                                        <form method="POST" action="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" id="form-add-perm" class="space-y-4">
                                             <input type="hidden" name="resource_permission_action" value="add_permission">
                                             <input type="hidden" name="resource_type" value="<?= $resType ?>">
                                             <input type="hidden" name="resource_id" value="<?= $resId ?>">
+                                            <input type="hidden" name="principal_id" id="input-selected-principal-id" value="">
 
+                                            <!-- SELETOR DE TIPO: SEGMENTED BUTTONS [ Usuário | Grupo ] -->
                                             <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Tipo de Principal *</label>
-                                                <div class="flex items-center gap-4 text-xs font-semibold">
-                                                    <label class="flex items-center gap-1.5 cursor-pointer">
-                                                        <input type="radio" name="principal_type" value="group" checked onchange="togglePrincipalType('group')" class="rounded border-slate-300 text-slate-900">
-                                                        <span>Grupo</span>
+                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Tipo de acesso</label>
+                                                <div class="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-[#2c2e33] rounded-md border border-slate-200 dark:border-[#454956]">
+                                                    <button type="button" id="btn-type-user" onclick="selectPrincipalType('user')" class="py-1.5 font-bold rounded text-center transition">
+                                                        Usuário
+                                                    </button>
+                                                    <button type="button" id="btn-type-group" onclick="selectPrincipalType('group')" class="py-1.5 font-bold rounded text-center transition">
+                                                        Grupo
+                                                    </button>
+                                                </div>
+                                                <input type="hidden" name="principal_type" id="input-principal-type" value="group">
+                                            </div>
+
+                                            <!-- CAMPO DE PESQUISA EM TEMPO REAL NO POSTGRESQL -->
+                                            <div>
+                                                <label for="perm-search-input" class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Pesquisar</label>
+                                                <div class="relative">
+                                                    <input type="text" id="perm-search-input" placeholder="Buscar por nome, username, email..." oninput="onSearchInput()" class="input-minimal w-full pl-8 pr-3 py-2 rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100">
+                                                    <svg class="w-4 h-4 text-slate-400 absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                                </div>
+                                            </div>
+
+                                            <!-- LISTA DE RESULTADOS DA PESQUISA COM RADIO BUTTONS -->
+                                            <div>
+                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Resultados</label>
+                                                <div id="perm-search-results" class="max-h-40 overflow-y-auto divide-y divide-slate-100 dark:divide-[#454956] border border-slate-200 dark:border-[#454956] rounded bg-slate-50/50 dark:bg-[#2c2e33]/50 p-1">
+                                                    <div class="p-3 text-center text-slate-400 text-[11px]">Buscando no PostgreSQL...</div>
+                                                </div>
+                                            </div>
+
+                                            <!-- ALERTA DE PERMISSÃO DIRETA JÁ EXISTENTE -->
+                                            <div id="box-existing-perm-warning" class="hidden p-2.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-700 dark:text-amber-300 text-[11px]">
+                                                <div class="flex items-start gap-1.5">
+                                                    <svg class="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                                    <div>
+                                                        <strong class="block font-bold">Permissão direta já existente:</strong>
+                                                        Este principal já possui permissão <span id="text-existing-level" class="font-bold uppercase"></span> nesta pasta. Ao salvar, a permissão existente será alterada para o novo nível selecionado.
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- SELEÇÃO DE NÍVEIS DE PERMISSÃO COM DESCRIÇÕES EXPLICATIVAS EXIGIDAS -->
+                                            <div>
+                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Permissão</label>
+                                                <div class="space-y-2">
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="view" checked class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">View</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar conteúdo.</span>
+                                                        </div>
                                                     </label>
-                                                    <label class="flex items-center gap-1.5 cursor-pointer">
-                                                        <input type="radio" name="principal_type" value="user" onchange="togglePrincipalType('user')" class="rounded border-slate-300 text-slate-900">
-                                                        <span>Usuário Individual</span>
+
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="edit" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Edit</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar e editar conteúdo.</span>
+                                                        </div>
+                                                    </label>
+
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="admin" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Admin</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode gerenciar conteúdo e permissões desta área.</span>
+                                                        </div>
                                                     </label>
                                                 </div>
                                             </div>
 
-                                            <!-- SELEÇÃO DE GRUPO -->
-                                            <div id="box-select-group">
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Selecione o Grupo *</label>
-                                                <select name="principal_id" id="select-group-id" required class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
-                                                    <option value="">-- Selecione o Grupo --</option>
-                                                    <?php foreach ($allGroupsList as $gOption): ?>
-                                                        <option value="<?= $gOption['id'] ?>"><?= htmlspecialchars($gOption['name']) ?></option>
-                                                    <?php endforeach; ?>
-                                                </select>
+                                            <!-- AVISO DE HERANÇA SOLICITADO -->
+                                            <div class="p-2 bg-blue-500/10 border border-blue-500/20 rounded text-blue-700 dark:text-blue-300 text-[11px] flex items-center gap-1.5">
+                                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                                <span>Esta permissão será herdada pelos itens abaixo desta área.</span>
                                             </div>
 
-                                            <!-- SELEÇÃO DE USUÁRIO (INICIALMENTE OCULTA) -->
-                                            <div id="box-select-user" class="hidden">
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Selecione o Usuário *</label>
-                                                <select name="principal_id" id="select-user-id" disabled class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
-                                                    <option value="">-- Selecione o Usuário --</option>
-                                                    <?php foreach ($allUsersList as $uOption): ?>
-                                                        <option value="<?= $uOption['id'] ?>"><?= htmlspecialchars($uOption['name']) ?> (@<?= htmlspecialchars($uOption['username']) ?>)</option>
-                                                    <?php endforeach; ?>
-                                                </select>
-                                            </div>
-
-                                            <!-- SELEÇÃO DO NÍVEL DE PERMISSÃO -->
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nível de Permissão *</label>
-                                                <select name="permission_level" required class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
-                                                    <option value="view">View (Leitura)</option>
-                                                    <option value="edit">Edit (Edição)</option>
-                                                    <option value="admin">Admin (Administração)</option>
-                                                </select>
-                                            </div>
-
-                                            <div class="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
-                                                <button type="button" onclick="document.getElementById('modal-add-perm').classList.add('hidden')" class="px-3 py-1.5 rounded text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100">Cancelar</button>
-                                                <button type="submit" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90">Salvar Permissão</button>
+                                            <!-- BOTÕES: [Cancelar] [Adicionar permissão] -->
+                                            <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
+                                                <button type="button" onclick="closeAddPermModal()" class="px-4 py-2 rounded font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
+                                                    Cancelar
+                                                </button>
+                                                <button type="submit" id="btn-submit-add-perm" disabled class="px-4 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    Adicionar permissão
+                                                </button>
                                             </div>
                                         </form>
 
                                         <script>
-                                            function togglePrincipalType(type) {
-                                                const boxGroup = document.getElementById('box-select-group');
-                                                const boxUser = document.getElementById('box-select-user');
-                                                const selGroup = document.getElementById('select-group-id');
-                                                const selUser = document.getElementById('select-user-id');
+                                            let currentPrincipalType = 'group';
+                                            let searchDebounceTimer = null;
+                                            let lastFocusedElement = null;
 
-                                                if (type === 'group') {
-                                                    boxGroup.classList.remove('hidden');
-                                                    boxUser.classList.add('hidden');
-                                                    selGroup.disabled = false;
-                                                    selGroup.required = true;
-                                                    selUser.disabled = true;
-                                                    selUser.required = false;
-                                                } else {
-                                                    boxGroup.classList.add('hidden');
-                                                    boxUser.classList.remove('hidden');
-                                                    selGroup.disabled = true;
-                                                    selGroup.required = false;
-                                                    selUser.disabled = false;
-                                                    selUser.required = true;
+                                            function openAddPermModal() {
+                                                lastFocusedElement = document.activeElement;
+                                                const modal = document.getElementById('modal-add-perm');
+                                                modal.classList.remove('hidden');
+                                                selectPrincipalType('group');
+                                                document.getElementById('perm-search-input').focus();
+
+                                                // Adicionar listener de tecla ESC e Focus Trap
+                                                document.addEventListener('keydown', handleModalKeyDown);
+                                            }
+
+                                            function closeAddPermModal() {
+                                                const modal = document.getElementById('modal-add-perm');
+                                                modal.classList.add('hidden');
+                                                document.removeEventListener('keydown', handleModalKeyDown);
+                                                if (lastFocusedElement) {
+                                                    lastFocusedElement.focus();
                                                 }
+                                            }
+
+                                            function handleModalKeyDown(e) {
+                                                if (e.key === 'Escape') {
+                                                    closeAddPermModal();
+                                                    return;
+                                                }
+                                                if (e.key === 'Tab') {
+                                                    const modalCard = document.getElementById('modal-add-perm-card');
+                                                    const focusables = modalCard.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])');
+                                                    if (focusables.length === 0) return;
+                                                    const first = focusables[0];
+                                                    const last = focusables[focusables.length - 1];
+
+                                                    if (e.shiftKey) {
+                                                        if (document.activeElement === first) {
+                                                            last.focus();
+                                                            e.preventDefault();
+                                                        }
+                                                    } else {
+                                                        if (document.activeElement === last) {
+                                                            first.focus();
+                                                            e.preventDefault();
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            function selectPrincipalType(type) {
+                                                currentPrincipalType = type;
+                                                document.getElementById('input-principal-type').value = type;
+
+                                                const btnUser = document.getElementById('btn-type-user');
+                                                const btnGroup = document.getElementById('btn-type-group');
+
+                                                if (type === 'user') {
+                                                    btnUser.className = 'py-1.5 font-bold rounded text-center bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs';
+                                                    btnGroup.className = 'py-1.5 font-bold rounded text-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200';
+                                                    document.getElementById('perm-search-input').placeholder = 'Buscar por nome, username, email...';
+                                                } else {
+                                                    btnGroup.className = 'py-1.5 font-bold rounded text-center bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs';
+                                                    btnUser.className = 'py-1.5 font-bold rounded text-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200';
+                                                    document.getElementById('perm-search-input').placeholder = 'Buscar por nome do grupo...';
+                                                }
+
+                                                // Resetar seleção e alerta
+                                                document.getElementById('input-selected-principal-id').value = '';
+                                                document.getElementById('btn-submit-add-perm').disabled = true;
+                                                document.getElementById('box-existing-perm-warning').classList.add('hidden');
+
+                                                fetchPrincipals();
+                                            }
+
+                                            function onSearchInput() {
+                                                clearTimeout(searchDebounceTimer);
+                                                searchDebounceTimer = setTimeout(() => {
+                                                    fetchPrincipals();
+                                                }, 250);
+                                            }
+
+                                            function fetchPrincipals() {
+                                                const q = encodeURIComponent(document.getElementById('perm-search-input').value.trim());
+                                                const resType = '<?= $resType ?>';
+                                                const resId = '<?= $resId ?>';
+                                                const container = document.getElementById('perm-search-results');
+
+                                                container.innerHTML = '<div class="p-3 text-center text-slate-400 text-[11px]">Buscando no PostgreSQL...</div>';
+
+                                                fetch(`api/search_principals.php?type=${currentPrincipalType}&q=${q}&resource_type=${resType}&resource_id=${resId}`)
+                                                    .then(res => res.json())
+                                                    .then(res => {
+                                                        if (!res.success) {
+                                                            container.innerHTML = `<div class="p-3 text-center text-red-500 text-[11px]">${res.error || 'Erro ao carregar'}</div>`;
+                                                            return;
+                                                        }
+
+                                                        if (res.data.length === 0) {
+                                                            container.innerHTML = '<div class="p-3 text-center text-slate-400 text-[11px]">Nenhum principal encontrado.</div>';
+                                                            return;
+                                                        }
+
+                                                        let html = '';
+                                                        res.data.forEach(item => {
+                                                            const icon = item.type === 'group' ? '👥' : '👤';
+                                                            const existingAttr = item.existing_level ? `data-existing="${item.existing_level}"` : '';
+                                                            html += `
+                                                                <label class="flex items-center justify-between p-2 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer transition">
+                                                                    <div class="flex items-center gap-2">
+                                                                        <input type="radio" name="principal_radio" value="${item.id}" ${existingAttr} onchange="onSelectPrincipal(${item.id}, '${item.existing_level || ''}')" class="border-slate-300 text-slate-900 focus:ring-0">
+                                                                        <div>
+                                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">${icon} ${escapeHtml(item.name)}</span>
+                                                                            <span class="text-[10px] text-slate-400 block">${escapeHtml(item.subtext)}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    ${item.existing_level ? `<span class="px-1.5 py-0.5 text-[9px] font-bold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 uppercase">Já possui: ${item.existing_level}</span>` : ''}
+                                                                </label>
+                                                            `;
+                                                        });
+
+                                                        container.innerHTML = html;
+                                                    })
+                                                    .catch(err => {
+                                                        container.innerHTML = '<div class="p-3 text-center text-red-500 text-[11px]">Erro ao conectar à API.</div>';
+                                                    });
+                                            }
+
+                                            function onSelectPrincipal(id, existingLevel) {
+                                                document.getElementById('input-selected-principal-id').value = id;
+                                                document.getElementById('btn-submit-add-perm').disabled = false;
+
+                                                const warningBox = document.getElementById('box-existing-perm-warning');
+                                                const levelSpan = document.getElementById('text-existing-level');
+
+                                                if (existingLevel) {
+                                                    levelSpan.textContent = existingLevel;
+                                                    warningBox.classList.remove('hidden');
+                                                } else {
+                                                    warningBox.classList.add('hidden');
+                                                }
+                                            }
+
+                                            function escapeHtml(str) {
+                                                return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
                                             }
                                         </script>
                                     </div>
