@@ -1140,7 +1140,17 @@ class PermissionService {
     }
 
     public function canEditSubcategory(?int $userId, int $subcategoryId): bool {
-        return $this->canEdit((int)$userId, 'subcategory', $subcategoryId);
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $subcategoryId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveSubcategoryPermission($userId, $subcategoryId);
+        return ($perm['effective_value'] ?? 0) >= self::LEVEL_MAP['edit'];
     }
 
     public function canEditSubject(?int $userId, int $subjectId): bool {
