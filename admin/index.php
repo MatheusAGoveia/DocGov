@@ -3272,7 +3272,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                                                         let html = '';
                                                         res.data.forEach(item => {
-                                                            const icon = item.type === 'group' ? '👥' : '👤';
+                                                            const icon = item.type === 'group' 
+                                                                ? `<svg class="w-4 h-4 text-slate-400 inline shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>`
+                                                                : `<svg class="w-4 h-4 text-slate-400 inline shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`;
                                                             const existingAttr = item.existing_level ? `data-existing="${item.existing_level}"` : '';
                                                             html += `
                                                                 <label class="flex items-center justify-between p-2 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer transition">
@@ -3814,7 +3816,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                         <div class="tree-node-cat" data-name="<?= mb_strtolower($catItem['name']) ?>">
                                                             <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer font-bold text-slate-900 dark:text-slate-100">
                                                                 <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('category', <?= $catItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                <span>📁 <?= htmlspecialchars($catItem['name']) ?></span>
+                                                                <span class="inline-flex items-center gap-1"><svg class="w-3.5 h-3.5 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg><?= htmlspecialchars($catItem['name']) ?></span>
                                                             </label>
 
                                                             <div class="pl-4 space-y-0.5 border-l-2 border-slate-200 dark:border-[#454956] ml-2 mt-0.5">
@@ -3822,7 +3824,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                                     <div class="tree-node-sub" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name']) ?>">
                                                                         <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-800 dark:text-slate-200">
                                                                             <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subcategory', <?= $subItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                            <span>├── 📂 <?= htmlspecialchars($subItem['name']) ?></span>
+                                                                            <span class="inline-flex items-center gap-1">├── <svg class="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg><?= htmlspecialchars($subItem['name']) ?></span>
                                                                         </label>
 
                                                                         <div class="pl-5 space-y-0.5 border-l border-slate-200 dark:border-[#454956] ml-3 mt-0.5">
@@ -3830,7 +3832,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                                                 <div class="tree-node-subj" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name'] . ' ' . $subjItem['name']) ?>">
                                                                                     <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-600 dark:text-slate-400">
                                                                                         <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subject', <?= $subjItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'] . ' / ' . $subjItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                                        <span>└── 📄 <?= htmlspecialchars($subjItem['name']) ?></span>
+                                                                                        <span class="inline-flex items-center gap-1">└── <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg><?= htmlspecialchars($subjItem['name']) ?></span>
                                                                                     </label>
                                                                                 </div>
                                                                             <?php endforeach; ?>
@@ -4011,7 +4013,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                 </td>
                                                 <td class="py-2.5 px-4 text-right">
                                                     <a href="index.php?tab=editar_usuario&id=<?= $uRow['id'] ?>&user_tab=access" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-semibold hover:opacity-90 transition shadow-xs">
-                                                        <span>🔍 Acessos Efetivos</span>
+                                                        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                                        <span>Acessos Efetivos</span>
                                                     </a>
                                                 </td>
                                             </tr>
@@ -4071,8 +4074,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <?php else: ?>
                                         <div class="flex flex-wrap gap-1.5 mt-1">
                                             <?php foreach ($diagnosis['active_groups'] as $ag): ?>
-                                                <span class="px-2 py-0.5 text-[11px] font-semibold rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#454956]">
-                                                    👥 <?= htmlspecialchars($ag['name']) ?>
+                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-[#454956]">
+                                                    <svg class="w-3 h-3 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg><?= htmlspecialchars($ag['name']) ?>
                                                 </span>
                                             <?php endforeach; ?>
                                         </div>
@@ -4168,7 +4171,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                                                             <?php if (!empty($resDiag['explanation'])): ?>
                                                                 <div class="mt-1.5 p-2 bg-amber-500/10 border border-amber-500/20 rounded text-[11px] text-amber-800 dark:text-amber-300 flex items-center gap-1.5 font-medium">
-                                                                    <span>💡 <?= htmlspecialchars($resDiag['explanation']) ?></span>
+                                                                    <svg class="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 01-2 2h-4a2 2 0 01-2-2v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                                                                    <span><?= htmlspecialchars($resDiag['explanation']) ?></span>
                                                                 </div>
                                                             <?php endif; ?>
                                                         </td>
