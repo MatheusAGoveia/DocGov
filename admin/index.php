@@ -551,8 +551,14 @@ if ($isLogged) {
         $subId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'subcategorias');
 
-        if ($loggedUser['role'] !== 'admin') {
-            $errorMessage = "Usuários com perfil 'Editor' possuem acesso apenas à gestão de conteúdos.";
+        $userId = (int)($loggedUser['id'] ?? 0);
+
+        if (!$subId && ($catId <= 0 || !$permService->canCreateSubcategory($userId, $catId))) {
+            http_response_code(403);
+            $errorMessage = "Acesso negado. Você não possui permissão para criar subcategorias nesta categoria.";
+        } elseif ($subId && !$permService->canEditSubcategory($userId, $subId)) {
+            http_response_code(403);
+            $errorMessage = "Acesso negado. Você não possui permissão para editar esta subcategoria.";
         } elseif (!empty($nome) && $catId > 0) {
             $slug = slugify($nome);
             if ($subId) {
