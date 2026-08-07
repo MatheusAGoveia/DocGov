@@ -31,8 +31,9 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    if (!$loggedUser || ($loggedUser['role'] !== 'admin' && !$permService->isGlobalAdmin($userId))) {
-        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores autorizados podem criar categorias.']);
+    if (!$permService->canCreateCategory($userId)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas o Administrador Global pode criar categorias no nível raiz.']);
         exit;
     }
 

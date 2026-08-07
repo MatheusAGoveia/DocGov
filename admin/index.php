@@ -489,19 +489,32 @@ if ($isLogged) {
         $catId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'categorias');
 
-        if ($loggedUser['role'] !== 'admin') {
-            $errorMessage = "Usuários com perfil 'Editor' possuem acesso apenas à gestão de conteúdos.";
-        } elseif (!empty($nome)) {
-            $slug = slugify($nome);
-            if ($catId) {
-                $stmt = $pdo->prepare("UPDATE categories SET name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
-                $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $catId]);
-            } else {
+        $userId = (int)($loggedUser['id'] ?? 0);
+
+        if (!$catId) {
+            // CRIAR CATEGORIA: SOMENTE ADMIN GERAL
+            if (!$permService->canCreateCategory($userId)) {
+                http_response_code(403);
+                $errorMessage = "Acesso negado. Apenas o Administrador Global pode criar novas Categorias no nível raiz.";
+            } elseif (!empty($nome)) {
+                $slug = slugify($nome);
                 $stmt = $pdo->prepare("INSERT INTO categories (name, slug, description, active) VALUES (:name, :slug, :desc, :active)");
                 $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
+                header('Location: index.php?tab=' . $redirectTab . '&msg=category_saved');
+                exit;
             }
-            header('Location: index.php?tab=' . $redirectTab . '&msg=category_saved');
-            exit;
+        } else {
+            // EDITAR CATEGORIA: ADMIN DA CATEGORIA OU ADMIN GERAL
+            if (!$permService->canAdminCategory($userId, $catId) && !$permService->isGlobalAdmin($userId)) {
+                http_response_code(403);
+                $errorMessage = "Acesso negado. É necessário privilégio Admin nesta Categoria (ou ser Administrador Global) para alterá-la.";
+            } elseif (!empty($nome)) {
+                $slug = slugify($nome);
+                $stmt = $pdo->prepare("UPDATE categories SET name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
+                $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $catId]);
+                header('Location: index.php?tab=' . $redirectTab . '&msg=category_saved');
+                exit;
+            }
         }
     }
 
