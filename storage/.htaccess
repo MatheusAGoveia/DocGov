@@ -1,0 +1,6 @@
+# Bloqueio estrito de acesso direto aos arquivos fisicos do storage
+Deny from all
+<FilesMatch ".*">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>

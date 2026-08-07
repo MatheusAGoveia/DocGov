@@ -1,0 +1,674 @@
+/* assets/viewer.css — Visualizador de documentos (filosofia QuickRef) */
+
+.viewer-page {
+  min-height: 100vh;
+}
+
+.viewer-topbar {
+  height: 44px;
+  border-bottom: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.dark .viewer-topbar {
+  background: rgba(50, 53, 61, 0.94);
+  border-bottom-color: #454956;
+}
+
+.viewer-body {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 3rem;
+}
+
+@media (min-width: 640px) {
+  .viewer-body {
+    padding: 1.5rem 1.75rem 4rem;
+  }
+}
+
+/* Breadcrumb compacto */
+.viewer-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 0.75rem;
+  line-height: 1.4;
+}
+
+.viewer-breadcrumb a {
+  color: #94a3b8;
+  text-decoration: none;
+  transition: color 150ms;
+}
+
+.viewer-breadcrumb a:hover {
+  color: #475569;
+}
+
+.dark .viewer-breadcrumb a:hover {
+  color: #cbd5e1;
+}
+
+.viewer-breadcrumb-sep {
+  color: #cbd5e1;
+  user-select: none;
+}
+
+.dark .viewer-breadcrumb-sep {
+  color: #525866;
+}
+
+/* Cabeçalho do documento */
+.viewer-header {
+  margin-bottom: 1rem;
+}
+
+.viewer-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.viewer-title {
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: #0f172a;
+  margin: 0;
+}
+
+.dark .viewer-title {
+  color: #f8fafc;
+}
+
+@media (min-width: 640px) {
+  .viewer-title {
+    font-size: 1.625rem;
+  }
+}
+
+.viewer-desc {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin: 0.375rem 0 0;
+  line-height: 1.5;
+}
+
+.dark .viewer-desc {
+  color: #94a3b8;
+}
+
+.viewer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-top: 0.625rem;
+  line-height: 1.5;
+}
+
+.viewer-meta-sep {
+  color: #cbd5e1;
+}
+
+.dark .viewer-meta-sep {
+  color: #525866;
+}
+
+.viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.viewer-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background 150ms, color 150ms;
+}
+
+.viewer-btn-icon:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #0f172a;
+}
+
+.dark .viewer-btn-icon:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
+.viewer-btn-icon.is-active {
+  color: #f59e0b;
+}
+
+.viewer-divider {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 1rem 0;
+}
+
+.dark .viewer-divider {
+  border-top-color: #454956;
+}
+
+/* Menu ⋯ */
+.viewer-menu-wrap {
+  position: relative;
+}
+
+.viewer-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 180px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  padding: 0.25rem 0;
+  z-index: 60;
+  display: none;
+}
+
+.viewer-menu.is-open {
+  display: block;
+}
+
+.dark .viewer-menu {
+  background: #353842;
+  border-color: #454956;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.viewer-menu a,
+.viewer-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  color: #334155;
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.viewer-menu a:hover,
+.viewer-menu button:hover {
+  background: #f1f5f9;
+}
+
+.dark .viewer-menu a,
+.dark .viewer-menu button {
+  color: #e2e8f0;
+}
+
+.dark .viewer-menu a:hover,
+.dark .viewer-menu button:hover {
+  background: #3e424e;
+}
+
+.viewer-menu hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 0.25rem 0;
+}
+
+.dark .viewer-menu hr {
+  border-top-color: #454956;
+}
+
+.viewer-menu .is-danger {
+  color: #dc2626;
+}
+
+.dark .viewer-menu .is-danger {
+  color: #f87171;
+}
+
+/* Detalhes (submenu info) */
+.viewer-details-panel {
+  display: none;
+  font-size: 0.72rem;
+  color: #64748b;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid #e2e8f0;
+  line-height: 1.6;
+}
+
+.viewer-details-panel.is-open {
+  display: block;
+}
+
+.dark .viewer-details-panel {
+  color: #94a3b8;
+  border-top-color: #454956;
+}
+
+/* ── PDF Toolbar ── */
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  padding: 0.375rem 0.75rem;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  position: sticky;
+  top: 44px;
+  z-index: 40;
+  backdrop-filter: blur(8px);
+}
+
+.dark .pdf-toolbar {
+  background: rgba(53, 56, 66, 0.95);
+  border-color: #454956;
+}
+
+.pdf-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.pdf-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: #e2e8f0;
+  margin: 0 0.25rem;
+}
+
+.dark .pdf-toolbar-sep {
+  background: #454956;
+}
+
+.pdf-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 0.375rem;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-family: inherit;
+  transition: background 150ms, color 150ms;
+}
+
+.pdf-toolbar-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #0f172a;
+}
+
+.dark .pdf-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
+.pdf-toolbar-btn.is-active {
+  background: rgba(0, 0, 0, 0.06);
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.dark .pdf-toolbar-btn.is-active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+}
+
+.pdf-page-indicator {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+  min-width: 48px;
+  text-align: center;
+  user-select: none;
+}
+
+.dark .pdf-page-indicator {
+  color: #94a3b8;
+}
+
+.pdf-zoom-label {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+  min-width: 36px;
+  text-align: center;
+}
+
+/* ── PDF Pages ── */
+.pdf-viewer-wrap {
+  width: 100%;
+}
+
+.pdf-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 2rem;
+}
+
+.pdf-page {
+  position: relative;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  line-height: 0;
+}
+
+.pdf-page canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0.25;
+  line-height: 1;
+}
+
+.pdf-page .textLayer span,
+.pdf-page .textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+
+.pdf-page .textLayer ::selection {
+  background: rgba(0, 100, 255, 0.3);
+}
+
+.pdf-page-placeholder {
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.pdf-loading,
+.pdf-error {
+  text-align: center;
+  padding: 3rem 1rem;
+  font-size: 0.8125rem;
+  color: #64748b;
+}
+
+.pdf-error {
+  color: #dc2626;
+}
+
+/* Fullscreen */
+.pdf-viewer-wrap:fullscreen {
+  background: #525866;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.pdf-viewer-wrap:fullscreen .pdf-toolbar {
+  top: 0;
+  position: sticky;
+}
+
+/* ── Imagem ── */
+.image-viewer-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.image-viewer-wrap img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.image-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.375rem 0.75rem;
+  margin-bottom: 1rem;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  position: sticky;
+  top: 44px;
+  z-index: 40;
+}
+
+.dark .image-toolbar {
+  background: rgba(53, 56, 66, 0.95);
+  border-color: #454956;
+}
+
+.image-viewer-inner {
+  overflow: auto;
+  max-width: 100%;
+  cursor: grab;
+}
+
+.image-viewer-inner.is-dragging {
+  cursor: grabbing;
+}
+
+/* ── Texto / Leitura ── */
+.viewer-prose {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: #1e293b;
+  max-width: 100%;
+}
+
+.dark .viewer-prose {
+  color: #e2e8f0;
+}
+
+.viewer-prose h1 { font-size: 1.375rem; font-weight: 700; margin: 1.5rem 0 0.75rem; }
+.viewer-prose h2 { font-size: 1.2rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+.viewer-prose h3 { font-size: 1.05rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+.viewer-prose h4 { font-size: 0.95rem; font-weight: 600; margin: 0.875rem 0 0.375rem; }
+.viewer-prose p { margin: 0 0 0.875rem; }
+.viewer-prose ul, .viewer-prose ol { margin: 0 0 0.875rem; padding-left: 1.5rem; }
+.viewer-prose li { margin-bottom: 0.25rem; }
+.viewer-prose a { color: #475569; text-decoration: underline; }
+.dark .viewer-prose a { color: #94a3b8; }
+.viewer-prose table { width: 100%; border-collapse: collapse; margin: 0 0 1rem; font-size: 0.875rem; }
+.viewer-prose th, .viewer-prose td { border: 1px solid #e2e8f0; padding: 0.375rem 0.625rem; text-align: left; }
+.dark .viewer-prose th, .dark .viewer-prose td { border-color: #454956; }
+
+.viewer-txt {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #334155;
+}
+
+.dark .viewer-txt {
+  color: #cbd5e1;
+}
+
+/* ── Link externo ── */
+.viewer-link-block {
+  padding: 1rem 0;
+}
+
+.viewer-link-url {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #64748b;
+  word-break: break-all;
+  margin: 0.5rem 0 1rem;
+}
+
+.viewer-link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #0f172a;
+  text-decoration: none;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #cbd5e1;
+  transition: border-color 150ms;
+}
+
+.viewer-link-action:hover {
+  border-bottom-color: #0f172a;
+}
+
+.dark .viewer-link-action {
+  color: #f8fafc;
+  border-bottom-color: #525866;
+}
+
+.dark .viewer-link-action:hover {
+  border-bottom-color: #f8fafc;
+}
+
+/* ── Fallback ── */
+.viewer-fallback {
+  padding: 2rem 0;
+  text-align: center;
+}
+
+.viewer-fallback-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.25rem;
+}
+
+.dark .viewer-fallback-name {
+  color: #e2e8f0;
+}
+
+.viewer-fallback-meta {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 1rem;
+}
+
+.viewer-fallback-msg {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin-bottom: 1rem;
+}
+
+.viewer-fallback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #475569;
+  text-decoration: none;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  transition: background 150ms;
+}
+
+.viewer-fallback-btn:hover {
+  background: #f1f5f9;
+}
+
+.dark .viewer-fallback-btn {
+  color: #cbd5e1;
+  border-color: #525866;
+}
+
+.dark .viewer-fallback-btn:hover {
+  background: #3e424e;
+}
+
+/* DOCX placeholder (futuro docx-preview) */
+.viewer-docx-slot {
+  min-height: 200px;
+}
+
+.viewer-docx-notice {
+  font-size: 0.8125rem;
+  color: #64748b;
+  padding: 1rem 0;
+}
+
+/* 403 */
+.viewer-denied {
+  text-align: center;
+  padding: 4rem 1rem;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.viewer-denied h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0.75rem 0 0.375rem;
+}
+
+.viewer-denied p {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin-bottom: 1.25rem;
+}
+
+.viewer-back-link {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-decoration: none;
+}
+
+.viewer-back-link:hover {
+  color: #0f172a;
+  text-decoration: underline;
+}
+
+.dark .viewer-back-link:hover {
+  color: #f8fafc;
+}

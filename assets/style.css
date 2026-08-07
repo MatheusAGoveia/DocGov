@@ -1,0 +1,266 @@
+/* assets/style.css - Design System Limpo e Moderno (Estilo ChatGPT / SaaS Moderno) */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --font-main: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --transition-fast: 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body {
+  font-family: var(--font-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f8f9fa;
+  color: #0f172a;
+}
+
+/* Modo Escuro em Cinza Grafite Mais Claro e Neutro */
+.dark body {
+  background-color: #2c2e33;
+  color: #f8fafc;
+}
+
+/* Container de Largura Expandida */
+.max-container {
+  width: 100%;
+  max-width: 1320px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+
+@media (min-width: 640px) {
+  .max-container {
+    padding-left: 1.75rem;
+    padding-right: 1.75rem;
+  }
+}
+
+/* ==========================================================================
+   1. NAVBAR REFINADO
+   ========================================================================== */
+.site-navbar {
+  height: 58px;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.dark .site-navbar {
+  background-color: rgba(50, 53, 61, 0.94);
+  border-bottom-color: rgba(75, 80, 92, 0.8);
+}
+
+/* Item de Menu com Estado Ativo e Hover Discreto */
+.nav-link-item {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.84rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  color: #64748b;
+  transition: all var(--transition-fast);
+  text-decoration: none;
+}
+
+.dark .nav-link-item {
+  color: #a0aec0;
+}
+
+.nav-link-item:hover {
+  color: #0f172a;
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.dark .nav-link-item:hover {
+  color: #f8fafc;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.nav-link-item.active {
+  color: #0f172a;
+  font-weight: 600;
+  background-color: rgba(226, 232, 240, 0.7);
+}
+
+.dark .nav-link-item.active {
+  color: #ffffff;
+  font-weight: 600;
+  background-color: #3e424e;
+}
+
+/* User Profile Badge (Cinza Neutro sem Azul) */
+.user-avatar-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #475569;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.dark .user-avatar-badge {
+  background: #525866;
+  color: #ffffff;
+}
+
+#user-dropdown {
+  transform-origin: top right;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+#user-dropdown.hidden {
+  display: none;
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+#user-dropdown:not(.hidden) {
+  display: block;
+  opacity: 1;
+  transform: scale(1);
+}
+
+.dark #user-dropdown {
+  background-color: #32353e;
+  border-color: #4a4e5c;
+}
+
+/* ==========================================================================
+   2. CARDS E SUPERFÍCIES (Profundidade & Transição Refinada)
+   ========================================================================== */
+.nav-card {
+  border-radius: var(--radius-sm);
+  border: 1px solid #e2e8f0;
+  background-color: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+}
+
+.dark .nav-card {
+  border-color: #454956;
+  background-color: #353842;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.nav-card:hover {
+  transform: translateY(-1.5px);
+  border-color: #cbd5e1;
+  background-color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.dark .nav-card:hover {
+  border-color: #5c6274;
+  background-color: #3e424e;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+/* Seta de navegação nos cards */
+.nav-card .card-arrow {
+  transition: transform var(--transition-fast), color var(--transition-fast);
+}
+
+.nav-card:hover .card-arrow {
+  transform: translateX(3px);
+  color: #0f172a;
+}
+
+.dark .nav-card:hover .card-arrow {
+  color: #f8fafc;
+}
+
+/* ==========================================================================
+   3. INPUTS E CAMPOS DE BUSCA
+   ========================================================================== */
+.input-minimal {
+  border-radius: var(--radius-sm);
+  border: 1px solid #cbd5e1;
+  background-color: #ffffff;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.dark .input-minimal {
+  border-color: #454956;
+  background-color: #353842;
+  color: #f8fafc;
+}
+
+.input-minimal:focus {
+  outline: none;
+  border-color: #64748b;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.12);
+}
+
+.dark .input-minimal:focus {
+  border-color: #6b7285;
+  box-shadow: 0 0 0 3px rgba(107, 114, 133, 0.25);
+}
+
+/* ==========================================================================
+   4. MODAL E SOBREPOSIÇÕES
+   ========================================================================== */
+#doc-reader-modal {
+  transition: opacity 150ms ease, visibility 150ms ease;
+}
+
+#doc-reader-modal > div {
+  animation: modalFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: var(--radius-md);
+}
+
+.dark #doc-reader-modal > div {
+  background-color: #32353e;
+  border-color: #4a4e5c;
+}
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+#modal-doc-body h1 { font-size: 1.25rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; color: inherit; }
+#modal-doc-body h2 { font-size: 1.125rem; font-weight: 600; margin-top: 0.875rem; margin-bottom: 0.375rem; color: inherit; }
+#modal-doc-body h3 { font-size: 1rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.25rem; color: inherit; }
+#modal-doc-body p { margin-bottom: 0.75rem; line-height: 1.6; font-size: 0.875rem; }
+#modal-doc-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; font-size: 0.875rem; }
+#modal-doc-body li { margin-bottom: 0.25rem; }
+
+/* ==========================================================================
+   5. CUSTOM SCROLLBAR DISCRETO
+   ========================================================================== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #525866;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #6b7285;
+}
