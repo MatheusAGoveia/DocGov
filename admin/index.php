@@ -856,6 +856,70 @@ if ($loggedUser && ($loggedUser['role'] ?? '') === 'editor') {
 $rawCategorias = array_column($listCategorias, 'nome');
 $categoriasAutorizadas = $rawCategorias;
 
+// ============================================================
+// CAPACIDADES SEMÂNTICAS DO USUÁRIO ATUAL
+// Calculadas aqui para serem usadas nos formulários do frontend.
+// O backend já protege os endpoints - isso é apenas UX.
+// ============================================================
+$_currentUserId = (int)($loggedUser['id'] ?? 0);
+$_canCreateCat    = $permService->canCreateCategory($_currentUserId);
+$_canCreateAnySub = false;
+$_canCreateAnyAss = false;
+$_canCreateAnyDoc = false;
+
+// Listas filtradas para cada formulário de criação (somente onde o usuário tem capacidade)
+// Para Subcategoria: categorias onde canCreateSubcategory = true
+$catsParaSubcategoria = array_values(array_filter($listCategorias, function($c) use ($permService, $_currentUserId) {
+    return $permService->canCreateSubcategory($_currentUserId, (int)$c['id']);
+}));
+$_canCreateAnySub = !empty($catsParaSubcategoria);
+
+// Para Assunto: subcategorias onde canCreateSubject = true
+$subcatsParaAssunto = array_values(array_filter($listSubcategorias, function($sc) use ($permService, $_currentUserId) {
+    return $permService->canCreateSubject($_currentUserId, (int)$sc['id']);
+}));
+$_canCreateAnyAss = !empty($subcatsParaAssunto);
+
+// Para Documento: assuntos onde canCreateDocument = true
+$assuntosParaDocumento = array_values(array_filter($listAssuntos, function($s) use ($permService, $_currentUserId) {
+    return $permService->canCreateDocument($_currentUserId, (int)$s['id']);
+}));
+$_canCreateAnyDoc = !empty($assuntosParaDocumento);
+
+// Subcategorias acessíveis para Documento (derivado dos assuntos autorizados)
+$subcatIdsParaDoc = array_unique(array_column($assuntosParaDocumento, 'subcategory_id'));
+$subcatsParaDocumento = array_values(array_filter($listSubcategorias, function($sc) use ($subcatIdsParaDoc) {
+    return in_array((int)$sc['id'], $subcatIdsParaDoc);
+}));
+// Categorias acessíveis para Documento
+$catIdsParaDoc = array_unique(array_column($subcatsParaDocumento, 'category_id'));
+$catsParaDocumento = array_values(array_filter($listCategorias, function($c) use ($catIdsParaDoc) {
+    return in_array((int)$c['id'], $catIdsParaDoc);
+}));
+
+// Categorias visíveis para Assunto (derivado das subcategorias autorizadas)
+$catIdsParaAss = array_unique(array_column($subcatsParaAssunto, 'category_id'));
+$catsParaAssunto = array_values(array_filter($listCategorias, function($c) use ($catIdsParaAss) {
+    return in_array((int)$c['id'], $catIdsParaAss);
+}));
+
+// Usuário tem alguma capacidade de escrita?
+$_hasAnyWriteCapability = $_canCreateCat || $_canCreateAnySub || $_canCreateAnyAss || $_canCreateAnyDoc;
+
+// Mapas para uso no JavaScript (JSON embutido na página)
+$mapSubcatsParaAssunto   = []; // [cat_id => [subcat_id => subcat_nome]]
+foreach ($subcatsParaAssunto as $sc) {
+    $mapSubcatsParaAssunto[(int)$sc['category_id']][] = ['id' => (int)$sc['id'], 'nome' => $sc['nome']];
+}
+$mapAssuntosParaDocumento = []; // [subcat_id => [subj_id => subj_nome]]
+foreach ($assuntosParaDocumento as $s) {
+    $mapAssuntosParaDocumento[(int)$s['subcategory_id']][] = ['id' => (int)$s['id'], 'nome' => $s['nome']];
+}
+$mapSubcatsParaDocumento = []; // [cat_id => [subcat_id => subcat_nome]]
+foreach ($subcatsParaDocumento as $sc) {
+    $mapSubcatsParaDocumento[(int)$sc['category_id']][] = ['id' => (int)$sc['id'], 'nome' => $sc['nome']];
+}
+
 // Mapeamento Completo da Árvore Hierárquica
 $treeStructure = [];
 foreach ($listCategorias as $catItem) {
@@ -1453,7 +1517,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                                                             <svg class="w-3 h-3 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                                                                                             <span class="truncate"><?= htmlspecialchars($dItem['titulo']) ?></span>
                                                                                         </a>
+                                                                                        <?php if ($permService->canEditDocument($_currentUserId, (int)$dItem['id'])): ?>
                                                                                         <a href="index.php?tab=novo_documento&edit=<?= $dItem['id'] ?>" class="text-[9px] font-semibold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 ml-1 text-decoration-none">Editar</a>
+                                                                                        <?php endif; ?>
                                                                                     </div>
                                                                                 <?php endforeach; ?>
                                                                             </div>
@@ -1549,9 +1615,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                 <span class="text-[10px] font-bold uppercase text-slate-400 block">Editando Subcategoria</span>
                                                 <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($selSubItem['nome']) ?></h2>
                                             </div>
+                                            <?php if ($permService->canCreateSubject($_currentUserId, (int)$selSubItem['id'])): ?>
                                             <a href="index.php?tab=editar_estrutura&type=assunto_new&sub=<?= urlencode($selSubItem['nome']) ?>" class="px-3 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold text-xs rounded shadow-xs">
                                                 + Novo Assunto nesta Subcategoria
                                             </a>
+                                            <?php endif; ?>
                                         </div>
 
                                         <form method="POST" action="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $selSubItem['id'] ?>" class="space-y-4">
@@ -1650,9 +1718,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                     </div>
                                                     <p class="text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Nenhum conteúdo neste assunto.</p>
                                                     <p class="text-[11px] text-slate-400 mb-4">Adicione o primeiro documento para organizar este assunto.</p>
+                                                    <?php if ($permService->canCreateDocument($_currentUserId, (int)$selAssItem['id'])): ?>
                                                     <a href="index.php?tab=novo_documento&cat=<?= urlencode($parentCatName) ?>&subcat=<?= urlencode($selAssItem['subcategoria_nome']) ?>&assunto=<?= urlencode($selAssItem['nome']) ?>" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold shadow-xs text-decoration-none">
                                                         + Adicionar conteúdo
                                                     </a>
+                                                    <?php endif; ?>
                                                 </div>
                                             <?php else: ?>
                                                 <!-- GRIDSTACK CONTAINER BASE -->
@@ -1700,6 +1770,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         </div>
 
                                         <!-- COMPACT DETALHES DE METADADOS DO ASSUNTO -->
+                                        <?php if ($permService->canEditSubject($_currentUserId, (int)$selAssItem['id'])): ?>
                                         <details class="pt-4 border-t border-slate-100 dark:border-[#454956]">
                                             <summary class="text-xs font-bold text-slate-500 cursor-pointer hover:text-slate-800 dark:hover:text-slate-200">
                                                 Editar Dados do Assunto (Nome)
@@ -1727,6 +1798,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                 </div>
                                             </form>
                                         </details>
+                                        <?php endif; ?>
                                     </div>
                                 <?php endif; ?>
 
@@ -2343,16 +2415,20 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     Categoria
                                 </button>
                                 <?php endif; ?>
+                                <?php if ($_canCreateAnySub): ?>
                                 <button type="button" id="nc-btn-subcategoria" onclick="ncSwitchType('subcategoria')" role="tab"
                                     class="nc-type-btn px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 flex items-center gap-1.5">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
                                     Subcategoria
                                 </button>
+                                <?php endif; ?>
+                                <?php if ($_canCreateAnyAss): ?>
                                 <button type="button" id="nc-btn-assunto" onclick="ncSwitchType('assunto')" role="tab"
                                     class="nc-type-btn px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 flex items-center gap-1.5">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
                                     Assunto
                                 </button>
+                                <?php endif; ?>
                             </div>
                             <?php endif; ?>
                         </div>
@@ -2393,9 +2469,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Categoria *</label>
                                             <select id="select-cat" name="categoria" required onchange="onCategoryChange()" class="input-minimal w-full px-2.5 py-1.5 text-xs">
                                                 <option value="">-- Selecione ▾ --</option>
-                                                <?php foreach ($categoriasAutorizadas as $catOption): ?>
-                                                    <option value="<?= htmlspecialchars($catOption) ?>" <?= ($editDoc['categoria'] ?? ($_GET['cat'] ?? '')) === $catOption ? 'selected' : '' ?>>
-                                                        <?= htmlspecialchars($catOption) ?>
+                                                <?php foreach ($catsParaDocumento as $catDoc): ?>
+                                                    <option value="<?= htmlspecialchars($catDoc['nome']) ?>" <?= ($editDoc['categoria'] ?? ($_GET['cat'] ?? '')) === $catDoc['nome'] ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($catDoc['nome']) ?>
                                                     </option>
                                                 <?php endforeach; ?>
                                             </select>
@@ -2542,10 +2618,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoria Pai *</label>
                                     <select id="nc-sub-cat" name="categoria_nome" required class="input-minimal w-full px-3 py-2 text-xs">
                                         <option value="">-- Selecione uma Categoria --</option>
-                                        <?php foreach ($listCategorias as $catItem): ?>
-                                            <?php if ($catItem['status'] === 'ativo'): ?>
-                                            <option value="<?= htmlspecialchars($catItem['nome']) ?>"><?= htmlspecialchars($catItem['nome']) ?></option>
-                                            <?php endif; ?>
+                                        <?php foreach ($catsParaSubcategoria as $catSub): ?>
+                                            <option value="<?= htmlspecialchars($catSub['nome']) ?>"><?= htmlspecialchars($catSub['nome']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -2589,10 +2663,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoria *</label>
                                     <select id="nc-ass-cat" name="_cat_aux" required onchange="ncLoadSubcatsForAssunto()" class="input-minimal w-full px-3 py-2 text-xs">
                                         <option value="">-- Selecione a Categoria --</option>
-                                        <?php foreach ($listCategorias as $catItem): ?>
-                                            <?php if ($catItem['status'] === 'ativo'): ?>
-                                            <option value="<?= htmlspecialchars($catItem['nome']) ?>"><?= htmlspecialchars($catItem['nome']) ?></option>
-                                            <?php endif; ?>
+                                        <?php foreach ($catsParaAssunto as $catAss): ?>
+                                            <option value="<?= htmlspecialchars($catAss['id']) ?>"><?= htmlspecialchars($catAss['nome']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -4303,6 +4375,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 }
             }
 
+            // Mapa de subcategorias por categoria (nome → subcategorias autorizadas para documento)
+            const ncDocSubcatsByCatName = <?= json_encode(array_reduce($catsParaDocumento, function($carry, $cat) use ($mapSubcatsParaDocumento) {
+                $carry[$cat['nome']] = $mapSubcatsParaDocumento[$cat['id']] ?? [];
+                return $carry;
+            }, [])) ?>;
+            // Mapa de assuntos por subcategoria (nome → assuntos autorizados para documento)
+            const ncDocAssuntosBySubcatName = <?= json_encode(array_reduce($subcatsParaDocumento, function($carry, $sc) use ($mapAssuntosParaDocumento) {
+                $carry[$sc['nome']] = $mapAssuntosParaDocumento[$sc['id']] ?? [];
+                return $carry;
+            }, [])) ?>;
+
             function onCategoryChange() {
                 const cat = document.getElementById('select-cat').value;
                 const subSelect = document.getElementById('select-subcat');
@@ -4311,28 +4394,27 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 subSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
                 assSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
 
-                if (cat && hierarchyDataFilter[cat]) {
-                    Object.keys(hierarchyDataFilter[cat]).forEach(sub => {
+                if (cat && ncDocSubcatsByCatName[cat]) {
+                    ncDocSubcatsByCatName[cat].forEach(sc => {
                         const opt = document.createElement('option');
-                        opt.value = sub;
-                        opt.textContent = sub;
+                        opt.value = sc.nome;
+                        opt.textContent = sc.nome;
                         subSelect.appendChild(opt);
                     });
                 }
             }
 
             function onSubcategoryChange() {
-                const cat = document.getElementById('select-cat').value;
                 const sub = document.getElementById('select-subcat').value;
                 const assSelect = document.getElementById('select-assunto');
 
                 assSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
 
-                if (cat && sub && hierarchyDataFilter[cat] && hierarchyDataFilter[cat][sub]) {
-                    hierarchyDataFilter[cat][sub].forEach(ass => {
+                if (sub && ncDocAssuntosBySubcatName[sub]) {
+                    ncDocAssuntosBySubcatName[sub].forEach(s => {
                         const opt = document.createElement('option');
-                        opt.value = ass;
-                        opt.textContent = ass;
+                        opt.value = s.nome;
+                        opt.textContent = s.nome;
                         assSelect.appendChild(opt);
                     });
                 }
@@ -4380,20 +4462,24 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
             // Carrega subcategorias dependentes de categoria no formulário de Assunto
             const hierarchyDataNC = <?= json_encode($hierarchyMap) ?>;
+            // Mapas de subcategorias/assuntos filtrados por permissão (para formulários de criação)
+            const ncSubcatsParaAssunto   = <?= json_encode($mapSubcatsParaAssunto) ?>;
+            const ncSubcatsParaDocumento = <?= json_encode($mapSubcatsParaDocumento) ?>;
+            const ncAssuntosParaDocumento = <?= json_encode($mapAssuntosParaDocumento) ?>;
 
             function ncLoadSubcatsForAssunto() {
                 const catEl = document.getElementById('nc-ass-cat');
                 const subEl = document.getElementById('nc-ass-subcat');
                 if (!catEl || !subEl) return;
 
-                const cat = catEl.value;
+                const catId = parseInt(catEl.value, 10);
                 subEl.innerHTML = '<option value="">-- Selecione a Subcategoria --</option>';
 
-                if (cat && hierarchyDataNC[cat]) {
-                    Object.keys(hierarchyDataNC[cat]).forEach(sub => {
+                if (catId && ncSubcatsParaAssunto[catId]) {
+                    ncSubcatsParaAssunto[catId].forEach(sc => {
                         const opt = document.createElement('option');
-                        opt.value = sub;
-                        opt.textContent = sub;
+                        opt.value = sc.nome;
+                        opt.textContent = sc.nome;
                         subEl.appendChild(opt);
                     });
                 }
