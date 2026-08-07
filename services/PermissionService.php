@@ -37,9 +37,11 @@ class PermissionService {
     }
 
     /**
-     * Verifica se um usuário possui o papel de Admin Global (users.role = 'admin')
+     * Verifica se um usuário possui o papel exclusivo de Admin Global (users.role = 'admin').
+     * Permissões de recurso ('admin' em Categoria/Subcategoria/Assunto) NÃO transformam o usuário em Admin Global.
      */
-    public function isGlobalAdmin(int $userId): bool {
+    public function isGlobalAdmin(?int $userId): bool {
+        $userId = (int)($userId ?? 0);
         if ($userId <= 0) {
             return false;
         }
@@ -48,7 +50,7 @@ class PermissionService {
         $stmt->execute([$userId]);
         $role = $stmt->fetchColumn();
 
-        return $role === 'admin';
+        return strtolower(trim((string)$role)) === 'admin';
     }
 
     /**
