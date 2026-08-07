@@ -1126,7 +1126,17 @@ class PermissionService {
     }
 
     public function canEditCategory(?int $userId, int $categoryId): bool {
-        return $this->canEdit((int)$userId, 'category', $categoryId);
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0 || $categoryId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $perm = $this->getEffectiveCategoryPermission($userId, $categoryId);
+        return ($perm['effective_level'] ?? 'none') === 'admin';
     }
 
     public function canEditSubcategory(?int $userId, int $subcategoryId): bool {
