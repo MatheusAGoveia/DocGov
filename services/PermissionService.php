@@ -550,4 +550,216 @@ class PermissionService {
         $stmt = $this->pdo->prepare("DELETE FROM permissions WHERE id = ?");
         return $stmt->execute([$permissionId]);
     }
+
+    /**
+     * Retorna a lista de permissões concedidas a um Grupo de Acesso específico (Visão do Grupo)
+     */
+    public function getGroupPermissions(int $groupId, bool $includeInherited = false): array {
+        if ($groupId <= 0) {
+            return [];
+        }
+
+        // 1. Buscar todas as regras diretas do grupo na tabela permissions
+        $sql = "
+            SELECT 
+                p.id AS permission_id,
+                p.category_id,
+                p.subcategory_id,
+                p.subject_id,
+                p.permission_level,
+                p.created_at,
+                c.name AS category_name,
+                sc.name AS subcategory_name,
+                c_sub.name AS subcat_parent_cat_name,
+                s.name AS subject_name,
+                sc_subj.name AS subj_parent_subcat_name,
+                c_subj.name AS subj_parent_cat_name
+            FROM permissions p
+            LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN subcategories sc ON p.subcategory_id = sc.id
+            LEFT JOIN categories c_sub ON sc.category_id = c_sub.id
+            LEFT JOIN subjects s ON p.subject_id = s.id
+            LEFT JOIN subcategories sc_subj ON s.subcategory_id = sc_subj.id
+            LEFT JOIN categories c_subj ON sc_subj.category_id = c_subj.id
+            WHERE p.group_id = ?
+            ORDER BY p.id ASC
+        ";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([$groupId]);
+        $directRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $results = [];
+        $directResourceKeys = [];
+
+        foreach ($directRows as $row) {
+            $resType = !empty($row['category_id']) ? 'category' : (!empty($row['subcategory_id']) ? 'subcategory' : 'subject');
+            $resId = !empty($row['category_id']) ? (int)$row['category_id'] : (!empty($row['subcategory_id']) ? (int)$row['subcategory_id'] : (int)$row['subject_id']);
+
+            $pathName = '';
+            $typeLabel = '';
+
+            if ($resType === 'category') {
+                $pathName = $row['category_name'];
+                $typeLabel = 'Categoria';
+            } elseif ($resType === 'subcategory') {
+                $pathName = $row['subcat_parent_cat_name'] . ' / ' . $row['subcategory_name'];
+                $typeLabel = 'Subcategoria';
+            } else {
+                $pathName = $row['subj_parent_cat_name'] . ' / ' . $row['subj_parent_subcat_name'] . ' / ' . $row['subject_name'];
+                $typeLabel = 'Assunto';
+            }
+
+            $key = "{$resType}_{$resId}";
+            $directResourceKeys[$key] = true;
+
+            $results[] = [
+                'permission_id'   => (int)$row['permission_id'],
+                'resource_type'   => $resType,
+                'resource_id'     => $resId,
+                'resource_path'   => $pathName,
+                'resource_type_label' => $typeLabel,
+                'permission_level'=> strtolower($row['permission_level']),
+                'is_direct'       => true,
+                'origin_label'    => 'Direta',
+                'ancestor_info'   => null
+            ];
+        }
+
+        // 2. Se includeInherited for verdadeiro, expandir os descendentes das regras de nível superior
+        if ($includeInherited) {
+            foreach ($directRows as $row) {
+                $level = strtolower($row['permission_level']);
+
+                // Se a regra é em Categoria, expandir subcategorias e assuntos
+                if (!empty($row['category_id'])) {
+                    $catId = (int)$row['category_id'];
+                    $catName = $row['category_name'];
+
+                    // Subcategorias da categoria
+                    $stmtSubs = $this->pdo->prepare("SELECT id, name FROM subcategories WHERE category_id = ? ORDER BY name ASC");
+                    $stmtSubs->execute([$catId]);
+                    $subs = $stmtSubs->fetchAll(PDO::FETCH_ASSOC);
+
+                    foreach ($subs as $sub) {
+                        $subKey = "subcategory_" . $sub['id'];
+                        if (!isset($directResourceKeys[$subKey])) {
+                            $results[] = [
+                                'permission_id'   => 0,
+                                'resource_type'   => 'subcategory',
+                                'resource_id'     => (int)$sub['id'],
+                                'resource_path'   => $catName . ' / ' . $sub['name'],
+                                'resource_type_label' => 'Subcategoria',
+                                'permission_level'=> $level,
+                                'is_direct'       => false,
+                                'origin_label'    => 'Herdado de ' . $catName,
+                                'ancestor_info'   => ['type' => 'category', 'id' => $catId, 'name' => $catName]
+                            ];
+                        }
+
+                        // Assuntos da subcategoria
+                        $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ? ORDER BY name ASC");
+                        $stmtSubjs->execute([$sub['id']]);
+                        $subjs = $stmtSubjs->fetchAll(PDO::FETCH_ASSOC);
+
+                        foreach ($subjs as $subj) {
+                            $subjKey = "subject_" . $subj['id'];
+                            if (!isset($directResourceKeys[$subjKey])) {
+                                $results[] = [
+                                    'permission_id'   => 0,
+                                    'resource_type'   => 'subject',
+                                    'resource_id'     => (int)$subj['id'],
+                                    'resource_path'   => $catName . ' / ' . $sub['name'] . ' / ' . $subj['name'],
+                                    'resource_type_label' => 'Assunto',
+                                    'permission_level'=> $level,
+                                    'is_direct'       => false,
+                                    'origin_label'    => 'Herdado de ' . $catName,
+                                    'ancestor_info'   => ['type' => 'category', 'id' => $catId, 'name' => $catName]
+                                ];
+                            }
+                        }
+                    }
+                }
+
+                // Se a regra é em Subcategoria, expandir assuntos
+                if (!empty($row['subcategory_id'])) {
+                    $subId = (int)$row['subcategory_id'];
+                    $subPath = $row['subcat_parent_cat_name'] . ' / ' . $row['subcategory_name'];
+
+                    $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ? ORDER BY name ASC");
+                    $stmtSubjs->execute([$subId]);
+                    $subjs = $stmtSubjs->fetchAll(PDO::FETCH_ASSOC);
+
+                    foreach ($subjs as $subj) {
+                        $subjKey = "subject_" . $subj['id'];
+                        if (!isset($directResourceKeys[$subjKey])) {
+                            $results[] = [
+                                'permission_id'   => 0,
+                                'resource_type'   => 'subject',
+                                'resource_id'     => (int)$subj['id'],
+                                'resource_path'   => $subPath . ' / ' . $subj['name'],
+                                'resource_type_label' => 'Assunto',
+                                'permission_level'=> $level,
+                                'is_direct'       => false,
+                                'origin_label'    => 'Herdado de ' . $row['subcategory_name'],
+                                'ancestor_info'   => ['type' => 'subcategory', 'id' => $subId, 'name' => $row['subcategory_name']]
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Retorna a árvore hierárquica compacta da estrutura (Categorias -> Subcategorias -> Assuntos) sem documentos
+     */
+    public function getResourceTree(): array {
+        $tree = [];
+
+        $stmtCats = $this->pdo->query("SELECT id, name FROM categories WHERE active = TRUE ORDER BY name ASC");
+        $categories = $stmtCats->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($categories as $cat) {
+            $catItem = [
+                'type' => 'category',
+                'id' => (int)$cat['id'],
+                'name' => $cat['name'],
+                'subcategories' => []
+            ];
+
+            $stmtSubs = $this->pdo->prepare("SELECT id, name FROM subcategories WHERE category_id = ? AND active = TRUE ORDER BY name ASC");
+            $stmtSubs->execute([$cat['id']]);
+            $subcategories = $stmtSubs->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($subcategories as $sub) {
+                $subItem = [
+                    'type' => 'subcategory',
+                    'id' => (int)$sub['id'],
+                    'name' => $sub['name'],
+                    'subjects' => []
+                ];
+
+                $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ? AND active = TRUE ORDER BY name ASC");
+                $stmtSubjs->execute([$sub['id']]);
+                $subjects = $stmtSubjs->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($subjects as $subj) {
+                    $subItem['subjects'][] = [
+                        'type' => 'subject',
+                        'id' => (int)$subj['id'],
+                        'name' => $subj['name']
+                    ];
+                }
+
+                $catItem['subcategories'][] = $subItem;
+            }
+
+            $tree[] = $catItem;
+        }
+
+        return $tree;
+    }
 }

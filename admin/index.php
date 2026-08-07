@@ -158,6 +158,65 @@ if ($isLogged) {
         }
     }
 
+    // 0.0.1 PROCESSAMENTO DE PERMISSÕES DA VISÃO DO GRUPO (GRUPO -> PERMISSÕES)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['group_permission_action'])) {
+        if (($loggedUser['role'] ?? '') !== 'admin') {
+            $errorMessage = "Apenas administradores podem gerenciar permissões de grupos.";
+        } else {
+            require_once __DIR__ . '/../services/PermissionService.php';
+            $permService = new PermissionService($pdo);
+
+            $grpPermAction = $_POST['group_permission_action'];
+            $groupId = (int)($_POST['group_id'] ?? 0);
+
+            if ($groupId <= 0) {
+                $errorMessage = "Grupo de acesso inválido.";
+            } else {
+                if ($grpPermAction === 'add_group_access') {
+                    $resType = trim($_POST['resource_type'] ?? '');
+                    $resId = (int)($_POST['resource_id'] ?? 0);
+                    $permLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
+
+                    if (!in_array($resType, ['category', 'subcategory', 'subject']) || $resId <= 0) {
+                        $errorMessage = "Selecione uma Categoria, Subcategoria ou Assunto válido.";
+                    } elseif (!in_array($permLevel, ['view', 'edit', 'admin'])) {
+                        $errorMessage = "Nível de permissão inválido.";
+                    } else {
+                        try {
+                            $permService->saveResourcePermission($resType, $resId, null, $groupId, $permLevel, (int)($loggedUser['id'] ?? 0));
+                            header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=access_saved");
+                            exit;
+                        } catch (Exception $e) {
+                            $errorMessage = "Erro ao conceder acesso ao grupo: " . $e->getMessage();
+                        }
+                    }
+                }
+
+                if ($grpPermAction === 'update_group_level') {
+                    $permId = (int)($_POST['permission_id'] ?? 0);
+                    $newLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
+
+                    if ($permId > 0 && in_array($newLevel, ['view', 'edit', 'admin'])) {
+                        $stmtUpd = $pdo->prepare("UPDATE permissions SET permission_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND group_id = ?");
+                        $stmtUpd->execute([$newLevel, $permId, $groupId]);
+                        header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=level_updated");
+                        exit;
+                    }
+                }
+
+                if ($grpPermAction === 'delete_group_permission') {
+                    $permId = (int)($_POST['permission_id'] ?? 0);
+                    if ($permId > 0) {
+                        $stmtDel = $pdo->prepare("DELETE FROM permissions WHERE id = ? AND group_id = ?");
+                        $stmtDel->execute([$permId, $groupId]);
+                        header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=access_deleted");
+                        exit;
+                    }
+                }
+            }
+        }
+    }
+
     // 0. PROCESSAMENTO DE AÇÕES DE GRUPOS DE ACESSO (APENAS ADMIN)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['group_action'])) {
         if (($loggedUser['role'] ?? '') !== 'admin') {
@@ -3585,56 +3644,286 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         <?php endif; ?>
 
-                        <!-- CONTEÚDO DA ABA 3: PERMISSÕES -->
+                        <!-- CONTEÚDO DA ABA 3: PERMISSÕES (VISÃO DO GRUPO) -->
                         <?php if ($groupTab === 'permissions'): ?>
                             <?php
-                                $stmtPerms = $pdo->prepare("
-                                    SELECT p.id, p.permission_level,
-                                           c.name AS cat_name, sc.name AS subcat_name, s.name AS subj_name
-                                    FROM permissions p
-                                    LEFT JOIN categories c ON p.category_id = c.id
-                                    LEFT JOIN subcategories sc ON p.subcategory_id = sc.id
-                                    LEFT JOIN subjects s ON p.subject_id = s.id
-                                    WHERE p.group_id = ?
-                                    ORDER BY p.id ASC
-                                ");
-                                $stmtPerms->execute([$groupId]);
-                                $grpPermissions = $stmtPerms->fetchAll(PDO::FETCH_ASSOC);
+                                $showInherited = isset($_GET['show_inherited']) && $_GET['show_inherited'] == '1';
+                                $groupPermissions = $permService->getGroupPermissions($groupId, $showInherited);
+                                $resourceTree = $permService->getResourceTree();
                             ?>
                             <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
-                                <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
+                                <!-- CABEÇALHO DA TABELA E CONTROLES -->
+                                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-[#454956]">
                                     <div>
-                                        <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Permissões de Acesso do Grupo</h3>
-                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Regras de acesso concedidas a este grupo na tabela de permissões.</p>
+                                        <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Recursos acessíveis por este grupo</h3>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Áreas e pastas com permissões concedidas a <strong><?= htmlspecialchars($grpData['name']) ?></strong>.</p>
                                     </div>
-                                    <span class="px-2.5 py-1 text-xs font-bold rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300">
-                                        <?= count($grpPermissions) ?> regra(s) cadastrada(s)
-                                    </span>
+                                    <div class="flex items-center gap-3">
+                                        <!-- TOGGLE / CHECKBOX: MOSTRAR ACESSOS HERDADOS -->
+                                        <label class="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer bg-slate-100 dark:bg-[#2c2e33] px-2.5 py-1.5 rounded border border-slate-200 dark:border-[#454956]">
+                                            <input type="checkbox" onchange="window.location.href='index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions&show_inherited=' + (this.checked ? '1' : '0')" <?= $showInherited ? 'checked' : '' ?> class="rounded border-slate-300">
+                                            <span>Mostrar acessos herdados</span>
+                                        </label>
+
+                                        <!-- BOTÃO: + ADICIONAR ACESSO -->
+                                        <button type="button" onclick="openAddGroupAccessModal()" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
+                                            <span>+ Adicionar acesso</span>
+                                        </button>
+                                    </div>
                                 </div>
 
-                                <?php if (empty($grpPermissions)): ?>
-                                    <div class="p-6 text-center text-slate-400 text-xs bg-slate-50 dark:bg-[#2c2e33] rounded">
-                                        Nenhuma regra de permissão cadastrada para este grupo ainda.
-                                        <p class="mt-1 text-[11px] text-slate-500">A interface de configuração gráfica por pasta será disponibilizada na próxima etapa.</p>
+                                <!-- TABELA DE ACESSOS DO GRUPO -->
+                                <?php if (empty($groupPermissions)): ?>
+                                    <div class="p-8 text-center text-slate-400 text-xs bg-slate-50 dark:bg-[#2c2e33] rounded">
+                                        Nenhum acesso configurado diretamente para este grupo<?= $showInherited ? ' ou herdado de pastas pai' : '' ?>.
                                     </div>
                                 <?php else: ?>
-                                    <div class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                        <?php foreach ($grpPermissions as $pRule): ?>
-                                            <?php
-                                                $resName = $pRule['cat_name'] ?: ($pRule['subcat_name'] ?: $pRule['subj_name']);
-                                                $resKind = $pRule['cat_name'] ? 'Categoria' : ($pRule['subcat_name'] ? 'Subcategoria' : 'Assunto');
-                                            ?>
-                                            <div class="py-2.5 flex items-center justify-between text-xs">
-                                                <div>
-                                                    <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($resKind) ?>: <?= htmlspecialchars($resName) ?></span>
-                                                </div>
-                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-amber-500/15 text-amber-600 border border-amber-500/30 uppercase">
-                                                    <?= htmlspecialchars(strtoupper($pRule['permission_level'])) ?>
-                                                </span>
-                                            </div>
-                                        <?php endforeach; ?>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-left text-xs border-collapse">
+                                            <thead>
+                                                <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                                    <th class="py-2.5 px-4">Recurso</th>
+                                                    <th class="py-2.5 px-4 text-center w-36">Permissão</th>
+                                                    <th class="py-2.5 px-4 text-left w-56">Origem</th>
+                                                    <th class="py-2.5 px-4 text-right w-24">Ações</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                                <?php foreach ($groupPermissions as $gPerm): ?>
+                                                    <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
+                                                        <!-- RECURSO (NOME DO CAMINHO + TIPO) -->
+                                                        <td class="py-2.5 px-4">
+                                                            <div class="flex items-center gap-2">
+                                                                <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                                                                <div>
+                                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block leading-tight">
+                                                                        <?= htmlspecialchars($gPerm['resource_path']) ?>
+                                                                    </span>
+                                                                    <span class="text-[10px] text-slate-400 font-mono block leading-tight">
+                                                                        <?= htmlspecialchars($gPerm['resource_type_label']) ?>
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+
+                                                        <!-- PERMISSÃO (VIEW / EDIT / ADMIN) -->
+                                                        <td class="py-2.5 px-4 text-center">
+                                                            <?php if ($gPerm['is_direct']): ?>
+                                                                <!-- ALTERAÇÃO DIRETA DO NÍVEL DO GRUPO -->
+                                                                <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" class="inline">
+                                                                    <input type="hidden" name="group_permission_action" value="update_group_level">
+                                                                    <input type="hidden" name="group_id" value="<?= $groupId ?>">
+                                                                    <input type="hidden" name="permission_id" value="<?= $gPerm['permission_id'] ?>">
+                                                                    <select name="permission_level" onchange="this.form.submit()" class="text-xs font-semibold px-2 py-1 rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 cursor-pointer">
+                                                                        <option value="view" <?= $gPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
+                                                                        <option value="edit" <?= $gPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
+                                                                        <option value="admin" <?= $gPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
+                                                                    </select>
+                                                                </form>
+                                                            <?php else: ?>
+                                                                <!-- LEITURA DE REGRA HERDADA -->
+                                                                <?php
+                                                                    $lvlClass = 'bg-slate-100 text-slate-700';
+                                                                    if ($gPerm['permission_level'] === 'view') $lvlClass = 'bg-blue-500/15 text-blue-700 border-blue-500/30';
+                                                                    if ($gPerm['permission_level'] === 'edit') $lvlClass = 'bg-amber-500/15 text-amber-700 border-amber-500/30';
+                                                                    if ($gPerm['permission_level'] === 'admin') $lvlClass = 'bg-red-500/15 text-red-700 border-red-500/30';
+                                                                ?>
+                                                                <span class="px-2.5 py-0.5 text-[10px] font-bold rounded border uppercase <?= $lvlClass ?>">
+                                                                    <?= strtoupper($gPerm['permission_level']) ?>
+                                                                </span>
+                                                            <?php endif; ?>
+                                                        </td>
+
+                                                        <!-- ORIGEM (DIRETA OU HERDADA) -->
+                                                        <td class="py-2.5 px-4 text-left">
+                                                            <?php if ($gPerm['is_direct']): ?>
+                                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 uppercase">
+                                                                    Direta
+                                                                </span>
+                                                            <?php else: ?>
+                                                                <div class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                                                                    <span><?= htmlspecialchars($gPerm['origin_label']) ?></span>
+                                                                    <?php if (!empty($gPerm['ancestor_info'])): ?>
+                                                                        <a href="index.php?tab=editar_estrutura&type=<?= $gPerm['ancestor_info']['type'] ?>&id=<?= $gPerm['ancestor_info']['id'] ?>&res_tab=permissions" class="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline">
+                                                                            (Ver pasta)
+                                                                        </a>
+                                                                    <?php endif; ?>
+                                                                </div>
+                                                            <?php endif; ?>
+                                                        </td>
+
+                                                        <!-- AÇÕES (REMOVER ACESSO DIRETO DO GRUPO) -->
+                                                        <td class="py-2.5 px-4 text-right">
+                                                            <?php if ($gPerm['is_direct']): ?>
+                                                                <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" onsubmit="return confirm('Deseja remover este acesso direto do grupo <?= htmlspecialchars(addslashes($grpData['name'])) ?>?');" class="inline">
+                                                                    <input type="hidden" name="group_permission_action" value="delete_group_permission">
+                                                                    <input type="hidden" name="group_id" value="<?= $groupId ?>">
+                                                                    <input type="hidden" name="permission_id" value="<?= $gPerm['permission_id'] ?>">
+                                                                    <button type="submit" class="px-2 py-1 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 text-[11px] font-semibold" title="Remover Regra Direta">
+                                                                        Remover
+                                                                    </button>
+                                                                </form>
+                                                            <?php else: ?>
+                                                                <span class="text-slate-300 dark:text-slate-600 text-xs">—</span>
+                                                            <?php endif; ?>
+                                                        </td>
+                                                    </tr>
+                                                <?php endforeach; ?>
+                                            </tbody>
+                                        </table>
                                     </div>
                                 <?php endif; ?>
+
+                                <!-- MODAL DE ADICIONAR ACESSO A RECURSO PELA ÁRVORE COMPACTA -->
+                                <div id="modal-add-group-access" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-add-group-access-title">
+                                    <div id="modal-add-group-access-card" class="bg-white dark:bg-[#353842] max-w-lg w-full p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xl space-y-4 text-xs">
+                                        
+                                        <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-[#454956]">
+                                            <h3 id="modal-add-group-access-title" class="text-sm font-bold text-slate-900 dark:text-slate-100">Adicionar acesso ao grupo</h3>
+                                            <button type="button" onclick="closeAddGroupAccessModal()" class="text-slate-400 hover:text-slate-600 focus:outline-hidden text-sm p-1 rounded" aria-label="Fechar modal">✕</button>
+                                        </div>
+
+                                        <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" id="form-add-group-access" class="space-y-4">
+                                            <input type="hidden" name="group_permission_action" value="add_group_access">
+                                            <input type="hidden" name="group_id" value="<?= $groupId ?>">
+                                            <input type="hidden" name="resource_type" id="input-group-res-type" value="">
+                                            <input type="hidden" name="resource_id" id="input-group-res-id" value="">
+
+                                            <!-- ÁRVORE COMPACTA DE NAVEGAÇÃO -->
+                                            <div>
+                                                <div class="flex items-center justify-between mb-1.5">
+                                                    <label class="font-semibold text-slate-700 dark:text-slate-300">Selecione o Recurso na Árvore *</label>
+                                                    <input type="text" id="tree-search-input" oninput="filterTreeNodes(this.value)" placeholder="Filtrar pastas..." class="input-minimal px-2.5 py-1 text-[11px] rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
+                                                </div>
+
+                                                <div id="tree-container" class="max-h-56 overflow-y-auto border border-slate-200 dark:border-[#454956] rounded bg-slate-50/50 dark:bg-[#2c2e33]/50 p-2 font-mono text-[11px] space-y-1">
+                                                    <?php foreach ($resourceTree as $catItem): ?>
+                                                        <div class="tree-node-cat" data-name="<?= mb_strtolower($catItem['name']) ?>">
+                                                            <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer font-bold text-slate-900 dark:text-slate-100">
+                                                                <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('category', <?= $catItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
+                                                                <span>📁 <?= htmlspecialchars($catItem['name']) ?></span>
+                                                            </label>
+
+                                                            <div class="pl-4 space-y-0.5 border-l-2 border-slate-200 dark:border-[#454956] ml-2 mt-0.5">
+                                                                <?php foreach ($catItem['subcategories'] as $subItem): ?>
+                                                                    <div class="tree-node-sub" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name']) ?>">
+                                                                        <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-800 dark:text-slate-200">
+                                                                            <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subcategory', <?= $subItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
+                                                                            <span>├── 📂 <?= htmlspecialchars($subItem['name']) ?></span>
+                                                                        </label>
+
+                                                                        <div class="pl-5 space-y-0.5 border-l border-slate-200 dark:border-[#454956] ml-3 mt-0.5">
+                                                                            <?php foreach ($subItem['subjects'] as $subjItem): ?>
+                                                                                <div class="tree-node-subj" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name'] . ' ' . $subjItem['name']) ?>">
+                                                                                    <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-600 dark:text-slate-400">
+                                                                                        <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subject', <?= $subjItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'] . ' / ' . $subjItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
+                                                                                        <span>└── 📄 <?= htmlspecialchars($subjItem['name']) ?></span>
+                                                                                    </label>
+                                                                                </div>
+                                                                            <?php endforeach; ?>
+                                                                        </div>
+                                                                    </div>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            </div>
+
+                                            <!-- RECURSO SELECIONADO -->
+                                            <div id="box-selected-resource-info" class="hidden p-2 bg-slate-100 dark:bg-[#2c2e33] rounded border border-slate-200 dark:border-[#454956]">
+                                                <span class="text-[10px] text-slate-400 uppercase font-bold block">Recurso Selecionado:</span>
+                                                <span id="text-selected-resource-path" class="font-bold text-slate-900 dark:text-slate-100 text-xs"></span>
+                                            </div>
+
+                                            <!-- NÍVEL DE PERMISSÃO -->
+                                            <div>
+                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Permissão</label>
+                                                <div class="space-y-2">
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="view" checked class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">View</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar conteúdo.</span>
+                                                        </div>
+                                                    </label>
+
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="edit" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Edit</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar e editar conteúdo.</span>
+                                                        </div>
+                                                    </label>
+
+                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
+                                                        <input type="radio" name="permission_level" value="admin" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Admin</span>
+                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode gerenciar conteúdo e permissões desta área.</span>
+                                                        </div>
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
+                                                <button type="button" onclick="closeAddGroupAccessModal()" class="px-4 py-2 rounded font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
+                                                    Cancelar
+                                                </button>
+                                                <button type="submit" id="btn-submit-group-access" disabled class="px-4 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    Conceder acesso
+                                                </button>
+                                            </div>
+                                        </form>
+
+                                        <script>
+                                            let groupLastFocused = null;
+
+                                            function openAddGroupAccessModal() {
+                                                groupLastFocused = document.activeElement;
+                                                const modal = document.getElementById('modal-add-group-access');
+                                                modal.classList.remove('hidden');
+                                                document.getElementById('tree-search-input').focus();
+                                                document.addEventListener('keydown', handleGroupModalKeyDown);
+                                            }
+
+                                            function closeAddGroupAccessModal() {
+                                                const modal = document.getElementById('modal-add-group-access');
+                                                modal.classList.add('hidden');
+                                                document.removeEventListener('keydown', handleGroupModalKeyDown);
+                                                if (groupLastFocused) groupLastFocused.focus();
+                                            }
+
+                                            function handleGroupModalKeyDown(e) {
+                                                if (e.key === 'Escape') {
+                                                    closeAddGroupAccessModal();
+                                                    return;
+                                                }
+                                            }
+
+                                            function selectGroupTreeResource(type, id, pathName) {
+                                                document.getElementById('input-group-res-type').value = type;
+                                                document.getElementById('input-group-res-id').value = id;
+                                                document.getElementById('text-selected-resource-path').textContent = pathName;
+                                                document.getElementById('box-selected-resource-info').classList.remove('hidden');
+                                                document.getElementById('btn-submit-group-access').disabled = false;
+                                            }
+
+                                            function filterTreeNodes(q) {
+                                                const term = q.toLowerCase().trim();
+                                                const nodes = document.querySelectorAll('#tree-container [data-name]');
+                                                nodes.forEach(node => {
+                                                    if (!term || node.getAttribute('data-name').includes(term)) {
+                                                        node.style.display = '';
+                                                    } else {
+                                                        node.style.display = 'none';
+                                                    }
+                                                });
+                                            }
+                                        </script>
+                                    </div>
+                                </div>
+
                             </div>
                         <?php endif; ?>
 
