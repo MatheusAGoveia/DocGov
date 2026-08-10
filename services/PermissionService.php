@@ -494,7 +494,7 @@ class PermissionService {
     }
 
     /**
-     * Adiciona ou atualiza uma permissão em uma Categoria, Subcategoria ou Assunto (Upsert - Impede Duplicatas)
+     * Adiciona ou atualiza uma permissão em uma Categoria, Subcategoria ou Assunto (Upsert - Impede Duplicatas) com Auditoria
      */
     public function saveResourcePermission(string $resourceType, int $resourceId, ?int $userId, ?int $groupId, string $level, int $createdBy = 0): bool {
         $level = strtolower($level);
@@ -510,9 +510,13 @@ class PermissionService {
         $subId = ($resourceType === 'subcategory') ? $resourceId : null;
         $subjId = ($resourceType === 'subject') ? $resourceId : null;
 
+        $principalType = ($userId !== null) ? 'USER' : 'TEAM';
+        $principalId = ($userId !== null) ? $userId : $groupId;
+        $resTypeUpper = strtoupper($resourceType);
+
         // Verificar se já existe uma permissão DIRETA para este principal neste recurso
         $sqlCheck = "
-            SELECT id FROM permissions 
+            SELECT id, permission_level FROM permissions 
             WHERE (user_id IS NOT DISTINCT FROM ?)
               AND (group_id IS NOT DISTINCT FROM ?)
               AND (category_id IS NOT DISTINCT FROM ?)
@@ -522,35 +526,144 @@ class PermissionService {
         ";
         $stmtCheck = $this->pdo->prepare($sqlCheck);
         $stmtCheck->execute([$userId, $groupId, $catId, $subId, $subjId]);
-        $existingId = $stmtCheck->fetchColumn();
+        $existing = $stmtCheck->fetch(PDO::FETCH_ASSOC);
 
-        if ($existingId) {
+        $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+        if ($existing) {
+            $existingId = (int)$existing['id'];
+            $oldLevel = strtolower($existing['permission_level']);
+
+            if ($oldLevel === $level) {
+                return true; // Nenhuma alteração
+            }
+
             // Atualiza o nível existente (UPSERT)
             $stmtUpd = $this->pdo->prepare("
                 UPDATE permissions 
                 SET permission_level = ?, updated_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
             ");
-            return $stmtUpd->execute([$level, $existingId]);
+            $success = $stmtUpd->execute([$level, $existingId]);
+
+            if ($success) {
+                $this->logAudit(
+                    $createdBy,
+                    'PERMISSION_CHANGED',
+                    $principalType,
+                    $principalId,
+                    $resTypeUpper,
+                    $resourceId,
+                    $oldLevel,
+                    $level,
+                    $ipAddress
+                );
+            }
+            return $success;
         } else {
             // Insere nova regra direta
             $stmtIns = $this->pdo->prepare("
                 INSERT INTO permissions (user_id, group_id, category_id, subcategory_id, subject_id, permission_level, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ");
-            return $stmtIns->execute([$userId, $groupId, $catId, $subId, $subjId, $level, $createdBy > 0 ? $createdBy : null]);
+            $success = $stmtIns->execute([$userId, $groupId, $catId, $subId, $subjId, $level, $createdBy > 0 ? $createdBy : null]);
+
+            if ($success) {
+                $this->logAudit(
+                    $createdBy,
+                    'PERMISSION_CREATED',
+                    $principalType,
+                    $principalId,
+                    $resTypeUpper,
+                    $resourceId,
+                    null,
+                    $level,
+                    $ipAddress
+                );
+            }
+            return $success;
         }
     }
 
     /**
-     * Remove uma regra de permissão direta pelo ID
+     * Remove uma regra de permissão direta pelo ID com auditoria
      */
-    public function deletePermission(int $permissionId): bool {
+    public function deletePermission(int $permissionId, int $actorUserId = 0): bool {
         if ($permissionId <= 0) {
             return false;
         }
+
+        // Buscar detalhes da permissão para auditoria
+        $stmtFetch = $this->pdo->prepare("SELECT * FROM permissions WHERE id = ?");
+        $stmtFetch->execute([$permissionId]);
+        $rule = $stmtFetch->fetch(PDO::FETCH_ASSOC);
+
+        if (!$rule) {
+            return false;
+        }
+
         $stmt = $this->pdo->prepare("DELETE FROM permissions WHERE id = ?");
-        return $stmt->execute([$permissionId]);
+        $success = $stmt->execute([$permissionId]);
+
+        if ($success) {
+            $principalType = !empty($rule['user_id']) ? 'USER' : 'TEAM';
+            $principalId = !empty($rule['user_id']) ? (int)$rule['user_id'] : (int)$rule['group_id'];
+
+            $resType = !empty($rule['category_id']) ? 'CATEGORY' : (!empty($rule['subcategory_id']) ? 'SUBCATEGORY' : 'SUBJECT');
+            $resId = !empty($rule['category_id']) ? (int)$rule['category_id'] : (!empty($rule['subcategory_id']) ? (int)$rule['subcategory_id'] : (int)$rule['subject_id']);
+
+            $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+            $this->logAudit(
+                $actorUserId,
+                'PERMISSION_REMOVED',
+                $principalType,
+                $principalId,
+                $resType,
+                $resId,
+                strtolower($rule['permission_level']),
+                null,
+                $ipAddress
+            );
+        }
+
+        return $success;
+    }
+
+    /**
+     * Registra evento na tabela permission_audit
+     */
+    private function logAudit(
+        int $userId,
+        string $action,
+        string $principalType,
+        int $principalId,
+        string $resourceType,
+        int $resourceId,
+        ?string $oldPermission,
+        ?string $newPermission,
+        ?string $ipAddress
+    ): void {
+        try {
+            $stmt = $this->pdo->prepare("
+                INSERT INTO permission_audit 
+                (user_id, action, principal_type, principal_id, resource_type, resource_id, old_permission, new_permission, ip_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $userId > 0 ? $userId : 1, // Fallback se actorUserId não informado
+                $action,
+                $principalType,
+                $principalId,
+                $resourceType,
+                $resourceId,
+                $oldPermission,
+                $newPermission,
+                $ipAddress
+            ]);
+        } catch (Exception $e) {
+            error_log("Erro ao registrar auditoria de permissão: " . $e->getMessage());
+        }
     }
 
     /**

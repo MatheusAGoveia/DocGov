@@ -58,6 +58,204 @@ $isLogged = isset($_SESSION['admin_logged']) && $_SESSION['admin_logged'] === tr
 require_once __DIR__ . '/../services/PermissionService.php';
 $permService = new PermissionService($pdo);
 
+if (!function_exists('renderGrafanaPermissionsPanel')) {
+    function renderGrafanaPermissionsPanel(PermissionService $permService, string $resourceType, int $resourceId, string $resourceTitle, int $managerUserId): void {
+        $permissions = $permService->getResourcePermissions($resourceType, $resourceId);
+        $usersList = [];
+        $groupsList = [];
+
+        foreach ($permissions as $p) {
+            if ($p['principal_type'] === 'user') {
+                $usersList[] = $p;
+            } else {
+                $groupsList[] = $p;
+            }
+        }
+        $totalPerms = count($permissions);
+        ?>
+        <div class="grafana-perm-card p-6 space-y-6 mt-6">
+            <!-- CABEÇALHO DO PAINEL DE PERMISSÕES -->
+            <div class="pb-4 border-b border-slate-100 dark:border-[#454956] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div class="flex items-start gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white shadow-md shrink-0">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">Gerenciar permissões</h3>
+                            <span class="px-2 py-0.5 text-[10px] font-bold font-mono rounded-full bg-slate-100 dark:bg-[#2c2e33] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-[#454956]"><?= $totalPerms ?> regra(s)</span>
+                        </div>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                            <span><?= htmlspecialchars($resourceTitle) ?></span>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[11px] font-medium border border-amber-500/20 shrink-0">
+                    <svg class="w-4 h-4 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <span>As alterações afetam este item e seus descendentes.</span>
+                </div>
+            </div>
+
+            <!-- SEÇÕES DE PERMISSÃO -->
+            <div class="space-y-6">
+                
+                <!-- SEÇÃO 1: USUÁRIO -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                            <span>👤 Usuário</span>
+                            <span class="text-[10px] font-mono text-slate-400">(<?= count($usersList) ?>)</span>
+                        </h4>
+                    </div>
+
+                    <div class="border border-slate-200 dark:border-[#454956] rounded-lg overflow-hidden bg-slate-50/50 dark:bg-[#2c2e33]/50 divide-y divide-slate-100 dark:divide-[#454956]">
+                        <?php if (empty($usersList)): ?>
+                            <div class="p-4 text-center text-xs text-slate-400 italic">
+                                Nenhuma permissão individual de usuário configurada neste nível.
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($usersList as $uPerm): ?>
+                                <?php 
+                                    $initials = mb_strtoupper(mb_substr($uPerm['principal_name'] ?? 'U', 0, 2));
+                                    $isDirect = (bool)$uPerm['is_direct'];
+                                ?>
+                                <div class="grafana-perm-row p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                                    <div class="flex items-center gap-3 min-w-0">
+                                        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-xs shrink-0">
+                                            <?= htmlspecialchars($initials) ?>
+                                        </div>
+                                        <div class="min-w-0">
+                                            <span class="font-bold text-slate-900 dark:text-slate-100 block truncate"><?= htmlspecialchars($uPerm['principal_name']) ?></span>
+                                            <span class="text-[11px] text-slate-400 block truncate"><?= htmlspecialchars($uPerm['principal_subtext']) ?></span>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-center gap-3 self-end sm:self-center shrink-0">
+                                        <?php if (!$isDirect): ?>
+                                            <span class="perm-badge-inherited" title="Permissão herdada de um nível superior">
+                                                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                                <span><?= htmlspecialchars($uPerm['origin_label']) ?></span>
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="perm-badge-direct">
+                                                <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                                <span>Direta</span>
+                                            </span>
+                                        <?php endif; ?>
+
+                                        <div class="w-32">
+                                            <select onchange="grafanaChangeLevel(<?= $uPerm['permission_id'] ?>, this.value, '<?= $resourceType ?>', <?= $resourceId ?>)" 
+                                                    class="perm-level-select input-minimal w-full px-2.5 py-1 text-xs font-semibold rounded-md border border-slate-200 dark:border-[#454956] text-slate-800 dark:text-slate-100"
+                                                    <?= !$isDirect ? 'disabled title="Para alterar, edite no nível de origem"' : '' ?>>
+                                                <option value="view" <?= $uPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
+                                                <option value="edit" <?= $uPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
+                                                <option value="admin" <?= $uPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
+                                            </select>
+                                        </div>
+
+                                        <div class="w-8 flex items-center justify-center">
+                                            <?php if (!$isDirect): ?>
+                                                <button type="button" disabled class="p-1.5 rounded-md bg-slate-100 dark:bg-[#2c2e33] text-slate-400 opacity-60 cursor-not-allowed" title="Permissão herdada da pasta pai (Bloqueado para alteração direta)">
+                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                                </button>
+                                            <?php else: ?>
+                                                <button type="button" onclick="grafanaDeleteRule(<?= $uPerm['permission_id'] ?>, '<?= $resourceType ?>', <?= $resourceId ?>)" class="p-1.5 rounded-md text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition" title="Remover permissão direta">
+                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                </button>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- SEÇÃO 2: EQUIPE / GRUPO -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                            <span>👥 Equipe / Grupo</span>
+                            <span class="text-[10px] font-mono text-slate-400">(<?= count($groupsList) ?>)</span>
+                        </h4>
+                    </div>
+
+                    <div class="border border-slate-200 dark:border-[#454956] rounded-lg overflow-hidden bg-slate-50/50 dark:bg-[#2c2e33]/50 divide-y divide-slate-100 dark:divide-[#454956]">
+                        <?php if (empty($groupsList)): ?>
+                            <div class="p-4 text-center text-xs text-slate-400 italic">
+                                Nenhuma permissão de equipe/grupo configurada neste nível.
+                            </div>
+                        <?php else: ?>
+                            <?php foreach ($groupsList as $gPerm): ?>
+                                <?php $isDirect = (bool)$gPerm['is_direct']; ?>
+                                <div class="grafana-perm-row p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                                    <div class="flex items-center gap-3 min-w-0">
+                                        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold text-xs flex items-center justify-center shadow-xs shrink-0">
+                                            👥
+                                        </div>
+                                        <div class="min-w-0">
+                                            <span class="font-bold text-slate-900 dark:text-slate-100 block truncate"><?= htmlspecialchars($gPerm['principal_name']) ?></span>
+                                            <span class="text-[11px] text-slate-400 block truncate"><?= htmlspecialchars($gPerm['principal_subtext']) ?></span>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex items-center gap-3 self-end sm:self-center shrink-0">
+                                        <?php if (!$isDirect): ?>
+                                            <span class="perm-badge-inherited" title="Permissão herdada de um nível superior">
+                                                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                                <span><?= htmlspecialchars($gPerm['origin_label']) ?></span>
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="perm-badge-direct">
+                                                <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                                <span>Direta</span>
+                                            </span>
+                                        <?php endif; ?>
+
+                                        <div class="w-32">
+                                            <select onchange="grafanaChangeLevel(<?= $gPerm['permission_id'] ?>, this.value, '<?= $resourceType ?>', <?= $resourceId ?>)" 
+                                                    class="perm-level-select input-minimal w-full px-2.5 py-1 text-xs font-semibold rounded-md border border-slate-200 dark:border-[#454956] text-slate-800 dark:text-slate-100"
+                                                    <?= !$isDirect ? 'disabled title="Para alterar, edite no nível de origem"' : '' ?>>
+                                                <option value="view" <?= $gPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
+                                                <option value="edit" <?= $gPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
+                                                <option value="admin" <?= $gPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
+                                            </select>
+                                        </div>
+
+                                        <div class="w-8 flex items-center justify-center">
+                                            <?php if (!$isDirect): ?>
+                                                <button type="button" disabled class="p-1.5 rounded-md bg-slate-100 dark:bg-[#2c2e33] text-slate-400 opacity-60 cursor-not-allowed" title="Permissão herdada da pasta pai (Bloqueado para alteração direta)">
+                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                                </button>
+                                            <?php else: ?>
+                                                <button type="button" onclick="grafanaDeleteRule(<?= $gPerm['permission_id'] ?>, '<?= $resourceType ?>', <?= $resourceId ?>)" class="p-1.5 rounded-md text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition" title="Remover permissão direta">
+                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                </button>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- AÇÃO: BOTÃO + ADICIONAR UMA PERMISSÃO -->
+                <div class="pt-2">
+                    <button type="button" onclick="grafanaOpenAddModal('<?= $resourceType ?>', <?= $resourceId ?>, '<?= htmlspecialchars($resourceTitle, ENT_QUOTES) ?>')" class="px-4 py-2.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold text-xs flex items-center gap-2 transition shadow-md hover:shadow-lg active:scale-[0.98]">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        <span>Adicionar uma permissão</span>
+                    </button>
+                </div>
+
+            </div>
+        </div>
+        <?php
+    }
+}
+
 $activeTab = trim($_GET['tab'] ?? 'visao_geral');
 // Alias: novo_conteudo é o novo nome do tab de criação
 if ($activeTab === 'novo_conteudo') $activeTab = 'novo_documento';
@@ -1602,6 +1800,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             </div>
                                         </form>
 
+                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (CATEGORIA) -->
+                                        <?php 
+                                            renderGrafanaPermissionsPanel(
+                                                $permService, 
+                                                'category', 
+                                                (int)$selCatItem['id'], 
+                                                'Categoria > ' . $selCatItem['nome'], 
+                                                (int)($loggedUser['id'] ?? 0)
+                                            ); 
+                                        ?>
+
                                         <!-- LISTAGEM TOP-DOWN DAS SUBCATEGORIAS DESTA CATEGORIA -->
                                         <div class="pt-4 border-t border-slate-100 dark:border-[#454956]">
                                             <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Subcategorias Pertencentes</h3>
@@ -1681,6 +1890,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                 <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Subcategoria</button>
                                             </div>
                                         </form>
+
+                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (SUBCATEGORIA) -->
+                                        <?php 
+                                            renderGrafanaPermissionsPanel(
+                                                $permService, 
+                                                'subcategory', 
+                                                (int)$selSubItem['id'], 
+                                                $selSubItem['categoria_nome'] . ' > ' . $selSubItem['nome'], 
+                                                (int)($loggedUser['id'] ?? 0)
+                                            ); 
+                                        ?>
                                     </div>
                                 <?php endif; ?>
 
@@ -1822,6 +2042,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             </form>
                                         </details>
                                         <?php endif; ?>
+
+                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (ASSUNTO) -->
+                                        <?php 
+                                            renderGrafanaPermissionsPanel(
+                                                $permService, 
+                                                'subject', 
+                                                (int)$selAssItem['id'], 
+                                                ($parentCatName ?: 'Categoria') . ' > ' . $selAssItem['subcategoria_nome'] . ' > ' . $selAssItem['nome'], 
+                                                (int)($loggedUser['id'] ?? 0)
+                                            ); 
+                                        ?>
                                     </div>
                                 <?php endif; ?>
 
@@ -4674,16 +4905,340 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 window.dispatchEvent(new Event('resize'));
             }
 
-            document.addEventListener('DOMContentLoaded', function() {
-                if (localStorage.getItem('main_sidebar_compact') === '1') {
-                    const sidebar = document.getElementById('sidebar-menu');
-                    const arrow = document.getElementById('main-dock-arrow');
-                    if (sidebar) sidebar.classList.add('sidebar-compact');
-                    if (arrow) arrow.classList.add('rotate-180');
+            // =========================================================================
+            // GRAFANA PERMISSIONS MODAL & API INTEGRATION
+            // =========================================================================
+            let currentGrafanaResType = '';
+            let currentGrafanaResId = 0;
+            let selectedPrincipalId = 0;
+
+            function grafanaOpenAddModal(resType, resId, resTitle) {
+                currentGrafanaResType = resType;
+                currentGrafanaResId = resId;
+                selectedPrincipalId = 0;
+
+                const modal = document.getElementById('grafana-add-modal');
+                const titleEl = document.getElementById('grafana-modal-subtitle');
+                const searchInput = document.getElementById('grafana-search-input');
+                const resultsContainer = document.getElementById('grafana-search-results');
+
+                if (!modal) return;
+
+                if (titleEl) titleEl.textContent = resTitle;
+                if (searchInput) searchInput.value = '';
+                if (resultsContainer) {
+                    resultsContainer.innerHTML = '';
+                    resultsContainer.classList.add('hidden');
                 }
-            });
+
+                document.getElementById('grafana-modal-res-type').value = resType;
+                document.getElementById('grafana-modal-res-id').value = resId;
+                document.getElementById('grafana-modal-principal-id').value = '';
+
+                modal.classList.remove('hidden');
+                if (searchInput) searchInput.focus();
+                grafanaSearchPrincipals();
+            }
+
+            function grafanaCloseAddModal() {
+                const modal = document.getElementById('grafana-add-modal');
+                if (modal) modal.classList.add('hidden');
+            }
+
+            function grafanaOnPrincipalTypeChange() {
+                selectedPrincipalId = 0;
+                document.getElementById('grafana-modal-principal-id').value = '';
+
+                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
+                const pType = principalTypeEl ? principalTypeEl.value : 'user';
+
+                const tabUser = document.getElementById('btn-tab-user');
+                const tabGroup = document.getElementById('btn-tab-group');
+
+                if (tabUser && tabGroup) {
+                    if (pType === 'user') {
+                        tabUser.className = 'segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2';
+                        tabGroup.className = 'segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400';
+                    } else {
+                        tabGroup.className = 'segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2';
+                        tabUser.className = 'segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400';
+                    }
+                }
+
+                grafanaSearchPrincipals();
+            }
+
+            function grafanaSearchPrincipals() {
+                const query = document.getElementById('grafana-search-input').value.trim();
+                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
+                const principalType = principalTypeEl ? principalTypeEl.value : 'group';
+                const resultsContainer = document.getElementById('grafana-search-results');
+
+                if (!resultsContainer) return;
+
+                fetch(`../api/search_principals.php?q=${encodeURIComponent(query)}&type=${principalType}&resource_type=${currentGrafanaResType}&resource_id=${currentGrafanaResId}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success && Array.isArray(data.data)) {
+                            resultsContainer.innerHTML = '';
+                            if (data.data.length === 0) {
+                                resultsContainer.innerHTML = '<div class="p-3 text-xs text-slate-400 italic">Nenhum resultado encontrado.</div>';
+                            } else {
+                                data.data.forEach(item => {
+                                    const div = document.createElement('div');
+                                    div.className = `p-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 dark:hover:bg-[#353842] text-xs transition ${selectedPrincipalId === item.id ? 'bg-blue-50 dark:bg-blue-950/40 border-l-2 border-blue-600 font-bold' : ''}`;
+                                    div.onclick = function() {
+                                        selectedPrincipalId = item.id;
+                                        document.getElementById('grafana-modal-principal-id').value = item.id;
+                                        document.getElementById('grafana-search-input').value = item.name;
+                                        grafanaHighlightSelectedItem(item.id);
+                                    };
+                                    div.setAttribute('data-principal-id', item.id);
+
+                                    const icon = item.type === 'user' ? '👤' : '👥';
+                                    let existingBadge = '';
+                                    if (item.existing_level) {
+                                        existingBadge = `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 font-semibold">Possui ${item.existing_level.toUpperCase()}</span>`;
+                                    }
+
+                                    div.innerHTML = `
+                                        <div class="flex items-center gap-2 min-w-0">
+                                            <span class="text-sm">${icon}</span>
+                                            <div class="truncate">
+                                                <span class="font-bold text-slate-800 dark:text-slate-200 block truncate">${escapeHtml(item.name)}</span>
+                                                <span class="text-[10px] text-slate-400 block truncate">${escapeHtml(item.subtext || '')}</span>
+                                            </div>
+                                        </div>
+                                        <div>${existingBadge}</div>
+                                    `;
+                                    resultsContainer.appendChild(div);
+                                });
+                            }
+                            resultsContainer.classList.remove('hidden');
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Erro ao buscar principais:', err);
+                    });
+            }
+
+            function grafanaHighlightSelectedItem(id) {
+                const items = document.querySelectorAll('#grafana-search-results > div');
+                items.forEach(el => {
+                    if (el.getAttribute('data-principal-id') == id) {
+                        el.classList.add('bg-blue-50', 'dark:bg-blue-950/40', 'border-l-2', 'border-blue-600', 'font-bold');
+                    } else {
+                        el.classList.remove('bg-blue-50', 'dark:bg-blue-950/40', 'border-l-2', 'border-blue-600', 'font-bold');
+                    }
+                });
+            }
+
+            function grafanaSubmitPermission(e) {
+                e.preventDefault();
+
+                const resType = document.getElementById('grafana-modal-res-type').value;
+                const resId = parseInt(document.getElementById('grafana-modal-res-id').value);
+                const principalId = parseInt(document.getElementById('grafana-modal-principal-id').value);
+                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
+                const principalType = principalTypeEl ? principalTypeEl.value : 'group';
+                const level = document.getElementById('grafana-modal-level').value;
+
+                if (!principalId || principalId <= 0) {
+                    alert('Por favor, pesquise e selecione um Usuário ou Equipe na lista.');
+                    return;
+                }
+
+                const payload = {
+                    resource_type: resType,
+                    resource_id: resId,
+                    principal_type: principalType,
+                    principal_id: principalId,
+                    permission_level: level
+                };
+
+                fetch('../api/permissions.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        grafanaCloseAddModal();
+                        window.location.reload();
+                    } else {
+                        alert('Erro ao adicionar permissão: ' + (data.error || 'Falha na requisição.'));
+                    }
+                })
+                .catch(err => {
+                    alert('Erro ao conectar ao servidor: ' + err.message);
+                });
+            }
+
+            function grafanaChangeLevel(permId, newLevel, resType, resId) {
+                if (!permId || !newLevel) return;
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'index.php?tab=editar_estrutura';
+
+                const actInput = document.createElement('input');
+                actInput.type = 'hidden';
+                actInput.name = 'resource_permission_action';
+                actInput.value = 'update_level';
+                form.appendChild(actInput);
+
+                const resTypeInput = document.createElement('input');
+                resTypeInput.type = 'hidden';
+                resTypeInput.name = 'resource_type';
+                resTypeInput.value = resType;
+                form.appendChild(resTypeInput);
+
+                const resIdInput = document.createElement('input');
+                resIdInput.type = 'hidden';
+                resIdInput.name = 'resource_id';
+                resIdInput.value = resId;
+                form.appendChild(resIdInput);
+
+                const permIdInput = document.createElement('input');
+                permIdInput.type = 'hidden';
+                permIdInput.name = 'permission_id';
+                permIdInput.value = permId;
+                form.appendChild(permIdInput);
+
+                const levelInput = document.createElement('input');
+                levelInput.type = 'hidden';
+                levelInput.name = 'permission_level';
+                levelInput.value = newLevel;
+                form.appendChild(levelInput);
+
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            function grafanaDeleteRule(permId, resType, resId) {
+                if (!confirm('Deseja realmente remover esta permissão direta?')) {
+                    return;
+                }
+
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'index.php?tab=editar_estrutura';
+
+                const actInput = document.createElement('input');
+                actInput.type = 'hidden';
+                actInput.name = 'resource_permission_action';
+                actInput.value = 'delete_permission';
+                form.appendChild(actInput);
+
+                const resTypeInput = document.createElement('input');
+                resTypeInput.type = 'hidden';
+                resTypeInput.name = 'resource_type';
+                resTypeInput.value = resType;
+                form.appendChild(resTypeInput);
+
+                const resIdInput = document.createElement('input');
+                resIdInput.type = 'hidden';
+                resIdInput.name = 'resource_id';
+                resIdInput.value = resId;
+                form.appendChild(resIdInput);
+
+                const permIdInput = document.createElement('input');
+                permIdInput.type = 'hidden';
+                permIdInput.name = 'permission_id';
+                permIdInput.value = permId;
+                form.appendChild(permIdInput);
+
+                document.body.appendChild(form);
+                form.submit();
+            }
+
+            function escapeHtml(str) {
+                if (!str) return '';
+                return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+            }
         </script>
     <?php endif; ?>
+
+    <!-- MODAL ESTILO GRAFANA: ADICIONAR UMA PERMISSÃO (DESIGN PREMIUM) -->
+    <div id="grafana-add-modal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 hidden grafana-modal-backdrop">
+        <div class="grafana-modal-box bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+            
+            <!-- HEADER DA MODAL -->
+            <div class="p-5 pb-4 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between bg-slate-50/50 dark:bg-[#2c2e33]/50">
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-md">
+                        +
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">Adicionar permissão</h3>
+                        <p id="grafana-modal-subtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium"></p>
+                    </div>
+                </div>
+                <button type="button" onclick="grafanaCloseAddModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-[#454956] flex items-center justify-center text-sm font-bold transition">✕</button>
+            </div>
+
+            <!-- FORMULÁRIO INTERATIVO -->
+            <form id="grafana-add-form" onsubmit="grafanaSubmitPermission(event)" class="p-6 space-y-5 overflow-y-auto flex-1">
+                <input type="hidden" id="grafana-modal-res-type" value="">
+                <input type="hidden" id="grafana-modal-res-id" value="">
+                <input type="hidden" id="grafana-modal-principal-id" value="">
+
+                <!-- 1. TIPO DE ATRIBUIÇÃO (SEGMENTED CONTROL PILLS) -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">1. Selecione o Tipo de Atribuição</label>
+                    <div class="p-1 rounded-xl bg-slate-100 dark:bg-[#2c2e33] grid grid-cols-2 gap-1 border border-slate-200 dark:border-[#454956]">
+                        <label class="cursor-pointer">
+                            <input type="radio" name="grafana_principal_type" value="user" checked class="sr-only" onchange="grafanaOnPrincipalTypeChange()">
+                            <div id="btn-tab-user" class="segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2">
+                                <span>👤 Usuário</span>
+                            </div>
+                        </label>
+                        <label class="cursor-pointer">
+                            <input type="radio" name="grafana_principal_type" value="group" class="sr-only" onchange="grafanaOnPrincipalTypeChange()">
+                            <div id="btn-tab-group" class="segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400">
+                                <span>👥 Equipe / Grupo</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 2. PESQUISA AO VIVO COM AUTOCOMPLETE -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">2. Pesquisar e Selecionar</label>
+                    <div class="relative">
+                        <input type="text" id="grafana-search-input" oninput="grafanaSearchPrincipals()" placeholder="Digite o nome, e-mail ou grupo..." class="input-minimal w-full pl-9 pr-8 py-2.5 text-xs font-medium rounded-xl border border-slate-200 dark:border-[#454956] text-slate-900 dark:text-slate-100 shadow-xs">
+                        <span class="absolute left-3 top-3 text-slate-400">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                        </span>
+                    </div>
+
+                    <div id="grafana-search-results" class="mt-1.5 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-[#454956] border border-slate-200 dark:border-[#454956] rounded-xl hidden bg-white dark:bg-[#2c2e33] shadow-lg">
+                    </div>
+                </div>
+
+                <!-- 3. SELEÇÃO DE NÍVEL DE PERMISSÃO -->
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">3. Nível de Permissão</label>
+                    <select id="grafana-modal-level" class="perm-level-select input-minimal w-full px-3 py-2.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-[#454956] text-slate-900 dark:text-slate-100">
+                        <option value="view">Visualizador (View) — Pode apenas visualizar conteúdos</option>
+                        <option value="edit">Editor (Edit) — Pode visualizar, criar e editar conteúdos</option>
+                        <option value="admin">Administrador (Admin) — Gestão total e gerenciamento de permissões</option>
+                    </select>
+                </div>
+
+                <!-- FOOTER DE AÇÕES -->
+                <div class="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-[#454956]">
+                    <button type="button" onclick="grafanaCloseAddModal()" class="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-[#454956] text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2c2e33] transition">
+                        Cancelar
+                    </button>
+                    <button type="submit" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold text-xs transition shadow-md hover:shadow-lg active:scale-[0.98]">
+                        + Adicionar Permissão
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
 
 </body>
 </html>

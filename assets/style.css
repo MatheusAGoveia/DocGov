@@ -264,3 +264,122 @@ body {
 .dark ::-webkit-scrollbar-thumb:hover {
   background: #6b7285;
 }
+
+/* ==========================================================================
+   6. GRAFANA PERMISSIONS UX/UI PREMIUM DESIGN SYSTEM
+   ========================================================================== */
+.grafana-perm-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dark .grafana-perm-card {
+  background: #32353e;
+  border-color: #454956;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.grafana-perm-row {
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.grafana-perm-row:hover {
+  background-color: #f8fafc;
+}
+
+.dark .grafana-perm-row:hover {
+  background-color: #3b3f4c;
+}
+
+.perm-level-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1em;
+  padding-right: 2rem;
+}
+
+.perm-badge-inherited {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  border-radius: 9999px;
+  background-color: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+
+.dark .perm-badge-inherited {
+  background-color: #2a2d34;
+  color: #94a3b8;
+  border-color: #454956;
+}
+
+.perm-badge-direct {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 9999px;
+  background-color: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.dark .perm-badge-direct {
+  background-color: #062c19;
+  color: #4ade80;
+  border-color: #14532d;
+}
+
+/* Modal Animations */
+.grafana-modal-backdrop {
+  animation: backdropFadeIn 0.2s ease-out forwards;
+}
+
+.grafana-modal-box {
+  animation: modalSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.segmented-btn {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.segmented-btn.active {
+  background-color: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-weight: 600;
+}
+
+.dark .segmented-btn.active {
+  background-color: #454956;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
