@@ -1567,7 +1567,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 <?php if ($activeTab === 'editar_estrutura'): ?>
                     <?php
                         $selectedType = $_GET['type'] ?? 'categoria';
-                        $selectedId = (int)($_GET['id'] ?? (reset($listCategorias)['id'] ?? 0));
+                        $defaultCatId = (int)($listCategorias[0]['id'] ?? 0);
+                        $selectedId = (int)($_GET['id'] ?? $defaultCatId);
+                        if ($selectedId <= 0 && $defaultCatId > 0) {
+                            $selectedId = $defaultCatId;
+                        }
 
                         $selCatItem = null;
                         $selSubItem = null;
@@ -2626,6 +2630,207 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
+
+                <!-- ABA 7: GESTÃO DE GRUPOS DE ACESSO -->
+                <?php if ($activeTab === 'grupos'): ?>
+                    <?php
+                        $allGroups = $pdo->query("
+                            SELECT g.id, g.name AS nome, g.description AS descricao, g.active,
+                                   COUNT(ug.user_id) AS total_membros
+                            FROM groups g
+                            LEFT JOIN user_groups ug ON g.id = ug.group_id
+                            GROUP BY g.id, g.name, g.description, g.active
+                            ORDER BY g.name ASC
+                        ")->fetchAll();
+                    ?>
+                    <div class="space-y-6">
+                        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-[#454956]">
+                            <div>
+                                <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Grupos e Equipes de Acesso</h1>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie os grupos de usuários e atribua permissões centralizadas por equipe.</p>
+                            </div>
+                        </div>
+
+                        <div class="bg-white dark:bg-[#353842] p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xs">
+                            <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4">Equipes Cadastradas</h2>
+                            <?php if (empty($allGroups)): ?>
+                                <p class="text-xs text-slate-400 italic p-4 text-center">Nenhuma equipe ou grupo cadastrado.</p>
+                            <?php else: ?>
+                                <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                    <?php foreach ($allGroups as $grp): ?>
+                                        <div class="py-3 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-[#2c2e33]/50 px-2 rounded-md transition">
+                                            <div class="flex items-center gap-3">
+                                                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold flex items-center justify-center shadow-xs">
+                                                    👥
+                                                </div>
+                                                <div>
+                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block text-sm"><?= htmlspecialchars($grp['nome']) ?></span>
+                                                    <span class="text-[11px] text-slate-400 block"><?= htmlspecialchars($grp['descricao'] ?: 'Sem descrição') ?> • <?= (int)$grp['total_membros'] ?> membro(s)</span>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <a href="index.php?tab=editar_grupo&id=<?= $grp['id'] ?>" class="px-3 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition">
+                                                    Gerenciar Equipe &rarr;
+                                                </a>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endif; ?>
+
+                <!-- ABA 8: EDITAR GRUPO DE ACESSO -->
+                <?php if ($activeTab === 'editar_grupo'): ?>
+                    <?php
+                        $groupId = (int)($_GET['id'] ?? 0);
+                        $stmtG = $pdo->prepare("SELECT id, name AS nome, description AS descricao, active FROM groups WHERE id = ?");
+                        $stmtG->execute([$groupId]);
+                        $groupData = $stmtG->fetch();
+
+                        $groupTab = $_GET['group_tab'] ?? 'info';
+                    ?>
+                    <?php if (!$groupData): ?>
+                        <div class="p-6 bg-white dark:bg-[#353842] rounded-md border text-center text-xs text-slate-400">
+                            Equipe não encontrada. <a href="index.php?tab=grupos" class="text-blue-600 hover:underline">Voltar para Grupos</a>
+                        </div>
+                    <?php else: ?>
+                        <div class="space-y-6">
+                            <div class="pb-3 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold flex items-center justify-center text-lg shadow-md">
+                                        👥
+                                    </div>
+                                    <div>
+                                        <span class="text-[10px] font-bold uppercase text-slate-400 block">Editando Equipe</span>
+                                        <h1 class="text-lg font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($groupData['nome']) ?></h1>
+                                    </div>
+                                </div>
+                                <a href="index.php?tab=grupos" class="text-xs text-slate-500 hover:underline">&larr; Voltar para Grupos</a>
+                            </div>
+
+                            <!-- SUB-ABAS DE EDIÇÃO DO GRUPO -->
+                            <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956] pb-2 text-xs font-semibold">
+                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=info" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'info' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
+                                    Informações da Equipe
+                                </a>
+                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'users' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
+                                    Integrantes / Membros
+                                </a>
+                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'permissions' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
+                                    🔐 Permissões da Equipe
+                                </a>
+                            </div>
+
+                            <?php if ($groupTab === 'info'): ?>
+                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
+                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>" class="space-y-4">
+                                        <input type="hidden" name="save_group" value="1">
+                                        <div>
+                                            <label class="block text-xs font-semibold mb-1">Nome da Equipe *</label>
+                                            <input type="text" name="nome" required value="<?= htmlspecialchars($groupData['nome']) ?>" class="input-minimal w-full px-3 py-2 text-xs">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-semibold mb-1">Descrição</label>
+                                            <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($groupData['descricao']) ?></textarea>
+                                        </div>
+                                        <div class="flex justify-end">
+                                            <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Alterações</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            <?php endif; ?>
+
+                            <?php if ($groupTab === 'users'): ?>
+                                <?php
+                                    $members = $pdo->prepare("
+                                        SELECT u.id, u.name, u.email, u.role
+                                        FROM users u
+                                        JOIN user_groups ug ON u.id = ug.user_id
+                                        WHERE ug.group_id = ?
+                                        ORDER BY u.name ASC
+                                    ");
+                                    $members->execute([$groupId]);
+                                    $membersList = $members->fetchAll();
+                                ?>
+                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
+                                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">Integrantes Atuais (<?= count($membersList) ?>)</h3>
+                                    <?php if (empty($membersList)): ?>
+                                        <p class="text-xs text-slate-400 italic">Nenhum membro nesta equipe.</p>
+                                    <?php else: ?>
+                                        <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                            <?php foreach ($membersList as $m): ?>
+                                                <div class="py-2.5 flex items-center justify-between text-xs">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-base">👤</span>
+                                                        <div>
+                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block"><?= htmlspecialchars($m['name']) ?></span>
+                                                            <span class="text-[10px] text-slate-400"><?= htmlspecialchars($m['email']) ?></span>
+                                                        </div>
+                                                    </div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-600 font-mono"><?= ucfirst($m['role']) ?></span>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+
+                            <?php if ($groupTab === 'permissions'): ?>
+                                <?php
+                                    $groupPerms = $pdo->prepare("
+                                        SELECT p.id, p.permission_level,
+                                               c.name AS cat_name, sc.name AS subcat_name, s.name AS subj_name,
+                                               CASE 
+                                                   WHEN p.subject_id IS NOT NULL THEN 'Assunto: ' || s.name
+                                                   WHEN p.subcategory_id IS NOT NULL THEN 'Subcategoria: ' || sc.name
+                                                   WHEN p.category_id IS NOT NULL THEN 'Categoria: ' || c.name
+                                               END AS resource_name
+                                        FROM permissions p
+                                        LEFT JOIN categories c ON p.category_id = c.id
+                                        LEFT JOIN subcategories sc ON p.subcategory_id = sc.id
+                                        LEFT JOIN subjects s ON p.subject_id = s.id
+                                        WHERE p.group_id = ?
+                                        ORDER BY p.id DESC
+                                    ");
+                                    $groupPerms->execute([$groupId]);
+                                    $groupPermsList = $groupPerms->fetchAll();
+                                ?>
+                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
+                                    <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
+                                        <div>
+                                            <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Permissões Concedidas à Equipe</h3>
+                                            <p class="text-xs text-slate-400 mt-0.5">Recursos em que este grupo possui acesso direto.</p>
+                                        </div>
+                                        <a href="index.php?tab=editar_estrutura" class="px-3 py-1.5 rounded bg-blue-600 text-white font-semibold text-xs hover:bg-blue-700 transition">
+                                            + Gerenciar na Árvore de Estrutura
+                                        </a>
+                                    </div>
+
+                                    <?php if (empty($groupPermsList)): ?>
+                                        <p class="text-xs text-slate-400 italic p-4 text-center">Nenhuma permissão específica atrelada diretamente a esta equipe ainda. Para conceder acesso a esta equipe, acesse a aba <a href="index.php?tab=editar_estrutura" class="text-blue-600 hover:underline font-bold">Editor da Árvore</a>, selecione o recurso desejado e adicione esta equipe.</p>
+                                    <?php else: ?>
+                                        <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                            <?php foreach ($groupPermsList as $gp): ?>
+                                                <div class="py-3 flex items-center justify-between text-xs">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="text-base">📁</span>
+                                                        <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($gp['resource_name']) ?></span>
+                                                    </div>
+                                                    <span class="px-2.5 py-1 rounded-full bg-blue-100 dark:bg-blue-950/50 text-blue-800 dark:text-blue-300 font-bold uppercase text-[10px]">
+                                                        <?= strtoupper($gp['permission_level']) ?>
+                                                    </span>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
+
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
 
                 <!-- NOVO CONTEÚDO (FORMULÁRIO DINÂMICO COM SELETOR DE TIPO) -->
                 <?php if ($activeTab === 'novo_documento'): ?>
