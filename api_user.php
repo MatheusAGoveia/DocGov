@@ -17,7 +17,7 @@ $userId = (int)$loggedUser['id'];
 
 if ($action === 'set_theme' || $action === 'update_theme') {
     $theme = trim($_REQUEST['theme'] ?? 'light');
-    if (!in_array($theme, ['light', 'dark'])) {
+    if (!in_array($theme, ['light', 'dark', 'system'], true)) {
         $theme = 'light';
     }
 
@@ -27,6 +27,20 @@ if ($action === 'set_theme' || $action === 'update_theme') {
     $_SESSION['user']['tema_preferido'] = $theme;
     $_SESSION['user']['theme_preference'] = $theme;
     echo json_encode(['success' => true, 'theme' => $theme]);
+    exit;
+}
+
+if ($action === 'update_portal_theme') {
+    require_once __DIR__ . '/services/SystemSettingsService.php';
+    $portalTheme = SystemSettingsService::normalizePortalTheme($_REQUEST['theme'] ?? 'emerald');
+    try {
+        $stmt = $pdo->prepare("UPDATE users SET portal_theme = :theme WHERE id = :id");
+        $stmt->execute([':theme' => $portalTheme, ':id' => $userId]);
+    } catch (Throwable $e) {
+        // Fallback silencioso se a coluna não existir
+    }
+    $_SESSION['user']['portal_theme'] = $portalTheme;
+    echo json_encode(['success' => true, 'portal_theme' => $portalTheme]);
     exit;
 }
 

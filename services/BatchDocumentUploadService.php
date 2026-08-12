@@ -139,6 +139,16 @@ final class BatchDocumentUploadService
     private function normaliseFiles(array $uploadInput, array $requestedTitles): array
     {
         $names = $uploadInput['name'] ?? null;
+        if (is_string($names) && $names !== '') {
+            $uploadInput = [
+                'name' => [$uploadInput['name']],
+                'type' => [$uploadInput['type'] ?? ''],
+                'tmp_name' => [$uploadInput['tmp_name'] ?? ''],
+                'error' => [$uploadInput['error'] ?? UPLOAD_ERR_NO_FILE],
+                'size' => [$uploadInput['size'] ?? 0],
+            ];
+            $names = $uploadInput['name'];
+        }
         if (!is_array($names) || $names === []) {
             throw new InvalidArgumentException('Selecione ao menos um arquivo para o envio em lote.');
         }

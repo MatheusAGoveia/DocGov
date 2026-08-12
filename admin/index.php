@@ -630,7 +630,7 @@ if ($isLogged) {
     }
 
     // 1. ENVIO EM LOTE DE ARQUIVOS (assíncrono, com uma entrada por arquivo)
-    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_doc'], $_POST['batch_upload'])) {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_doc']) && ($_POST['batch_upload'] ?? '') === '1') {
         $batchResponse = static function (int $status, array $payload): never {
             http_response_code($status);
             header('Content-Type: application/json; charset=utf-8');
@@ -6277,9 +6277,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 dropzone.addEventListener('drop', event => addFiles(Array.from(event.dataTransfer?.files || [])));
 
                 form.addEventListener('submit', event => {
-                    if (!flag.value || !files.length) {
-                        const selectedType = form.querySelector('input[name="tipo_conteudo"]:checked')?.value;
-                        if (selectedType === 'file') {
+                    const selectedType = form.querySelector('input[name="tipo_conteudo"]:checked')?.value || 'file';
+                    const isEdit = !!(form.querySelector('input[name="id"]')?.value);
+                    if (selectedType !== 'file' || isEdit || !flag.value || !files.length) {
+                        if (selectedType === 'file' && !isEdit && !files.length) {
                             event.preventDefault();
                             showError('Selecione ao menos um arquivo antes de salvar.');
                         }

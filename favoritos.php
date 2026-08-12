@@ -199,6 +199,8 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
                             </svg>
                         </form>
 
+                        <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
+
                         <?php if ($loggedUser): ?>
                             <!-- PAINEL ADMIN SE FOR ADMIN/EDITOR -->
                             <?php if ($canAccessAdminPanel): ?>

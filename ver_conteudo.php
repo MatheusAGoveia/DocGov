@@ -251,6 +251,7 @@ $navigationTrail = [
                     </div>
 
                     <div class="flex items-center gap-2">
+                        <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
                         <a href="index.php" class="text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-3 py-1.5 rounded-xl hover:bg-slate-200 transition">
                             &larr; Voltar ao Acervo
                         </a>

@@ -9,7 +9,7 @@ $appSettings = $systemSettingsService->all();
 $appName = (string)$appSettings['portal_name'];
 $organizationName = (string)$appSettings['organization_name'];
 $appDescription = (string)$appSettings['portal_description'];
-$portalTheme = SystemSettingsService::normalizePortalTheme($appSettings['portal_theme'] ?? 'emerald');
+$portalTheme = SystemSettingsService::normalizePortalTheme($_SESSION['user']['portal_theme'] ?? ($appSettings['portal_theme'] ?? 'emerald'));
 $appLogoPath = trim((string)($appSettings['system_logo_path'] ?? ''));
 $appLogoUrl = $appLogoPath !== '' ? 'app_logo.php?v=' . rawurlencode($appLogoPath) : null;
 

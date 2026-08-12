@@ -464,6 +464,10 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                 document.documentElement.classList.remove('dark');
                 document.documentElement.classList.add('light');
             }
+            const savedPortalTheme = localStorage.getItem('portal_theme');
+            if (savedPortalTheme) {
+                document.documentElement.setAttribute('data-portal-theme', savedPortalTheme);
+            }
         })();
     </script>
     
@@ -534,6 +538,8 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                                 <div class="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-[#454956]"><a href="index.php" class="text-xs font-semibold text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Limpar</a><button type="submit" class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">Pesquisar</button></div>
                             </div>
                         </form>
+
+                        <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
 
                         <?php if ($loggedUser): ?>
                             <!-- PAINEL ADMIN SE FOR ADMIN/EDITOR -->

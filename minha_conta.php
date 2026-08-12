@@ -175,6 +175,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 </div>
 
                 <div class="flex items-center gap-2">
+                    <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
                     <?php if ($hasAdministrativeAccess): ?>
                         <a href="admin/index.php" class="hidden md:inline-flex text-xs font-semibold bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3 py-1.5 rounded-xl hover:opacity-90 transition">
                             Admin

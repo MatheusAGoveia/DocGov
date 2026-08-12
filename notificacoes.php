@@ -78,6 +78,7 @@ function notificationTone(string $type): string {
                 <span class="text-sm font-extrabold tracking-tight text-slate-900 dark:text-slate-100"><?= htmlspecialchars($appName) ?></span>
             </a>
             <div class="flex items-center gap-2">
+                <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
                 <?php require __DIR__ . '/partials/notification_link.php'; ?>
                 <a href="index.php" class="rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white">Voltar ao acervo</a>
             </div>
