@@ -27,6 +27,7 @@ class DocumentWorkflowService {
             'changes_requested' => 'recusou e devolveu para ajustes',
             'expired_unapproved' => 'teve a aprovação expirada',
             'archived' => 'arquivou',
+            'restored_from_trash' => 'restaurou da lixeira',
             default => 'atualizou o fluxo',
         };
     }
@@ -153,6 +154,51 @@ class DocumentWorkflowService {
         if ($stmt->rowCount() !== 1) {
             throw new RuntimeException('Documento selecionado não encontrado.');
         }
+    }
+
+    /** Envia um documento à lixeira e preserva o estado para uma restauração fiel. */
+    public function moveToTrash(int $documentId, int $actorId, ?string $previousStatus = null, string $note = ''): void {
+        $previousStatus = strtolower(trim((string)$previousStatus));
+        if (!in_array($previousStatus, ['draft', 'review', 'published'], true)) {
+            throw new InvalidArgumentException('Somente documentos ativos no fluxo editorial podem ser enviados à lixeira.');
+        }
+
+        $stmt = $this->pdo->prepare("\n            UPDATE documents\n            SET status = 'inactive',\n                trashed_at = CURRENT_TIMESTAMP,\n                trashed_by = :actor_id,\n                trashed_from_status = CAST(:previous_status AS VARCHAR(20)),\n                updated_at = CURRENT_TIMESTAMP\n            WHERE id = :document_id\n        ");
+        $stmt->execute([
+            ':actor_id' => $actorId,
+            ':previous_status' => $previousStatus,
+            ':document_id' => $documentId,
+        ]);
+        if ($stmt->rowCount() !== 1) {
+            throw new RuntimeException('Documento selecionado não encontrado.');
+        }
+        $this->record($documentId, $actorId, 'archived', $previousStatus, 'inactive', $note);
+    }
+
+    /** Restaura apenas itens que foram efetivamente enviados à lixeira. */
+    public function restoreFromTrash(int $documentId, int $actorId): string {
+        $document = $this->pdo->prepare('SELECT status, trashed_at, trashed_from_status FROM documents WHERE id = :id FOR UPDATE');
+        $document->execute([':id' => $documentId]);
+        $row = $document->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            throw new RuntimeException('Documento não encontrado.');
+        }
+        if ((string)$row['status'] !== 'inactive' || empty($row['trashed_at'])) {
+            throw new InvalidArgumentException('Este item não está na lixeira ou foi inativado por outro motivo.');
+        }
+
+        $restoreStatus = strtolower((string)$row['trashed_from_status']);
+        if (!in_array($restoreStatus, ['draft', 'review', 'published'], true)) {
+            $restoreStatus = 'draft';
+        }
+        $stmt = $this->pdo->prepare("\n            UPDATE documents\n            SET status = CAST(:restore_status AS VARCHAR(20)),\n                trashed_at = NULL,\n                trashed_by = NULL,\n                trashed_from_status = NULL,\n                approval_expires_at = CASE\n                    WHEN CAST(:is_published AS BOOLEAN) THEN NULL\n                    ELSE CURRENT_TIMESTAMP + INTERVAL '1 month'\n                END,\n                updated_at = CURRENT_TIMESTAMP\n            WHERE id = :id\n        ");
+        $stmt->execute([
+            ':restore_status' => $restoreStatus,
+            ':is_published' => $restoreStatus === 'published' ? 1 : 0,
+            ':id' => $documentId,
+        ]);
+        $this->record($documentId, $actorId, 'restored_from_trash', 'inactive', $restoreStatus, 'Restaurado da lixeira.');
+        return $restoreStatus;
     }
 
     /** Atualiza os responsáveis do fluxo depois de uma transição já validada. */

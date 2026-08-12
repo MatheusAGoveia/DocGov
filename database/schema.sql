@@ -147,6 +147,9 @@ CREATE TABLE documents (
     rejected_by INT NULL REFERENCES users(id) ON DELETE SET NULL,
     rejected_at TIMESTAMPTZ NULL,
     rejection_reason TEXT NULL,
+    trashed_at TIMESTAMPTZ NULL,
+    trashed_by INT NULL REFERENCES users(id) ON DELETE SET NULL,
+    trashed_from_status VARCHAR(20) NULL CHECK (trashed_from_status IN ('draft', 'review', 'published')),
 
     -- Para tipo 'file'
     original_filename VARCHAR(255) NULL,
@@ -225,6 +228,7 @@ CREATE INDEX idx_subcategories_active ON subcategories(category_id, active) WHER
 CREATE INDEX idx_subjects_active ON subjects(subcategory_id, active) WHERE active = TRUE;
 CREATE INDEX idx_documents_status_published ON documents(subject_id, status, published_at DESC) WHERE status = 'published';
 CREATE INDEX idx_documents_pending_approval_expiry ON documents(approval_expires_at) WHERE status IN ('draft', 'review') AND approval_expires_at IS NOT NULL;
+CREATE INDEX idx_documents_trash ON documents(trashed_at DESC) WHERE trashed_at IS NOT NULL;
 CREATE INDEX idx_documents_title ON documents(title);
 CREATE INDEX idx_tags_active_name ON tags(active, name);
 CREATE INDEX idx_tag_aliases_tag_id ON tag_aliases(tag_id);

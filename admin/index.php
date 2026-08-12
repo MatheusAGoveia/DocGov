@@ -982,6 +982,80 @@ if ($isLogged) {
         }
     }
 
+    // 1.15 LIXEIRA: ações individuais protegidas por CSRF. A restauração usa o
+    // estado preservado no momento do arquivamento e nunca reativa expirações.
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['document_trash_action'])) {
+        $trashAction = trim((string)$_POST['document_trash_action']);
+        $documentId = (int)($_POST['document_id'] ?? 0);
+
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!in_array($trashAction, ['trash', 'restore', 'permanent_delete'], true) || $documentId <= 0) {
+            $errorMessage = 'Ação de lixeira inválida.';
+        } elseif (!$permService->canEditDocument($currentAdminUserId, $documentId)) {
+            http_response_code(403);
+            $errorMessage = 'Você não possui acesso a este documento.';
+        } else {
+            try {
+                $pdo->beginTransaction();
+                $currentDocumentStmt = $pdo->prepare('SELECT id, status, file_path, trashed_at FROM documents WHERE id = :id FOR UPDATE');
+                $currentDocumentStmt->execute([':id' => $documentId]);
+                $currentDocument = $currentDocumentStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$currentDocument) {
+                    throw new RuntimeException('Documento não encontrado.');
+                }
+
+                if ($trashAction === 'trash') {
+                    $workflowService->moveToTrash($documentId, $currentAdminUserId, (string)$currentDocument['status'], 'Movido para a lixeira.');
+                    $pdo->commit();
+                    $usageAuditService->logAdminAction($currentAdminUserId, 'document_trashed', 'DOCUMENT', $documentId);
+                    header('Location: index.php?tab=documentos&msg=moved_to_trash');
+                    exit;
+                }
+
+                if ($trashAction === 'restore') {
+                    $restoreStatus = $workflowService->restoreFromTrash($documentId, $currentAdminUserId);
+                    $pdo->commit();
+                    $usageAuditService->logAdminAction($currentAdminUserId, 'document_restored_from_trash', 'DOCUMENT', $documentId);
+                    header('Location: index.php?tab=lixeira&msg=restored&status=' . urlencode($restoreStatus));
+                    exit;
+                }
+
+                if (!$permService->canAdminDocument($currentAdminUserId, $documentId)) {
+                    throw new RuntimeException('Somente o Administrador da categoria pode excluir um documento definitivamente.');
+                }
+                if ((string)$currentDocument['status'] !== 'inactive' || empty($currentDocument['trashed_at'])) {
+                    throw new InvalidArgumentException('Somente documentos enviados à lixeira podem ser excluídos definitivamente.');
+                }
+                $filePath = (string)($currentDocument['file_path'] ?? '');
+                $deleteDocumentStmt = $pdo->prepare('DELETE FROM documents WHERE id = :id');
+                $deleteDocumentStmt->execute([':id' => $documentId]);
+                $pdo->commit();
+
+                // Arquivos só são removidos depois da confirmação no banco e se
+                // pertencem inequivocamente ao diretório protegido de documentos.
+                if ($filePath !== '') {
+                    $storageRoot = realpath(__DIR__ . '/../storage/documents');
+                    $candidatePath = realpath(__DIR__ . '/../' . ltrim(str_replace('\\', '/', $filePath), '/'));
+                    if ($storageRoot !== false && $candidatePath !== false
+                        && str_starts_with($candidatePath, $storageRoot . DIRECTORY_SEPARATOR)
+                        && is_file($candidatePath)) {
+                        @unlink($candidatePath);
+                    }
+                }
+                $usageAuditService->logAdminAction($currentAdminUserId, 'document_permanently_deleted', 'DOCUMENT', $documentId);
+                header('Location: index.php?tab=lixeira&msg=perm_deleted');
+                exit;
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
     // 1.2 AÇÕES EM LOTE: respeitam as mesmas regras e registram cada transição.
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['batch_action'])) {
         $batchAction = trim($_POST['batch_action'] ?? '');
@@ -1017,10 +1091,14 @@ if ($isLogged) {
                     if ($previousStatus === '') {
                         throw new RuntimeException('Documento selecionado não encontrado.');
                     }
-                    $transition = $workflowService->prepareAction($workflowActions[$batchAction], $previousStatus, $currentAdminUserId, $selectedDocumentId);
-                    $workflowService->applyStatus($selectedDocumentId, $transition['status']);
-                    $workflowService->applyTransitionMetadata($selectedDocumentId, $currentAdminUserId, $transition['action'], 'Ação em lote');
-                    $workflowService->record($selectedDocumentId, $currentAdminUserId, $transition['action'], $previousStatus, $transition['status'], 'Ação em lote');
+                    if ($batchAction === 'trash') {
+                        $workflowService->moveToTrash($selectedDocumentId, $currentAdminUserId, $previousStatus, 'Movido para a lixeira em ação em lote.');
+                    } else {
+                        $transition = $workflowService->prepareAction($workflowActions[$batchAction], $previousStatus, $currentAdminUserId, $selectedDocumentId);
+                        $workflowService->applyStatus($selectedDocumentId, $transition['status']);
+                        $workflowService->applyTransitionMetadata($selectedDocumentId, $currentAdminUserId, $transition['action'], 'Ação em lote');
+                        $workflowService->record($selectedDocumentId, $currentAdminUserId, $transition['action'], $previousStatus, $transition['status'], 'Ação em lote');
+                    }
                     $processed++;
                 }
                 $pdo->commit();
@@ -1029,7 +1107,8 @@ if ($isLogged) {
                     $workflowService->notifyForTransition($selectedDocumentId, $currentAdminUserId, $workflowActions[$batchAction] === 'submit_review' ? 'submitted_for_review' : ($workflowActions[$batchAction] === 'approve_publish' ? 'approved_and_published' : ''));
                     $usageAuditService->logAdminAction($currentAdminUserId, 'batch_' . $workflowActions[$batchAction], 'DOCUMENT', $selectedDocumentId);
                 }
-                header('Location: index.php?tab=documentos&msg=docs_workflow_updated&count=' . $processed);
+                $batchMessage = $batchAction === 'trash' ? 'docs_trashed' : 'docs_workflow_updated';
+                header('Location: index.php?tab=documentos&msg=' . $batchMessage . '&count=' . $processed);
                 exit;
             } catch (Throwable $exception) {
                 if ($pdo->inTransaction()) {
@@ -1911,16 +1990,16 @@ if ($isGlobalAdminCurrent) {
 }
 
 $documentosLixeira = $pdo->query("
-    SELECT d.id, d.title AS titulo, d.status, d.updated_at AS removido_em,
+    SELECT d.id, d.title AS titulo, d.status, d.trashed_at AS removido_em,
            s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
-           u.name AS removido_por_nome
+           u.name AS removido_por_nome, d.trashed_from_status
     FROM documents d
     JOIN subjects s ON d.subject_id = s.id
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
-    LEFT JOIN users u ON d.created_by = u.id
-    WHERE d.status = 'inactive' AND {$administrativeDocumentScopeSql}
-    ORDER BY d.updated_at DESC
+    LEFT JOIN users u ON d.trashed_by = u.id
+    WHERE d.status = 'inactive' AND d.trashed_at IS NOT NULL AND {$administrativeDocumentScopeSql}
+    ORDER BY d.trashed_at DESC
 ")->fetchAll();
 
 // Entidades de Organização
@@ -3041,6 +3120,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 <?php if ($activeTab === 'documentos'): ?>
                     <form method="POST" action="index.php?tab=documentos" id="batch-form" class="space-y-5">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="document_id" id="single-document-id" value="">
                         <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                             <div>
                                 <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Documentos</h1>
@@ -3218,9 +3298,9 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                                 <a href="index.php?tab=substituir_arquivo&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Substituir arquivo</a>
                                                             <?php endif; ?>
                                                             <div class="my-1 border-t border-slate-100 dark:border-[#454956]"></div>
-                                                            <a href="index.php?tab=documentos&action=move_to_trash&id=<?= $doc['id'] ?>" onclick="return confirm('Mover este documento para a lixeira?')" class="block px-3 py-1.5 text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
+                                                            <button type="submit" name="document_trash_action" value="trash" onclick="document.getElementById('single-document-id').value = '<?= $doc['id'] ?>'; return confirm('Mover este documento para a lixeira?')" class="block w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
                                                                 Mover para lixeira
-                                                            </a>
+                                                            </button>
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -3518,8 +3598,16 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-3 font-mono text-[11px]"><?= $lDoc['removido_em'] ? date('d/m/Y H:i', strtotime($lDoc['removido_em'])) : '—' ?></td>
                                                 <td class="p-3 text-[11px]"><?= htmlspecialchars($lDoc['removido_por_nome'] ?: 'Admin') ?></td>
                                                 <td class="p-3 text-right">
-                                                    <a href="index.php?tab=lixeira&action=restore_trash&id=<?= $lDoc['id'] ?>" class="text-emerald-600 font-semibold mr-3 hover:underline">Restaurar</a>
-                                                    <a href="index.php?tab=lixeira&action=permanent_delete&id=<?= $lDoc['id'] ?>" onclick="return confirm('Atenção: Esta ação não poderá ser desfeita. Deseja realmente excluir permanentemente este documento e o arquivo do servidor?')" class="text-red-600 font-semibold hover:underline">Excluir Definitivamente</a>
+                                                    <form method="POST" action="index.php?tab=lixeira" class="inline">
+                                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                        <input type="hidden" name="document_id" value="<?= (int)$lDoc['id'] ?>">
+                                                        <button type="submit" name="document_trash_action" value="restore" class="text-emerald-600 font-semibold mr-3 hover:underline">Restaurar</button>
+                                                    </form>
+                                                    <form method="POST" action="index.php?tab=lixeira" class="inline">
+                                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                        <input type="hidden" name="document_id" value="<?= (int)$lDoc['id'] ?>">
+                                                        <button type="submit" name="document_trash_action" value="permanent_delete" onclick="return confirm('Atenção: Esta ação não poderá ser desfeita. Deseja realmente excluir permanentemente este documento e o arquivo do servidor?')" class="text-red-600 font-semibold hover:underline">Excluir definitivamente</button>
+                                                    </form>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
