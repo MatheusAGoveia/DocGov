@@ -5,8 +5,8 @@
 
 -- 1. USUÁRIOS DE TESTE (Senhas hashed com bcrypt: 'admin123' / 'user123')
 INSERT INTO users (name, username, email, password_hash, role, active) VALUES
-('Samuel Oliveira', 'samuel', 'samuel@prefeitura.gov.br', '$2y$10$eE.lC/xI7W0/b6C4Zt4F.O6Y9T8d9O8K.rKq4r.W/1p9/G9q9u.2m', 'admin', TRUE),
-('Maria Santos', 'maria', 'maria@prefeitura.gov.br', '$2y$10$eE.lC/xI7W0/b6C4Zt4F.O6Y9T8d9O8K.rKq4r.W/1p9/G9q9u.2m', 'editor', TRUE),
+('Samuel Oliveira', 'samuel', 'samuel@prefeitura.gov.br', '$2y$10$eE.lC/xI7W0/b6C4Zt4F.O6Y9T8d9O8K.rKq4r.W/1p9/G9q9u.2m', 'reader', TRUE),
+('Maria Santos', 'maria', 'maria@prefeitura.gov.br', '$2y$10$eE.lC/xI7W0/b6C4Zt4F.O6Y9T8d9O8K.rKq4r.W/1p9/G9q9u.2m', 'reader', TRUE),
 ('João Silva', 'joao', 'joao@prefeitura.gov.br', '$2y$10$eE.lC/xI7W0/b6C4Zt4F.O6Y9T8d9O8K.rKq4r.W/1p9/G9q9u.2m', 'reader', TRUE)
 ON CONFLICT (username) DO NOTHING;
 

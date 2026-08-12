@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/NotificationService.php';
 /**
  * services/PermissionService.php
  * Motor Central de Autorização e Permissões do DocGov
@@ -116,7 +117,14 @@ class PermissionService {
             return $this->buildResult('none', 0, []);
         }
 
-        // 2. Admin Global Bypass
+        // 2. O recurso precisa existir até para o Admin Global. Isso evita
+        // autorizações positivas sobre IDs inválidos ou já removidos.
+        $resourceChain = $this->resolveResourceChain($resourceType, $resourceId);
+        if (empty($resourceChain)) {
+            return $this->buildResult('none', 0, []);
+        }
+
+        // 3. Admin Global Bypass
         if ($this->isGlobalAdmin($userId)) {
             $adminSource = [
                 'principal_type'   => 'admin',
@@ -133,17 +141,11 @@ class PermissionService {
             return $this->buildResult('admin', 3, [$adminSource]);
         }
 
-        // 3. Verificar se o usuário está ativo
+        // 4. Verificar se o usuário está ativo
         $stmtUser = $this->pdo->prepare("SELECT name FROM users WHERE id = ? AND active = TRUE");
         $stmtUser->execute([$userId]);
         $userName = $stmtUser->fetchColumn();
         if (!$userName) {
-            return $this->buildResult('none', 0, []);
-        }
-
-        // 4. Mapear a cadeia de recursos ancestrais
-        $resourceChain = $this->resolveResourceChain($resourceType, $resourceId);
-        if (empty($resourceChain)) {
             return $this->buildResult('none', 0, []);
         }
 
@@ -182,6 +184,37 @@ class PermissionService {
     public function canAdmin(int $userId, string $resourceType, int $resourceId): bool {
         $result = $this->getEffectivePermission($userId, $resourceType, $resourceId);
         return $result['effective_value'] >= self::LEVEL_MAP['admin'];
+    }
+
+    /**
+     * Contexto público e somente leitura usado pela API e pela interface administrativa.
+     */
+    public function getResourceContext(string $resourceType, int $resourceId): ?array {
+        $resourceType = strtolower(trim($resourceType));
+        if (!in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $resourceId <= 0) {
+            return null;
+        }
+
+        $chain = $this->resolveResourceChain($resourceType, $resourceId);
+        if (empty($chain)) {
+            return null;
+        }
+
+        $orderedChain = array_reverse($chain);
+        return [
+            'type' => $resourceType,
+            'id' => $resourceId,
+            'name' => (string)($chain[0]['name'] ?? ''),
+            'path' => implode(' > ', array_column($orderedChain, 'name')),
+            'ancestors' => array_values(array_map(
+                static fn(array $item): array => [
+                    'type' => $item['type'],
+                    'id' => (int)$item['id'],
+                    'name' => (string)$item['name'],
+                ],
+                array_filter($orderedChain, static fn(array $item): bool => (bool)$item['is_inherited'])
+            )),
+        ];
     }
 
     /**
@@ -346,7 +379,7 @@ class PermissionService {
             $permValue = self::LEVEL_MAP[$permLevel] ?? 0;
 
             // Formatação amigável da descrição da fonte de permissão
-            $principalLabel = ($principalType === 'user') ? "acesso direto ($principalName)" : "Grupo $principalName";
+            $principalLabel = ($principalType === 'user') ? "acesso direto ($principalName)" : "Equipe $principalName";
             $resourceLabel = ucfirst($ruleResourceType) . " $ruleResourceName";
             $description = "$principalLabel / $resourceLabel / " . ucfirst($permLevel);
 
@@ -431,7 +464,9 @@ class PermissionService {
                 u.name AS user_name,
                 u.username AS user_handle,
                 u.email AS user_email,
+                u.active AS user_active,
                 g.name AS group_name,
+                g.active AS group_active,
                 (SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id) AS group_members_count
             FROM permissions p
             LEFT JOIN users u ON p.user_id = u.id
@@ -454,6 +489,9 @@ class PermissionService {
             $principalId = !empty($row['user_id']) ? (int)$row['user_id'] : (int)$row['group_id'];
             $principalName = !empty($row['user_id']) ? $row['user_name'] : $row['group_name'];
             $principalSubtext = !empty($row['user_id']) ? "@" . $row['user_handle'] : (int)$row['group_members_count'] . " membro(s)";
+            $principalActive = !empty($row['user_id'])
+                ? filter_var($row['user_active'], FILTER_VALIDATE_BOOLEAN)
+                : filter_var($row['group_active'], FILTER_VALIDATE_BOOLEAN);
 
             // Determinar o recurso da regra atual
             $ruleResType = !empty($row['category_id']) ? 'category' : (!empty($row['subcategory_id']) ? 'subcategory' : 'subject');
@@ -481,14 +519,69 @@ class PermissionService {
                 'principal_id'     => $principalId,
                 'principal_name'   => $principalName,
                 'principal_subtext'=> $principalSubtext,
+                'principal_active' => $principalActive,
                 'permission_level' => strtolower($row['permission_level']),
                 'is_direct'        => $isDirect,
                 'origin_label'     => $originLabel,
                 'ancestor_info'    => $ancestorInfo,
                 'resource_type'    => $ruleResType,
                 'resource_id'      => $ruleResId,
+                'effective_level'  => $principalActive ? strtolower($row['permission_level']) : 'none',
+                'conflict_warning' => null,
             ];
         }
+
+        // Para usuários, a permissão efetiva é obtida pelo próprio motor (inclui equipes e herança).
+        // Para equipes, este cálculo serve apenas à explicação visual das regras do mesmo principal.
+        $groupMaximums = [];
+        foreach ($results as $permission) {
+            if ($permission['principal_type'] !== 'group' || !$permission['principal_active']) {
+                continue;
+            }
+            $key = (int)$permission['principal_id'];
+            $value = self::LEVEL_MAP[$permission['permission_level']] ?? 0;
+            $groupMaximums[$key] = max($groupMaximums[$key] ?? 0, $value);
+        }
+
+        foreach ($results as &$permission) {
+            if (!$permission['principal_active']) {
+                $permission['effective_level'] = 'none';
+                continue;
+            }
+
+            if ($permission['principal_type'] === 'user') {
+                $effective = $this->getEffectivePermission((int)$permission['principal_id'], $resourceType, $resourceId);
+                $permission['effective_level'] = $effective['effective_level'];
+
+                $directValue = self::LEVEL_MAP[$permission['permission_level']] ?? 0;
+                if ($permission['is_direct'] && $effective['effective_value'] > $directValue) {
+                    $strongestSource = null;
+                    foreach ($effective['sources'] as $source) {
+                        if (($source['permission_value'] ?? 0) === $effective['effective_value']) {
+                            $strongestSource = $source;
+                            break;
+                        }
+                    }
+                    $origin = $strongestSource['resource_name'] ?? 'um recurso ancestral ou equipe';
+                    $permission['conflict_warning'] = sprintf(
+                        'Esta permissão direta não reduzirá o acesso efetivo, pois este usuário já possui %s por %s.',
+                        ucfirst($effective['effective_level']),
+                        $origin
+                    );
+                }
+            } else {
+                $effectiveValue = $groupMaximums[(int)$permission['principal_id']] ?? 0;
+                $permission['effective_level'] = self::VALUE_MAP[$effectiveValue] ?? 'none';
+                $directValue = self::LEVEL_MAP[$permission['permission_level']] ?? 0;
+                if ($permission['is_direct'] && $effectiveValue > $directValue) {
+                    $permission['conflict_warning'] = sprintf(
+                        'Esta permissão direta não reduzirá o acesso efetivo, pois esta equipe já herda %s de um recurso ancestral.',
+                        ucfirst($permission['effective_level'])
+                    );
+                }
+            }
+        }
+        unset($permission);
 
         return $results;
     }
@@ -497,8 +590,12 @@ class PermissionService {
      * Adiciona ou atualiza uma permissão em uma Categoria, Subcategoria ou Assunto (Upsert - Impede Duplicatas) com Auditoria
      */
     public function saveResourcePermission(string $resourceType, int $resourceId, ?int $userId, ?int $groupId, string $level, int $createdBy = 0): bool {
+        $resourceType = strtolower(trim($resourceType));
         $level = strtolower($level);
-        if (!in_array($level, ['view', 'edit', 'admin'])) {
+        if (!in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $this->getResourceContext($resourceType, $resourceId) === null) {
+            throw new InvalidArgumentException('Recurso inválido ou inexistente.');
+        }
+        if (!in_array($level, ['view', 'edit', 'admin'], true)) {
             throw new InvalidArgumentException("Nível de permissão inválido: $level");
         }
 
@@ -514,39 +611,89 @@ class PermissionService {
         $principalId = ($userId !== null) ? $userId : $groupId;
         $resTypeUpper = strtoupper($resourceType);
 
-        // Verificar se já existe uma permissão DIRETA para este principal neste recurso
-        $sqlCheck = "
-            SELECT id, permission_level FROM permissions 
-            WHERE (user_id IS NOT DISTINCT FROM ?)
-              AND (group_id IS NOT DISTINCT FROM ?)
-              AND (category_id IS NOT DISTINCT FROM ?)
-              AND (subcategory_id IS NOT DISTINCT FROM ?)
-              AND (subject_id IS NOT DISTINCT FROM ?)
-            LIMIT 1
-        ";
-        $stmtCheck = $this->pdo->prepare($sqlCheck);
-        $stmtCheck->execute([$userId, $groupId, $catId, $subId, $subjId]);
-        $existing = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+        $principalTable = ($userId !== null) ? 'users' : 'groups';
+        $principalColumns = ($userId !== null) ? 'id, active, role' : "id, active, NULL::varchar AS role";
+        $stmtPrincipal = $this->pdo->prepare("SELECT {$principalColumns} FROM {$principalTable} WHERE id = ?");
+        $stmtPrincipal->execute([$principalId]);
+        $principal = $stmtPrincipal->fetch(PDO::FETCH_ASSOC);
+        if (!$principal) {
+            throw new InvalidArgumentException('Usuário ou equipe inexistente.');
+        }
+        if ($userId !== null && strtolower((string)($principal['role'] ?? '')) === 'admin') {
+            throw new InvalidArgumentException('Administradores Globais já possuem acesso completo e não recebem regras individuais.');
+        }
 
-        $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        if ($createdBy <= 0) {
+            throw new InvalidArgumentException('O usuário executor é obrigatório para auditar a permissão.');
+        }
+        $actorStmt = $this->pdo->prepare('SELECT id FROM users WHERE id = ? AND active = TRUE');
+        $actorStmt->execute([$createdBy]);
+        if (!$actorStmt->fetchColumn()) {
+            throw new InvalidArgumentException('O usuário executor não existe ou está inativo.');
+        }
 
-        if ($existing) {
-            $existingId = (int)$existing['id'];
-            $oldLevel = strtolower($existing['permission_level']);
+        $startedTransaction = !$this->pdo->inTransaction();
+        $permissionChanged = false;
+        if ($startedTransaction) {
+            $this->pdo->beginTransaction();
+        }
 
-            if ($oldLevel === $level) {
-                return true; // Nenhuma alteração
+        try {
+            // Serializa gravações da mesma combinação principal/recurso. Sem
+            // esse lock, duas requisições simultâneas poderiam ambas não ver a
+            // linha e uma delas falhar no índice único em vez de fazer upsert.
+            $lockIdentity = implode(':', [
+                $principalType,
+                (int)$principalId,
+                $resTypeUpper,
+                $resourceId,
+            ]);
+            $lockKey = crc32($lockIdentity);
+            if ($lockKey > 2147483647) {
+                $lockKey -= 4294967296;
+            }
+            $lockStmt = $this->pdo->prepare('SELECT pg_advisory_xact_lock(736421, :lock_key)');
+            $lockStmt->bindValue(':lock_key', $lockKey, PDO::PARAM_INT);
+            $lockStmt->execute();
+
+            // Verificar se já existe uma permissão DIRETA para este principal neste recurso.
+            $stmtCheck = $this->pdo->prepare("
+                SELECT id, permission_level FROM permissions
+                WHERE (user_id IS NOT DISTINCT FROM ?)
+                  AND (group_id IS NOT DISTINCT FROM ?)
+                  AND (category_id IS NOT DISTINCT FROM ?)
+                  AND (subcategory_id IS NOT DISTINCT FROM ?)
+                  AND (subject_id IS NOT DISTINCT FROM ?)
+                LIMIT 1
+                FOR UPDATE
+            ");
+            $stmtCheck->execute([$userId, $groupId, $catId, $subId, $subjId]);
+            $existing = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+            $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+
+            if (!$existing && !filter_var($principal['active'], FILTER_VALIDATE_BOOLEAN)) {
+                throw new InvalidArgumentException('Não é possível criar uma permissão para um usuário ou equipe inativa.');
             }
 
-            // Atualiza o nível existente (UPSERT)
-            $stmtUpd = $this->pdo->prepare("
-                UPDATE permissions 
-                SET permission_level = ?, updated_at = CURRENT_TIMESTAMP 
-                WHERE id = ?
-            ");
-            $success = $stmtUpd->execute([$level, $existingId]);
+            if ($existing) {
+                $existingId = (int)$existing['id'];
+                $oldLevel = strtolower($existing['permission_level']);
+                if ($oldLevel === $level) {
+                    if ($startedTransaction) {
+                        $this->pdo->commit();
+                    }
+                    return true;
+                }
 
-            if ($success) {
+                $stmtUpd = $this->pdo->prepare("
+                    UPDATE permissions
+                    SET permission_level = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ");
+                if (!$stmtUpd->execute([$level, $existingId])) {
+                    throw new RuntimeException('Falha ao atualizar a permissão.');
+                }
+                $permissionChanged = true;
                 $this->logAudit(
                     $createdBy,
                     'PERMISSION_CHANGED',
@@ -558,17 +705,15 @@ class PermissionService {
                     $level,
                     $ipAddress
                 );
-            }
-            return $success;
-        } else {
-            // Insere nova regra direta
-            $stmtIns = $this->pdo->prepare("
-                INSERT INTO permissions (user_id, group_id, category_id, subcategory_id, subject_id, permission_level, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
-            $success = $stmtIns->execute([$userId, $groupId, $catId, $subId, $subjId, $level, $createdBy > 0 ? $createdBy : null]);
-
-            if ($success) {
+            } else {
+                $stmtIns = $this->pdo->prepare("
+                    INSERT INTO permissions (user_id, group_id, category_id, subcategory_id, subject_id, permission_level, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ");
+                if (!$stmtIns->execute([$userId, $groupId, $catId, $subId, $subjId, $level, $createdBy])) {
+                    throw new RuntimeException('Falha ao criar a permissão.');
+                }
+                $permissionChanged = true;
                 $this->logAudit(
                     $createdBy,
                     'PERMISSION_CREATED',
@@ -581,7 +726,60 @@ class PermissionService {
                     $ipAddress
                 );
             }
-            return $success;
+
+            if ($startedTransaction) {
+                $this->pdo->commit();
+            }
+            if ($permissionChanged) {
+                $this->notifyPermissionGranted($resourceType, $resourceId, $userId, $groupId, $level);
+            }
+            return true;
+        } catch (Throwable $e) {
+            if ($startedTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /** Avisa usuários que receberam ou tiveram acesso direto/equipe atualizado. */
+    private function notifyPermissionGranted(string $resourceType, int $resourceId, ?int $userId, ?int $groupId, string $level): void {
+        try {
+            $context = $this->getResourceContext($resourceType, $resourceId);
+            if ($context === null) {
+                return;
+            }
+
+            $recipientIds = [];
+            if ($userId !== null) {
+                $recipientIds[] = $userId;
+            } elseif ($groupId !== null) {
+                $stmt = $this->pdo->prepare('
+                    SELECT u.id
+                    FROM users u
+                    JOIN user_groups ug ON ug.user_id = u.id
+                    JOIN groups g ON g.id = ug.group_id
+                    WHERE ug.group_id = :group_id AND u.active = TRUE AND g.active = TRUE
+                ');
+                $stmt->execute([':group_id' => $groupId]);
+                $recipientIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+            }
+
+            if (empty($recipientIds)) {
+                return;
+            }
+
+            $levelLabel = ['view' => 'visualização', 'edit' => 'edição', 'admin' => 'administração'][$level] ?? $level;
+            $typeLabel = ['category' => 'categoria', 'subcategory' => 'subcategoria', 'subject' => 'assunto'][$resourceType] ?? 'recurso';
+            $notifications = new NotificationService($this->pdo);
+            $notifications->createForUsers(
+                $recipientIds,
+                'permission_granted',
+                'Novo acesso liberado',
+                'Você recebeu acesso de ' . $levelLabel . ' ao ' . $typeLabel . ' “' . $context['path'] . '”.'
+            );
+        } catch (Throwable $exception) {
+            error_log('DocGov: não foi possível criar notificação de acesso: ' . $exception->getMessage());
         }
     }
 
@@ -589,23 +787,31 @@ class PermissionService {
      * Remove uma regra de permissão direta pelo ID com auditoria
      */
     public function deletePermission(int $permissionId, int $actorUserId = 0): bool {
-        if ($permissionId <= 0) {
+        if ($permissionId <= 0 || $actorUserId <= 0) {
             return false;
         }
 
-        // Buscar detalhes da permissão para auditoria
-        $stmtFetch = $this->pdo->prepare("SELECT * FROM permissions WHERE id = ?");
-        $stmtFetch->execute([$permissionId]);
-        $rule = $stmtFetch->fetch(PDO::FETCH_ASSOC);
-
-        if (!$rule) {
-            return false;
+        $startedTransaction = !$this->pdo->inTransaction();
+        if ($startedTransaction) {
+            $this->pdo->beginTransaction();
         }
 
-        $stmt = $this->pdo->prepare("DELETE FROM permissions WHERE id = ?");
-        $success = $stmt->execute([$permissionId]);
+        try {
+            $stmtFetch = $this->pdo->prepare("SELECT * FROM permissions WHERE id = ? FOR UPDATE");
+            $stmtFetch->execute([$permissionId]);
+            $rule = $stmtFetch->fetch(PDO::FETCH_ASSOC);
+            if (!$rule) {
+                if ($startedTransaction) {
+                    $this->pdo->commit();
+                }
+                return false;
+            }
 
-        if ($success) {
+            $stmt = $this->pdo->prepare("DELETE FROM permissions WHERE id = ?");
+            if (!$stmt->execute([$permissionId]) || $stmt->rowCount() !== 1) {
+                throw new RuntimeException('Falha ao remover a permissão.');
+            }
+
             $principalType = !empty($rule['user_id']) ? 'USER' : 'TEAM';
             $principalId = !empty($rule['user_id']) ? (int)$rule['user_id'] : (int)$rule['group_id'];
 
@@ -625,9 +831,17 @@ class PermissionService {
                 null,
                 $ipAddress
             );
-        }
 
-        return $success;
+            if ($startedTransaction) {
+                $this->pdo->commit();
+            }
+            return true;
+        } catch (Throwable $e) {
+            if ($startedTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -644,26 +858,22 @@ class PermissionService {
         ?string $newPermission,
         ?string $ipAddress
     ): void {
-        try {
-            $stmt = $this->pdo->prepare("
-                INSERT INTO permission_audit 
-                (user_id, action, principal_type, principal_id, resource_type, resource_id, old_permission, new_permission, ip_address)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $userId > 0 ? $userId : 1, // Fallback se actorUserId não informado
-                $action,
-                $principalType,
-                $principalId,
-                $resourceType,
-                $resourceId,
-                $oldPermission,
-                $newPermission,
-                $ipAddress
-            ]);
-        } catch (Exception $e) {
-            error_log("Erro ao registrar auditoria de permissão: " . $e->getMessage());
-        }
+        $stmt = $this->pdo->prepare("
+            INSERT INTO permission_audit
+            (user_id, action, principal_type, principal_id, resource_type, resource_id, old_permission, new_permission, ip_address)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([
+            $userId,
+            $action,
+            $principalType,
+            $principalId,
+            $resourceType,
+            $resourceId,
+            $oldPermission,
+            $newPermission,
+            $ipAddress
+        ]);
     }
 
     /**
@@ -706,6 +916,8 @@ class PermissionService {
 
         $results = [];
         $directResourceKeys = [];
+        $inheritedResultIndexes = [];
+        $levelWeight = ['view' => 1, 'edit' => 2, 'admin' => 3];
 
         foreach ($directRows as $row) {
             $resType = !empty($row['category_id']) ? 'category' : (!empty($row['subcategory_id']) ? 'subcategory' : 'subject');
@@ -759,7 +971,7 @@ class PermissionService {
                     foreach ($subs as $sub) {
                         $subKey = "subcategory_" . $sub['id'];
                         if (!isset($directResourceKeys[$subKey])) {
-                            $results[] = [
+                            $candidate = [
                                 'permission_id'   => 0,
                                 'resource_type'   => 'subcategory',
                                 'resource_id'     => (int)$sub['id'],
@@ -770,6 +982,12 @@ class PermissionService {
                                 'origin_label'    => 'Herdado de ' . $catName,
                                 'ancestor_info'   => ['type' => 'category', 'id' => $catId, 'name' => $catName]
                             ];
+                            if (!isset($inheritedResultIndexes[$subKey])) {
+                                $inheritedResultIndexes[$subKey] = count($results);
+                                $results[] = $candidate;
+                            } elseif (($levelWeight[$level] ?? 0) > ($levelWeight[$results[$inheritedResultIndexes[$subKey]]['permission_level']] ?? 0)) {
+                                $results[$inheritedResultIndexes[$subKey]] = $candidate;
+                            }
                         }
 
                         // Assuntos da subcategoria
@@ -780,7 +998,7 @@ class PermissionService {
                         foreach ($subjs as $subj) {
                             $subjKey = "subject_" . $subj['id'];
                             if (!isset($directResourceKeys[$subjKey])) {
-                                $results[] = [
+                                $candidate = [
                                     'permission_id'   => 0,
                                     'resource_type'   => 'subject',
                                     'resource_id'     => (int)$subj['id'],
@@ -791,6 +1009,12 @@ class PermissionService {
                                     'origin_label'    => 'Herdado de ' . $catName,
                                     'ancestor_info'   => ['type' => 'category', 'id' => $catId, 'name' => $catName]
                                 ];
+                                if (!isset($inheritedResultIndexes[$subjKey])) {
+                                    $inheritedResultIndexes[$subjKey] = count($results);
+                                    $results[] = $candidate;
+                                } elseif (($levelWeight[$level] ?? 0) > ($levelWeight[$results[$inheritedResultIndexes[$subjKey]]['permission_level']] ?? 0)) {
+                                    $results[$inheritedResultIndexes[$subjKey]] = $candidate;
+                                }
                             }
                         }
                     }
@@ -808,7 +1032,7 @@ class PermissionService {
                     foreach ($subjs as $subj) {
                         $subjKey = "subject_" . $subj['id'];
                         if (!isset($directResourceKeys[$subjKey])) {
-                            $results[] = [
+                            $candidate = [
                                 'permission_id'   => 0,
                                 'resource_type'   => 'subject',
                                 'resource_id'     => (int)$subj['id'],
@@ -819,6 +1043,12 @@ class PermissionService {
                                 'origin_label'    => 'Herdado de ' . $row['subcategory_name'],
                                 'ancestor_info'   => ['type' => 'subcategory', 'id' => $subId, 'name' => $row['subcategory_name']]
                             ];
+                            if (!isset($inheritedResultIndexes[$subjKey])) {
+                                $inheritedResultIndexes[$subjKey] = count($results);
+                                $results[] = $candidate;
+                            } elseif (($levelWeight[$level] ?? 0) > ($levelWeight[$results[$inheritedResultIndexes[$subjKey]]['permission_level']] ?? 0)) {
+                                $results[$inheritedResultIndexes[$subjKey]] = $candidate;
+                            }
                         }
                     }
                 }
@@ -831,10 +1061,11 @@ class PermissionService {
     /**
      * Retorna a árvore hierárquica compacta da estrutura (Categorias -> Subcategorias -> Assuntos) sem documentos
      */
-    public function getResourceTree(): array {
+    public function getResourceTree(bool $activeOnly = true): array {
         $tree = [];
 
-        $stmtCats = $this->pdo->query("SELECT id, name FROM categories WHERE active = TRUE ORDER BY name ASC");
+        $activeFilter = $activeOnly ? ' WHERE active = TRUE' : '';
+        $stmtCats = $this->pdo->query("SELECT id, name FROM categories{$activeFilter} ORDER BY name ASC");
         $categories = $stmtCats->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($categories as $cat) {
@@ -845,7 +1076,8 @@ class PermissionService {
                 'subcategories' => []
             ];
 
-            $stmtSubs = $this->pdo->prepare("SELECT id, name FROM subcategories WHERE category_id = ? AND active = TRUE ORDER BY name ASC");
+            $subActiveFilter = $activeOnly ? ' AND active = TRUE' : '';
+            $stmtSubs = $this->pdo->prepare("SELECT id, name FROM subcategories WHERE category_id = ?{$subActiveFilter} ORDER BY name ASC");
             $stmtSubs->execute([$cat['id']]);
             $subcategories = $stmtSubs->fetchAll(PDO::FETCH_ASSOC);
 
@@ -857,7 +1089,8 @@ class PermissionService {
                     'subjects' => []
                 ];
 
-                $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ? AND active = TRUE ORDER BY name ASC");
+                $subjectActiveFilter = $activeOnly ? ' AND active = TRUE' : '';
+                $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ?{$subjectActiveFilter} ORDER BY name ASC");
                 $stmtSubjs->execute([$sub['id']]);
                 $subjects = $stmtSubjs->fetchAll(PDO::FETCH_ASSOC);
 
@@ -906,8 +1139,17 @@ class PermissionService {
             ];
         }
 
+        if (!filter_var($userData['active'], FILTER_VALIDATE_BOOLEAN)) {
+            return [
+                'user' => $userData,
+                'is_global_admin' => false,
+                'active_groups' => [],
+                'resources' => [],
+            ];
+        }
+
         // 2. Se for Admin Global
-        if (strtolower($userData['role']) === 'admin') {
+        if ($this->isGlobalAdmin($userId)) {
             $stmtG = $this->pdo->prepare("
                 SELECT g.id, g.name, g.description
                 FROM groups g
@@ -985,8 +1227,9 @@ class PermissionService {
                     $isUser = !empty($rule['user_id']);
                     $catSources[] = [
                         'type' => $isUser ? 'direct' : 'group',
+                        'via_group' => !$isUser,
                         'level' => strtolower($rule['permission_level']),
-                        'description' => $isUser ? "Acesso direto na Categoria {$cat['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Categoria {$cat['name']}"
+                        'description' => $isUser ? "Acesso direto na Categoria {$cat['name']}" : "Equipe {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Categoria {$cat['name']}"
                     ];
                 }
             }
@@ -1005,6 +1248,7 @@ class PermissionService {
                 foreach ($catSources as $cs) {
                     $subSources[] = [
                         'type' => 'inherited',
+                        'via_group' => !empty($cs['via_group']),
                         'level' => $cs['level'],
                         'description' => "Herdado da Categoria {$cat['name']} (" . $cs['description'] . ")"
                     ];
@@ -1015,8 +1259,9 @@ class PermissionService {
                         $isUser = !empty($rule['user_id']);
                         $subSources[] = [
                             'type' => $isUser ? 'direct' : 'group',
+                            'via_group' => !$isUser,
                             'level' => strtolower($rule['permission_level']),
-                            'description' => $isUser ? "Acesso direto na Subcategoria {$sub['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Subcategoria {$sub['name']}"
+                            'description' => $isUser ? "Acesso direto na Subcategoria {$sub['name']}" : "Equipe {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " na Subcategoria {$sub['name']}"
                         ];
                     }
                 }
@@ -1035,6 +1280,7 @@ class PermissionService {
                     foreach ($subSources as $ss) {
                         $subjSources[] = [
                             'type' => 'inherited',
+                            'via_group' => !empty($ss['via_group']),
                             'level' => $ss['level'],
                             'description' => "Herdado de ancestral (" . $ss['description'] . ")"
                         ];
@@ -1045,8 +1291,9 @@ class PermissionService {
                             $isUser = !empty($rule['user_id']);
                             $subjSources[] = [
                                 'type' => $isUser ? 'direct' : 'group',
+                                'via_group' => !$isUser,
                                 'level' => strtolower($rule['permission_level']),
-                                'description' => $isUser ? "Acesso direto no Assunto {$subj['name']}" : "Grupo {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " no Assunto {$subj['name']}"
+                                'description' => $isUser ? "Acesso direto no Assunto {$subj['name']}" : "Equipe {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " no Assunto {$subj['name']}"
                             ];
                         }
                     }
@@ -1084,7 +1331,7 @@ class PermissionService {
             }
 
             if ($src['type'] === 'direct') $hasDirect = true;
-            if ($src['type'] === 'group') $hasGroup = true;
+            if ($src['type'] === 'group' || !empty($src['via_group'])) $hasGroup = true;
             if ($src['type'] === 'inherited') $hasInherited = true;
         }
 
@@ -1200,6 +1447,297 @@ class PermissionService {
             }
         }
         return array_values(array_unique($subjIds));
+    }
+
+    /**
+     * Libera o painel quando o usuário é Admin Global ou possui EDIT/ADMIN efetivo
+     * em pelo menos um recurso. O campo users.role não concede edição local.
+     */
+    public function canAccessAdminPanel(?int $userId): bool {
+        $userId = (int)($userId ?? 0);
+        if ($userId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($userId)) {
+            return true;
+        }
+
+        $scope = $this->getAdministrativeScope($userId);
+        return !empty($scope['category_ids'])
+            || !empty($scope['subcategory_ids'])
+            || !empty($scope['subject_ids']);
+    }
+
+    public function getAdminPanelAccessLabel(?int $userId): string {
+        $userId = (int)($userId ?? 0);
+        if ($this->isGlobalAdmin($userId)) {
+            return 'Super Admin';
+        }
+
+        $scope = $this->getAdministrativeScope($userId);
+        foreach ($scope['category_ids'] as $categoryId) {
+            if ($this->canAdmin($userId, 'category', $categoryId)) {
+                return 'Administrador de Categoria';
+            }
+        }
+        foreach ($scope['subcategory_ids'] as $subcategoryId) {
+            if ($this->canAdmin($userId, 'subcategory', $subcategoryId)) {
+                return 'Administrador Local';
+            }
+        }
+        foreach ($scope['subject_ids'] as $subjectId) {
+            if ($this->canAdmin($userId, 'subject', $subjectId)) {
+                return 'Administrador Local';
+            }
+        }
+
+        if (!empty($scope['category_ids'])) {
+            return 'Editor de Categoria';
+        }
+        if (!empty($scope['subcategory_ids'])) {
+            return 'Editor de Subcategoria';
+        }
+        if (!empty($scope['subject_ids'])) {
+            return 'Editor de Assunto';
+        }
+
+        return 'Usuário';
+    }
+
+    /**
+     * Retorna somente os recursos nos quais o usuário pode efetivamente editar.
+     * Os IDs de cobertura são usados apenas para detectar regras ancestrais que
+     * alcançam o ramo administrado; eles não ampliam a autorização do usuário.
+     */
+    public function getAdministrativeScope(?int $userId): array {
+        $userId = (int)($userId ?? 0);
+        $scope = [
+            'category_ids' => [],
+            'subcategory_ids' => [],
+            'subject_ids' => [],
+            'coverage_category_ids' => [],
+            'coverage_subcategory_ids' => [],
+        ];
+
+        if ($userId <= 0) {
+            return $scope;
+        }
+
+        $isGlobalAdmin = $this->isGlobalAdmin($userId);
+        // O escopo administrativo inclui recursos inativos. Caso contrário, um
+        // editor que desativasse seu próprio ramo perderia o painel e não poderia
+        // reativá-lo sem intervenção do Super Admin.
+        foreach ($this->getResourceTree(false) as $category) {
+            $categoryId = (int)$category['id'];
+            $canEditCategory = $isGlobalAdmin || $this->canEdit($userId, 'category', $categoryId);
+
+            if ($canEditCategory) {
+                $scope['category_ids'][] = $categoryId;
+                $scope['coverage_category_ids'][] = $categoryId;
+            }
+
+            foreach ($category['subcategories'] as $subcategory) {
+                $subcategoryId = (int)$subcategory['id'];
+                $canEditSubcategory = $canEditCategory || $this->canEdit($userId, 'subcategory', $subcategoryId);
+
+                if ($canEditSubcategory) {
+                    $scope['subcategory_ids'][] = $subcategoryId;
+                    $scope['coverage_category_ids'][] = $categoryId;
+                    $scope['coverage_subcategory_ids'][] = $subcategoryId;
+                }
+
+                foreach ($subcategory['subjects'] as $subject) {
+                    $subjectId = (int)$subject['id'];
+                    $canEditSubject = $canEditSubcategory || $this->canEdit($userId, 'subject', $subjectId);
+
+                    if ($canEditSubject) {
+                        $scope['subject_ids'][] = $subjectId;
+                        $scope['coverage_category_ids'][] = $categoryId;
+                        $scope['coverage_subcategory_ids'][] = $subcategoryId;
+                    }
+                }
+            }
+        }
+
+        foreach ($scope as $key => $ids) {
+            $scope[$key] = array_values(array_unique(array_map('intval', $ids)));
+        }
+
+        return $scope;
+    }
+
+    /**
+     * Lista de usuários visível no módulo administrativo.
+     * Admin Global vê todos; gestores locais veem apenas pessoas cujo acesso
+     * direto ou via equipe alcança algum recurso de seu próprio escopo.
+     */
+    public function getUsersForAdministrativeScope(?int $managerUserId): array {
+        $managerUserId = (int)($managerUserId ?? 0);
+        if ($managerUserId <= 0) {
+            return [];
+        }
+
+        $userFilterSql = '';
+        if (!$this->isGlobalAdmin($managerUserId)) {
+            $visibleUserIds = $this->getVisibleUserIdsForAdministrativeScope($managerUserId);
+            if (empty($visibleUserIds)) {
+                return [];
+            }
+            $userFilterSql = 'WHERE u.id IN (' . implode(',', $visibleUserIds) . ')';
+        }
+
+        $stmt = $this->pdo->query("
+            SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
+                   COUNT(DISTINCT ug.group_id) AS total_grupos
+            FROM users u
+            LEFT JOIN user_groups ug ON u.id = ug.user_id
+            {$userFilterSql}
+            GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
+            ORDER BY u.name ASC
+        ");
+
+        $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$this->isGlobalAdmin($managerUserId)) {
+            foreach ($users as &$user) {
+                $user['total_grupos'] = count($this->getUserTeamsForAdministrativeScope(
+                    $managerUserId,
+                    (int)$user['id']
+                ));
+            }
+            unset($user);
+        }
+
+        return $users;
+    }
+
+    public function canViewUserInAdministrativeScope(?int $managerUserId, int $targetUserId): bool {
+        $managerUserId = (int)($managerUserId ?? 0);
+        if ($managerUserId <= 0 || $targetUserId <= 0) {
+            return false;
+        }
+
+        if ($this->isGlobalAdmin($managerUserId)) {
+            return true;
+        }
+
+        return in_array($targetUserId, $this->getVisibleUserIdsForAdministrativeScope($managerUserId), true);
+    }
+
+    /** Restringe o diagnóstico aos recursos que o gestor local pode editar. */
+    public function filterDiagnosisToAdministrativeScope(?int $managerUserId, array $diagnosis): array {
+        $managerUserId = (int)($managerUserId ?? 0);
+        if ($this->isGlobalAdmin($managerUserId)) {
+            return $diagnosis;
+        }
+
+        $scope = $this->getAdministrativeScope($managerUserId);
+        $typeToScopeKey = [
+            'category' => 'category_ids',
+            'subcategory' => 'subcategory_ids',
+            'subject' => 'subject_ids',
+        ];
+
+        $diagnosis['resources'] = array_values(array_filter(
+            $diagnosis['resources'] ?? [],
+            static function (array $resource) use ($scope, $typeToScopeKey): bool {
+                $scopeKey = $typeToScopeKey[$resource['resource_type'] ?? ''] ?? null;
+                return $scopeKey !== null
+                    && in_array((int)($resource['resource_id'] ?? 0), $scope[$scopeKey], true);
+            }
+        ));
+
+        $visibleTeams = $this->getUserTeamsForAdministrativeScope(
+            $managerUserId,
+            (int)($diagnosis['user']['id'] ?? 0)
+        );
+        $diagnosis['active_groups'] = array_values(array_filter(
+            $visibleTeams,
+            static fn(array $team): bool => (bool)($team['active'] ?? false)
+        ));
+
+        return $diagnosis;
+    }
+
+    /** Retorna apenas as equipes do usuário que concedem acesso dentro do escopo local. */
+    public function getUserTeamsForAdministrativeScope(?int $managerUserId, int $targetUserId): array {
+        $managerUserId = (int)($managerUserId ?? 0);
+        if ($managerUserId <= 0 || $targetUserId <= 0) {
+            return [];
+        }
+
+        if ($this->isGlobalAdmin($managerUserId)) {
+            $stmt = $this->pdo->prepare("
+                SELECT g.id, g.name, g.description, g.active, ug.created_at AS member_since
+                FROM groups g
+                JOIN user_groups ug ON ug.group_id = g.id
+                WHERE ug.user_id = ?
+                ORDER BY g.name ASC
+            ");
+            $stmt->execute([$targetUserId]);
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        $condition = $this->buildPermissionScopeCondition($this->getAdministrativeScope($managerUserId), 'p');
+        if ($condition === '') {
+            return [];
+        }
+
+        $stmt = $this->pdo->prepare("
+            SELECT DISTINCT g.id, g.name, g.description, g.active, ug.created_at AS member_since
+            FROM groups g
+            JOIN user_groups ug ON ug.group_id = g.id
+            JOIN permissions p ON p.group_id = g.id
+            WHERE ug.user_id = ? AND ({$condition})
+            ORDER BY g.name ASC
+        ");
+        $stmt->execute([$targetUserId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getVisibleUserIdsForAdministrativeScope(int $managerUserId): array {
+        $condition = $this->buildPermissionScopeCondition($this->getAdministrativeScope($managerUserId), 'p');
+        if ($condition === '') {
+            return [];
+        }
+
+        $stmt = $this->pdo->query("
+            SELECT DISTINCT scoped.user_id
+            FROM (
+                SELECT p.user_id
+                FROM permissions p
+                WHERE p.user_id IS NOT NULL AND ({$condition})
+
+                UNION
+
+                SELECT ug.user_id
+                FROM permissions p
+                JOIN groups g ON g.id = p.group_id AND g.active = TRUE
+                JOIN user_groups ug ON ug.group_id = g.id
+                WHERE p.group_id IS NOT NULL AND ({$condition})
+            ) scoped
+            WHERE scoped.user_id IS NOT NULL
+        ");
+
+        return array_values(array_unique(array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN))));
+    }
+
+    private function buildPermissionScopeCondition(array $scope, string $alias): string {
+        $conditions = [];
+        $mapping = [
+            'category_id' => $scope['coverage_category_ids'] ?? [],
+            'subcategory_id' => $scope['coverage_subcategory_ids'] ?? [],
+            'subject_id' => $scope['subject_ids'] ?? [],
+        ];
+
+        foreach ($mapping as $column => $ids) {
+            $ids = array_values(array_filter(array_map('intval', $ids), static fn(int $id): bool => $id > 0));
+            if (!empty($ids)) {
+                $conditions[] = "{$alias}.{$column} IN (" . implode(',', $ids) . ')';
+            }
+        }
+
+        return implode(' OR ', $conditions);
     }
 
     /**

@@ -1,175 +1,183 @@
 <?php
-// api/permissions.php - REST API Central para Gestão de Permissões Hierárquicas (DocGov)
-if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
-    session_start();
-}
+// API única de leitura e escrita das permissões hierárquicas do DocGov.
+require_once __DIR__ . '/../config/session.php';
+docgovStartSession();
+
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/CsrfService.php';
 
-if (!headers_sent()) {
-    header('Content-Type: application/json');
-}
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, private');
+header('X-Content-Type-Options: nosniff');
 
-$loggedUser = $_SESSION['user'] ?? null;
-$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
-
-if ($userId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+function permissionsResponse(int $status, array $payload): never {
+    http_response_code($status);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
-$permService = new PermissionService($pdo);
-$method = $_SERVER['REQUEST_METHOD'];
+function permissionRuleResource(array $rule): array {
+    if (!empty($rule['category_id'])) {
+        return ['category', (int)$rule['category_id']];
+    }
+    if (!empty($rule['subcategory_id'])) {
+        return ['subcategory', (int)$rule['subcategory_id']];
+    }
+    return ['subject', (int)($rule['subject_id'] ?? 0)];
+}
 
-// Suporte a payloads JSON em requisições POST e DELETE
+$currentUserId = (int)($_SESSION['user']['id'] ?? 0);
+if ($currentUserId <= 0) {
+    permissionsResponse(401, ['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+}
+
 $rawInput = file_get_contents('php://input');
-$inputData = [];
-if (!empty($rawInput)) {
+$jsonInput = [];
+if ($rawInput !== '') {
     $decoded = json_decode($rawInput, true);
-    if (is_array($decoded)) {
-        $inputData = $decoded;
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        permissionsResponse(400, ['success' => false, 'error' => 'JSON inválido.']);
+    }
+    $jsonInput = is_array($decoded) ? $decoded : [];
+}
+
+$params = array_merge($_GET, $_POST, $jsonInput);
+$method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+if ($method === 'POST' && strtoupper((string)($params['_method'] ?? '')) === 'DELETE') {
+    $method = 'DELETE';
+}
+if (in_array($method, ['POST', 'DELETE'], true)) {
+    $csrfCandidate = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $params['csrf_token'] ?? '');
+    if (!CsrfService::isValid($csrfCandidate)) {
+        permissionsResponse(419, ['success' => false, 'error' => 'Sessão de segurança expirada. Atualize a página e tente novamente.']);
     }
 }
 
-// Merge com $_POST e $_GET para flexibilidade
-$params = array_merge($_GET, $_POST, $inputData);
+$resourceType = strtolower(trim((string)($params['resource_type'] ?? '')));
+$resourceId = (int)($params['resource_id'] ?? 0);
+if (!in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $resourceId <= 0) {
+    permissionsResponse(400, ['success' => false, 'error' => 'Informe um recurso válido.']);
+}
+
+$permissionService = new PermissionService($pdo);
+$resource = $permissionService->getResourceContext($resourceType, $resourceId);
+if ($resource === null) {
+    permissionsResponse(404, ['success' => false, 'error' => 'Recurso não encontrado.']);
+}
+if (!$permissionService->canAdmin($currentUserId, $resourceType, $resourceId)) {
+    permissionsResponse(403, ['success' => false, 'error' => 'Você precisa de permissão Admin neste recurso.']);
+}
 
 try {
-    // --------------------------------------------------------------------------
-    // 1. GET - Listar permissões diretas e herdadas de um recurso
-    // --------------------------------------------------------------------------
     if ($method === 'GET') {
-        $resourceType = strtolower(trim($params['resource_type'] ?? ''));
-        $resourceId = (int)($params['resource_id'] ?? 0);
-
-        if (!in_array($resourceType, ['category', 'subcategory', 'subject']) || $resourceId <= 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Recurso inválido. Informe resource_type (category|subcategory|subject) e resource_id.']);
-            exit;
-        }
-
-        // Validação de Autorização: Deve possuir ADMIN no recurso ou ser Admin Global
-        if (!$permService->canAdmin($userId, $resourceType, $resourceId)) {
-            http_response_code(403);
-            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você precisa de permissão de Administrador neste recurso para gerenciar suas permissões.']);
-            exit;
-        }
-
-        $permissions = $permService->getResourcePermissions($resourceType, $resourceId);
-        echo json_encode([
+        permissionsResponse(200, [
             'success' => true,
-            'resource_type' => $resourceType,
-            'resource_id' => $resourceId,
-            'data' => $permissions
+            'resource' => $resource,
+            'roles' => [[
+                'principal_type' => 'role',
+                'principal_name' => 'Admin Geral',
+                'principal_subtext' => 'Bypass global do sistema',
+                'permission_level' => 'admin',
+                'effective_level' => 'admin',
+                'is_direct' => false,
+                'locked' => true,
+            ]],
+            'data' => $permissionService->getResourcePermissions($resourceType, $resourceId),
         ]);
-        exit;
     }
 
-    // --------------------------------------------------------------------------
-    // 2. POST - Adicionar ou atualizar uma permissão direta (UPSERT)
-    // --------------------------------------------------------------------------
     if ($method === 'POST') {
-        $resourceType = strtolower(trim($params['resource_type'] ?? ''));
-        $resourceId = (int)($params['resource_id'] ?? 0);
-        $principalType = strtolower(trim($params['principal_type'] ?? '')); // 'user' ou 'group'/'team'
+        $principalType = strtolower(trim((string)($params['principal_type'] ?? '')));
+        if ($principalType === 'team') {
+            $principalType = 'group';
+        }
         $principalId = (int)($params['principal_id'] ?? 0);
-        $level = strtolower(trim($params['permission_level'] ?? $params['level'] ?? ''));
+        $level = strtolower(trim((string)($params['permission_level'] ?? $params['level'] ?? '')));
 
-        if (!in_array($resourceType, ['category', 'subcategory', 'subject']) || $resourceId <= 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Recurso alvo inválido.']);
-            exit;
+        if (!in_array($principalType, ['user', 'group'], true) || $principalId <= 0) {
+            permissionsResponse(400, ['success' => false, 'error' => 'Selecione um usuário ou equipe válido.']);
+        }
+        if (!in_array($level, ['view', 'edit', 'admin'], true)) {
+            permissionsResponse(400, ['success' => false, 'error' => 'Permissão inválida.']);
         }
 
-        if (!in_array($principalType, ['user', 'group', 'team']) || $principalId <= 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Principal (Usuário ou Equipe) inválido.']);
-            exit;
+        $resourceColumn = [
+            'category' => 'category_id',
+            'subcategory' => 'subcategory_id',
+            'subject' => 'subject_id',
+        ][$resourceType];
+        $principalColumn = $principalType === 'user' ? 'user_id' : 'group_id';
+        $principalTable = $principalType === 'user' ? 'users' : 'groups';
+
+        $stmtPrincipal = $pdo->prepare("SELECT active FROM {$principalTable} WHERE id = ?");
+        $stmtPrincipal->execute([$principalId]);
+        $principal = $stmtPrincipal->fetch(PDO::FETCH_ASSOC);
+        if (!$principal) {
+            permissionsResponse(404, ['success' => false, 'error' => 'Usuário ou equipe não encontrado.']);
+        }
+        $principalActive = filter_var($principal['active'], FILTER_VALIDATE_BOOLEAN);
+
+        $stmtExisting = $pdo->prepare("SELECT id, permission_level FROM permissions WHERE {$principalColumn} = ? AND {$resourceColumn} = ? LIMIT 1");
+        $stmtExisting->execute([$principalId, $resourceId]);
+        $existing = $stmtExisting->fetch(PDO::FETCH_ASSOC);
+        if (!$principalActive && !$existing) {
+            permissionsResponse(400, ['success' => false, 'error' => 'Não é possível criar uma permissão para um usuário ou equipe inativa.']);
         }
 
-        if (!in_array($level, ['view', 'edit', 'admin'])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Nível de permissão inválido. Escolha entre: view, edit, admin.']);
-            exit;
-        }
-
-        // Validação de Autorização: Deve possuir ADMIN no recurso ou ser Admin Global
-        if (!$permService->canAdmin($userId, $resourceType, $resourceId)) {
-            http_response_code(403);
-            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui privilégios administrativos neste recurso.']);
-            exit;
-        }
-
-        $targetUserId = ($principalType === 'user') ? $principalId : null;
-        $targetGroupId = ($principalType === 'group' || $principalType === 'team') ? $principalId : null;
-
-        $saved = $permService->saveResourcePermission(
+        $permissionService->saveResourcePermission(
             $resourceType,
             $resourceId,
-            $targetUserId,
-            $targetGroupId,
+            $principalType === 'user' ? $principalId : null,
+            $principalType === 'group' ? $principalId : null,
             $level,
-            $userId
+            $currentUserId
         );
 
-        if ($saved) {
-            echo json_encode(['success' => true, 'message' => 'Permissão salva com sucesso!']);
-        } else {
-            http_response_code(500);
-            echo json_encode(['success' => false, 'error' => 'Falha ao salvar permissão no banco de dados.']);
-        }
-        exit;
+        $wasChanged = $existing && strtolower($existing['permission_level']) !== $level;
+        $message = $existing
+            ? ($wasChanged ? 'Permissão atualizada.' : 'Permissão já estava configurada.')
+            : 'Permissão adicionada.';
+        permissionsResponse(200, [
+            'success' => true,
+            'message' => $message,
+            'data' => $permissionService->getResourcePermissions($resourceType, $resourceId),
+        ]);
     }
 
-    // --------------------------------------------------------------------------
-    // 3. DELETE - Remover uma permissão direta pelo ID
-    // --------------------------------------------------------------------------
-    if ($method === 'DELETE' || ($method === 'POST' && isset($params['_method']) && strtoupper($params['_method']) === 'DELETE')) {
-        $permissionId = (int)($params['id'] ?? $params['permission_id'] ?? 0);
-
+    if ($method === 'DELETE') {
+        $permissionId = (int)($params['permission_id'] ?? $params['id'] ?? 0);
         if ($permissionId <= 0) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'ID da permissão inválido.']);
-            exit;
+            permissionsResponse(400, ['success' => false, 'error' => 'Permissão inválida.']);
         }
 
-        // Buscar a regra para validar a permissão administrativa do solicitante sobre o recurso
-        $stmtRule = $pdo->prepare("SELECT category_id, subcategory_id, subject_id FROM permissions WHERE id = ?");
+        $stmtRule = $pdo->prepare('SELECT id, category_id, subcategory_id, subject_id FROM permissions WHERE id = ?');
         $stmtRule->execute([$permissionId]);
         $rule = $stmtRule->fetch(PDO::FETCH_ASSOC);
-
         if (!$rule) {
-            http_response_code(404);
-            echo json_encode(['success' => false, 'error' => 'Regra de permissão não encontrada.']);
-            exit;
+            permissionsResponse(404, ['success' => false, 'error' => 'Regra de permissão não encontrada.']);
         }
 
-        $resType = !empty($rule['category_id']) ? 'category' : (!empty($rule['subcategory_id']) ? 'subcategory' : 'subject');
-        $resId = !empty($rule['category_id']) ? (int)$rule['category_id'] : (!empty($rule['subcategory_id']) ? (int)$rule['subcategory_id'] : (int)$rule['subject_id']);
-
-        // Validação de Autorização
-        if (!$permService->canAdmin($userId, $resType, $resId)) {
-            http_response_code(403);
-            echo json_encode(['success' => false, 'error' => 'Acesso negado. Você não possui autorização para remover permissões neste recurso.']);
-            exit;
+        [$ruleResourceType, $ruleResourceId] = permissionRuleResource($rule);
+        if ($ruleResourceType !== $resourceType || $ruleResourceId !== $resourceId) {
+            permissionsResponse(409, ['success' => false, 'error' => 'Apenas regras diretas deste recurso podem ser removidas aqui.']);
         }
 
-        $deleted = $permService->deletePermission($permissionId, $userId);
-
-        if ($deleted) {
-            echo json_encode(['success' => true, 'message' => 'Permissão removida com sucesso!']);
-        } else {
-            http_response_code(500);
-            echo json_encode(['success' => false, 'error' => 'Falha ao remover permissão.']);
+        if (!$permissionService->deletePermission($permissionId, $currentUserId)) {
+            permissionsResponse(404, ['success' => false, 'error' => 'Regra de permissão não encontrada.']);
         }
-        exit;
+
+        permissionsResponse(200, [
+            'success' => true,
+            'message' => 'Permissão removida.',
+            'data' => $permissionService->getResourcePermissions($resourceType, $resourceId),
+        ]);
     }
 
-    http_response_code(405);
-    echo json_encode(['success' => false, 'error' => 'Método HTTP não suportado.']);
-
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Erro no servidor: ' . $e->getMessage()]);
+    permissionsResponse(405, ['success' => false, 'error' => 'Método HTTP não suportado.']);
+} catch (InvalidArgumentException $e) {
+    permissionsResponse(400, ['success' => false, 'error' => $e->getMessage()]);
+} catch (Throwable $e) {
+    error_log('Erro em permissions.php: ' . $e->getMessage());
+    permissionsResponse(500, ['success' => false, 'error' => 'Não foi possível concluir a operação de permissão.']);
 }

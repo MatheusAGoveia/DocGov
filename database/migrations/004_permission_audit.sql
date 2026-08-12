@@ -5,7 +5,7 @@
 
 CREATE TABLE IF NOT EXISTS permission_audit (
     id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id INT NULL REFERENCES users(id) ON DELETE SET NULL,
     action VARCHAR(50) NOT NULL CHECK (action IN ('PERMISSION_CREATED', 'PERMISSION_CHANGED', 'PERMISSION_REMOVED')),
     principal_type VARCHAR(10) NOT NULL CHECK (principal_type IN ('USER', 'TEAM')),
     principal_id INT NOT NULL,

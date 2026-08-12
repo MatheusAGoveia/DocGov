@@ -1,14 +1,12 @@
 <?php
-// document-file.php — Endpoint Protegido para Stream Inline de PDF
+// document-file.php — Endpoint protegido para visualização inline de arquivos.
 ob_start();
 ini_set('display_errors', '0');
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config/session.php';
+docgovStartSession();
 
 require_once __DIR__ . '/config/db.php';
-require_once __DIR__ . '/config/permissions.php';
 
 $loggedUser = $_SESSION['user'] ?? null;
 $docId = (int)($_GET['id'] ?? 0);
@@ -53,7 +51,7 @@ try {
     }
 
     // 3. Validação do Tipo de Conteúdo
-    if (($doc['content_type'] ?? '') !== 'file' || empty($doc['stored_filename'])) {
+    if (!in_array(($doc['content_type'] ?? ''), ['file', 'video'], true) || empty($doc['stored_filename'])) {
         while (ob_get_level()) ob_end_clean();
         http_response_code(400);
         header('Content-Type: text/plain; charset=utf-8');
@@ -93,23 +91,77 @@ try {
     }
 
     $fileSize = filesize($realFilePath);
-    $origName = preg_replace('/[^a-zA-Z0-9_\.\-]/', '_', $doc['original_filename'] ?: 'documento.pdf');
-    if (!str_ends_with(strtolower($origName), '.pdf')) {
-        $origName .= '.pdf';
-    }
+    $origName = preg_replace('/[^a-zA-Z0-9_\.\-]/', '_', basename($doc['original_filename'] ?: $fileName));
+    $extension = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
+    $mimeByExtension = [
+        'pdf' => 'application/pdf',
+        'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif', 'webp' => 'image/webp', 'bmp' => 'image/bmp', 'avif' => 'image/avif',
+        'txt' => 'text/plain; charset=utf-8', 'log' => 'text/plain; charset=utf-8',
+        'csv' => 'text/csv; charset=utf-8', 'md' => 'text/markdown; charset=utf-8',
+        'json' => 'application/json; charset=utf-8', 'xml' => 'application/xml; charset=utf-8',
+        'doc' => 'application/msword',
+        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'mp3' => 'audio/mpeg', 'wav' => 'audio/wav', 'ogg' => 'audio/ogg',
+        'mp4' => 'video/mp4', 'webm' => 'video/webm', 'ogv' => 'video/ogg',
+        'm4v' => 'video/x-m4v', 'mov' => 'video/quicktime',
+    ];
+    $responseMime = $mimeByExtension[$extension] ?? 'application/octet-stream';
 
     // Limpa completamente os buffers antes de enviar os bytes puros
     while (ob_get_level()) ob_end_clean();
 
-    // 5. Envio dos Headers Adequados para Stream Inline
-    header('Content-Type: application/pdf');
+    // 5. Envio dos headers adequados para visualização inline. O MIME é
+    // determinado pelo arquivo/extensão permitida, nunca forçado para PDF.
+    header('Content-Type: ' . $responseMime);
     header('Content-Disposition: inline; filename="' . $origName . '"');
-    header('Content-Length: ' . $fileSize);
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: private, max-age=3600');
     header('Pragma: public');
+    header('Accept-Ranges: bytes');
 
-    readfile($realFilePath);
+    $rangeStart = 0;
+    $rangeEnd = $fileSize - 1;
+    $rangeHeader = $_SERVER['HTTP_RANGE'] ?? '';
+    if ($rangeHeader !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', trim($rangeHeader), $rangeMatch)) {
+        if ($rangeMatch[1] === '' && $rangeMatch[2] !== '') {
+            $suffixLength = min((int)$rangeMatch[2], $fileSize);
+            $rangeStart = max(0, $fileSize - $suffixLength);
+        } else {
+            $rangeStart = (int)$rangeMatch[1];
+            if ($rangeMatch[2] !== '') $rangeEnd = min((int)$rangeMatch[2], $fileSize - 1);
+        }
+
+        if ($rangeStart > $rangeEnd || $rangeStart >= $fileSize) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $fileSize);
+            exit;
+        }
+
+        http_response_code(206);
+        header("Content-Range: bytes {$rangeStart}-{$rangeEnd}/{$fileSize}");
+    }
+
+    $responseLength = $rangeEnd - $rangeStart + 1;
+    header('Content-Length: ' . $responseLength);
+
+    $fileHandle = fopen($realFilePath, 'rb');
+    if ($fileHandle === false) {
+        http_response_code(500);
+        exit;
+    }
+
+    fseek($fileHandle, $rangeStart);
+    $remainingBytes = $responseLength;
+    while ($remainingBytes > 0 && !feof($fileHandle)) {
+        $chunk = fread($fileHandle, min(8192, $remainingBytes));
+        if ($chunk === false || $chunk === '') break;
+        echo $chunk;
+        $remainingBytes -= strlen($chunk);
+        flush();
+    }
+    fclose($fileHandle);
+
     exit;
 
 } catch (Exception $e) {

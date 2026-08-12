@@ -1,41 +1,50 @@
 <?php
 // admin/index.php - Painel Administrativo de Gestão de Documentos (Ícones 100% SVG)
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+require_once __DIR__ . '/../config/session.php';
+docgovStartSession();
+if (!headers_sent()) {
+    header('Cache-Control: no-store, no-cache, must-revalidate, private');
+    header('Pragma: no-cache');
+    header('X-Frame-Options: DENY');
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: same-origin');
 }
 require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../config/permissions.php';
+require_once __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/ActiveDirectoryAuthService.php';
+require_once __DIR__ . '/../services/VideoEmbedService.php';
+require_once __DIR__ . '/../services/CategoryImageService.php';
+require_once __DIR__ . '/../services/BatchDocumentUploadService.php';
+require_once __DIR__ . '/../services/DocumentWorkflowService.php';
+require_once __DIR__ . '/../services/NotificationService.php';
+require_once __DIR__ . '/../services/UsageAuditService.php';
+require_once __DIR__ . '/../services/CsrfService.php';
+require_once __DIR__ . '/../services/HierarchyService.php';
+$tagService = new TagService($pdo);
+$hierarchyService = new HierarchyService($pdo);
+$permService = new PermissionService($pdo);
+$adAuthService = new ActiveDirectoryAuthService($pdo);
+$categoryImageService = new CategoryImageService(dirname(__DIR__));
+$notificationService = new NotificationService($pdo);
+$workflowService = new DocumentWorkflowService($pdo, $permService);
+$usageAuditService = new UsageAuditService($pdo);
+$batchDocumentUploadService = new BatchDocumentUploadService($pdo, $permService, $workflowService, $usageAuditService, $tagService, dirname(__DIR__));
+$csrfToken = CsrfService::token();
+$adConfig = require __DIR__ . '/../config/active_directory.php';
+$availableAdDomains = array_keys($adConfig['domains'] ?? []);
+$selectedAdDomain = strtoupper((string)($adConfig['default_domain'] ?? 'BETIM'));
 
-// Processamento de login no painel via PostgreSQL users
-if (isset($_POST['action']) && $_POST['action'] === 'login') {
-    $loginInput = trim($_POST['username'] ?? $_POST['login'] ?? $_POST['email'] ?? '');
-    $passInput = trim($_POST['password'] ?? '');
-
-    if (!empty($loginInput) && !empty($passInput)) {
-        $stmtAdmin = $pdo->prepare("SELECT * FROM users WHERE (email = :input OR username = :input) AND active = TRUE LIMIT 1");
-        $stmtAdmin->execute([':input' => $loginInput]);
-        $userAdmin = $stmtAdmin->fetch();
-
-        if ($userAdmin && in_array($userAdmin['role'], ['admin', 'editor']) && $userAdmin['password_hash'] && password_verify($passInput, $userAdmin['password_hash'])) {
-            $_SESSION['admin_logged'] = true;
-            $_SESSION['user'] = [
-                'id' => (int)$userAdmin['id'],
-                'nome' => $userAdmin['name'],
-                'login' => $userAdmin['username'],
-                'email' => $userAdmin['email'],
-                'role' => $userAdmin['role'],
-                'active' => true,
-                'avatar' => $userAdmin['avatar'] ?? null,
-                'inicial' => mb_strtoupper(mb_substr($userAdmin['name'], 0, 1))
-            ];
-            header('Location: index.php');
-            exit;
-        } else {
-            $login_error = "Credenciais inválidas ou usuário sem permissão de acesso ao painel!";
-        }
-    } else {
-        $login_error = "Informe o usuário/e-mail e a senha de administração!";
+if (!function_exists('docgovDatabaseBoolean')) {
+    function docgovDatabaseBoolean(mixed $value): bool {
+        return in_array($value, [true, 1, '1', 't', 'true'], true);
     }
+}
+
+// A autenticação acontece exclusivamente na entrada do portal. Sem sessão,
+// não exibimos uma segunda tela de login dentro do painel administrativo.
+if (empty($_SESSION['user'])) {
+    header('Location: ../login.php');
+    exit;
 }
 
 // Verifica sessão do usuário logado
@@ -43,400 +52,410 @@ $loggedUser = $_SESSION['user'] ?? null;
 $accessDenied = false;
 $accessErrorReason = '';
 
-if (!$loggedUser) {
-    $accessDenied = true;
-    $accessErrorReason = "Informe suas credenciais para acessar a área administrativa.";
-} elseif (($loggedUser['role'] ?? '') === 'leitor') {
-    $accessDenied = true;
-    $accessErrorReason = "Usuários com perfil Leitor não possuem acesso ao módulo de Gestão Administrativa.";
+if (!$loggedUser || !$permService->canAccessAdminPanel((int)($loggedUser['id'] ?? 0))) {
+    unset($_SESSION['admin_logged']);
+    header('Location: ../index.php');
+    exit;
 } else {
     $_SESSION['admin_logged'] = true;
 }
 
 $isLogged = isset($_SESSION['admin_logged']) && $_SESSION['admin_logged'] === true && !$accessDenied;
-
-require_once __DIR__ . '/../services/PermissionService.php';
-$permService = new PermissionService($pdo);
-
-if (!function_exists('renderGrafanaPermissionsPanel')) {
-    function renderGrafanaPermissionsPanel(PermissionService $permService, string $resourceType, int $resourceId, string $resourceTitle, int $managerUserId): void {
-        $permissions = $permService->getResourcePermissions($resourceType, $resourceId);
-        $usersList = [];
-        $groupsList = [];
-
-        foreach ($permissions as $p) {
-            if ($p['principal_type'] === 'user') {
-                $usersList[] = $p;
-            } else {
-                $groupsList[] = $p;
-            }
-        }
-        $totalPerms = count($permissions);
-        ?>
-        <div class="grafana-perm-card p-6 space-y-6 mt-6">
-            <!-- CABEÇALHO DO PAINEL DE PERMISSÕES -->
-            <div class="pb-4 border-b border-slate-100 dark:border-[#454956] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div class="flex items-start gap-3">
-                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center text-white shadow-md shrink-0">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                    </div>
-                    <div>
-                        <div class="flex items-center gap-2">
-                            <h3 class="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">Gerenciar permissões</h3>
-                            <span class="px-2 py-0.5 text-[10px] font-bold font-mono rounded-full bg-slate-100 dark:bg-[#2c2e33] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-[#454956]"><?= $totalPerms ?> regra(s)</span>
-                        </div>
-                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium flex items-center gap-1">
-                            <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-                            <span><?= htmlspecialchars($resourceTitle) ?></span>
-                        </p>
-                    </div>
-                </div>
-
-                <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[11px] font-medium border border-amber-500/20 shrink-0">
-                    <svg class="w-4 h-4 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <span>As alterações afetam este item e seus descendentes.</span>
-                </div>
-            </div>
-
-            <!-- SEÇÕES DE PERMISSÃO -->
-            <div class="space-y-6">
-                
-                <!-- SEÇÃO 1: USUÁRIO -->
-                <div class="space-y-2">
-                    <div class="flex items-center justify-between">
-                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                            <span>👤 Usuário</span>
-                            <span class="text-[10px] font-mono text-slate-400">(<?= count($usersList) ?>)</span>
-                        </h4>
-                    </div>
-
-                    <div class="border border-slate-200 dark:border-[#454956] rounded-lg overflow-hidden bg-slate-50/50 dark:bg-[#2c2e33]/50 divide-y divide-slate-100 dark:divide-[#454956]">
-                        <?php if (empty($usersList)): ?>
-                            <div class="p-4 text-center text-xs text-slate-400 italic">
-                                Nenhuma permissão individual de usuário configurada neste nível.
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($usersList as $uPerm): ?>
-                                <?php 
-                                    $initials = mb_strtoupper(mb_substr($uPerm['principal_name'] ?? 'U', 0, 2));
-                                    $isDirect = (bool)$uPerm['is_direct'];
-                                ?>
-                                <div class="grafana-perm-row p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                                    <div class="flex items-center gap-3 min-w-0">
-                                        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 text-white font-bold text-xs flex items-center justify-center shadow-xs shrink-0">
-                                            <?= htmlspecialchars($initials) ?>
-                                        </div>
-                                        <div class="min-w-0">
-                                            <span class="font-bold text-slate-900 dark:text-slate-100 block truncate"><?= htmlspecialchars($uPerm['principal_name']) ?></span>
-                                            <span class="text-[11px] text-slate-400 block truncate"><?= htmlspecialchars($uPerm['principal_subtext']) ?></span>
-                                        </div>
-                                    </div>
-
-                                    <div class="flex items-center gap-3 self-end sm:self-center shrink-0">
-                                        <?php if (!$isDirect): ?>
-                                            <span class="perm-badge-inherited" title="Permissão herdada de um nível superior">
-                                                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                                                <span><?= htmlspecialchars($uPerm['origin_label']) ?></span>
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="perm-badge-direct">
-                                                <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                                <span>Direta</span>
-                                            </span>
-                                        <?php endif; ?>
-
-                                        <div class="w-32">
-                                            <select onchange="grafanaChangeLevel(<?= $uPerm['permission_id'] ?>, this.value, '<?= $resourceType ?>', <?= $resourceId ?>)" 
-                                                    class="perm-level-select input-minimal w-full px-2.5 py-1 text-xs font-semibold rounded-md border border-slate-200 dark:border-[#454956] text-slate-800 dark:text-slate-100"
-                                                    <?= !$isDirect ? 'disabled title="Para alterar, edite no nível de origem"' : '' ?>>
-                                                <option value="view" <?= $uPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
-                                                <option value="edit" <?= $uPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
-                                                <option value="admin" <?= $uPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
-                                            </select>
-                                        </div>
-
-                                        <div class="w-8 flex items-center justify-center">
-                                            <?php if (!$isDirect): ?>
-                                                <button type="button" disabled class="p-1.5 rounded-md bg-slate-100 dark:bg-[#2c2e33] text-slate-400 opacity-60 cursor-not-allowed" title="Permissão herdada da pasta pai (Bloqueado para alteração direta)">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                                                </button>
-                                            <?php else: ?>
-                                                <button type="button" onclick="grafanaDeleteRule(<?= $uPerm['permission_id'] ?>, '<?= $resourceType ?>', <?= $resourceId ?>)" class="p-1.5 rounded-md text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition" title="Remover permissão direta">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                                </button>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <!-- SEÇÃO 2: EQUIPE / GRUPO -->
-                <div class="space-y-2">
-                    <div class="flex items-center justify-between">
-                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                            <span>👥 Equipe / Grupo</span>
-                            <span class="text-[10px] font-mono text-slate-400">(<?= count($groupsList) ?>)</span>
-                        </h4>
-                    </div>
-
-                    <div class="border border-slate-200 dark:border-[#454956] rounded-lg overflow-hidden bg-slate-50/50 dark:bg-[#2c2e33]/50 divide-y divide-slate-100 dark:divide-[#454956]">
-                        <?php if (empty($groupsList)): ?>
-                            <div class="p-4 text-center text-xs text-slate-400 italic">
-                                Nenhuma permissão de equipe/grupo configurada neste nível.
-                            </div>
-                        <?php else: ?>
-                            <?php foreach ($groupsList as $gPerm): ?>
-                                <?php $isDirect = (bool)$gPerm['is_direct']; ?>
-                                <div class="grafana-perm-row p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                                    <div class="flex items-center gap-3 min-w-0">
-                                        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold text-xs flex items-center justify-center shadow-xs shrink-0">
-                                            👥
-                                        </div>
-                                        <div class="min-w-0">
-                                            <span class="font-bold text-slate-900 dark:text-slate-100 block truncate"><?= htmlspecialchars($gPerm['principal_name']) ?></span>
-                                            <span class="text-[11px] text-slate-400 block truncate"><?= htmlspecialchars($gPerm['principal_subtext']) ?></span>
-                                        </div>
-                                    </div>
-
-                                    <div class="flex items-center gap-3 self-end sm:self-center shrink-0">
-                                        <?php if (!$isDirect): ?>
-                                            <span class="perm-badge-inherited" title="Permissão herdada de um nível superior">
-                                                <svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                                                <span><?= htmlspecialchars($gPerm['origin_label']) ?></span>
-                                            </span>
-                                        <?php else: ?>
-                                            <span class="perm-badge-direct">
-                                                <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                                                <span>Direta</span>
-                                            </span>
-                                        <?php endif; ?>
-
-                                        <div class="w-32">
-                                            <select onchange="grafanaChangeLevel(<?= $gPerm['permission_id'] ?>, this.value, '<?= $resourceType ?>', <?= $resourceId ?>)" 
-                                                    class="perm-level-select input-minimal w-full px-2.5 py-1 text-xs font-semibold rounded-md border border-slate-200 dark:border-[#454956] text-slate-800 dark:text-slate-100"
-                                                    <?= !$isDirect ? 'disabled title="Para alterar, edite no nível de origem"' : '' ?>>
-                                                <option value="view" <?= $gPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
-                                                <option value="edit" <?= $gPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
-                                                <option value="admin" <?= $gPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
-                                            </select>
-                                        </div>
-
-                                        <div class="w-8 flex items-center justify-center">
-                                            <?php if (!$isDirect): ?>
-                                                <button type="button" disabled class="p-1.5 rounded-md bg-slate-100 dark:bg-[#2c2e33] text-slate-400 opacity-60 cursor-not-allowed" title="Permissão herdada da pasta pai (Bloqueado para alteração direta)">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
-                                                </button>
-                                            <?php else: ?>
-                                                <button type="button" onclick="grafanaDeleteRule(<?= $gPerm['permission_id'] ?>, '<?= $resourceType ?>', <?= $resourceId ?>)" class="p-1.5 rounded-md text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 transition" title="Remover permissão direta">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                                </button>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <!-- AÇÃO: BOTÃO + ADICIONAR UMA PERMISSÃO -->
-                <div class="pt-2">
-                    <button type="button" onclick="grafanaOpenAddModal('<?= $resourceType ?>', <?= $resourceId ?>, '<?= htmlspecialchars($resourceTitle, ENT_QUOTES) ?>')" class="px-4 py-2.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold text-xs flex items-center gap-2 transition shadow-md hover:shadow-lg active:scale-[0.98]">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                        <span>Adicionar uma permissão</span>
-                    </button>
-                </div>
-
-            </div>
-        </div>
-        <?php
-    }
-}
+$adminAccessLabel = $loggedUser
+    ? $permService->getAdminPanelAccessLabel((int)($loggedUser['id'] ?? 0))
+    : 'Usuário';
 
 $activeTab = trim($_GET['tab'] ?? 'visao_geral');
 // Alias: novo_conteudo é o novo nome do tab de criação
 if ($activeTab === 'novo_conteudo') $activeTab = 'novo_documento';
+$dashboardPeriodOptions = [7, 14, 30];
+$requestedDashboardPeriod = (int)($_GET['dash_period'] ?? 14);
+$dashboardPeriodDays = in_array($requestedDashboardPeriod, $dashboardPeriodOptions, true)
+    ? $requestedDashboardPeriod
+    : 14;
+$dashboardPeriodStartOffset = max(0, $dashboardPeriodDays - 1);
 $message = '';
 $errorMessage = '';
 $editDoc = null;
 $docDetails = null;
+$workflowHistory = [];
 $editCat = null;
 $editSub = null;
 $editAss = null;
+$currentAdminUserId = (int)($loggedUser['id'] ?? 0);
+$unreadNotificationCount = $isLogged ? $notificationService->unreadCount($currentAdminUserId) : 0;
+$isGlobalAdminCurrent = $isLogged && $permService->isGlobalAdmin($currentAdminUserId);
+if ($isLogged && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
+    $usageAuditService->log('admin_page_view', $currentAdminUserId, 'ADMIN', null, ['tab' => $activeTab]);
+}
+$administrativeScope = $isLogged
+    ? $permService->getAdministrativeScope($currentAdminUserId)
+    : [
+        'category_ids' => [],
+        'subcategory_ids' => [],
+        'subject_ids' => [],
+        'coverage_category_ids' => [],
+        'coverage_subcategory_ids' => [],
+    ];
+$administrativeSubjectIds = array_values(array_unique(array_map('intval', $administrativeScope['subject_ids'])));
+$administrativeCategoryIds = array_values(array_unique(array_map('intval', $administrativeScope['coverage_category_ids'])));
+$administrativeSubcategoryIds = array_values(array_unique(array_map('intval', $administrativeScope['coverage_subcategory_ids'])));
+$administrativeDocumentScopeSql = $isGlobalAdminCurrent
+    ? 'TRUE'
+    : (!empty($administrativeSubjectIds)
+        ? 'd.subject_id IN (' . implode(',', $administrativeSubjectIds) . ')'
+        : 'FALSE');
+
+$globalOnlyTabs = ['grupos', 'editar_grupo', 'configuracoes', 'tags'];
+if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $globalOnlyTabs, true)) {
+    http_response_code(403);
+    $activeTab = 'visao_geral';
+    $errorMessage = 'Esta área contém dados globais e está disponível somente para o Super Admin.';
+}
 
 // =============================================================================
 // PROCESSAMENTO COMPLETO DE AÇÕES ADMINISTRATIVAS (POSTGRESQL)
 // =============================================================================
 if ($isLogged) {
 
-    // 0.0 PROCESSAMENTO DE GESTÃO DE PERMISSÕES POR RECURSO (CATEGORIA / SUBCATEGORIA / ASSUNTO)
-    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['resource_permission_action'])) {
-        // Extrair recurso primeiro para poder verificar permissão delegada
-        $resPermAction = $_POST['resource_permission_action'];
-        $resType = trim($_POST['resource_type'] ?? '');
-        $resId = (int)($_POST['resource_id'] ?? 0);
-
-        // Verificar autorização: Admin Global OU Admin delegado no recurso específico
-        $_managerUserId = (int)($loggedUser['id'] ?? 0);
-        $_isGlobalAdminAction = $permService->isGlobalAdmin($_managerUserId);
-        $_isDelegatedAdmin = (!$_isGlobalAdminAction && $resId > 0 && in_array($resType, ['category', 'subcategory', 'subject']))
-            ? $permService->canAdmin($_managerUserId, $resType, $resId)
-            : false;
-        $_canManagePermissions = $_isGlobalAdminAction || $_isDelegatedAdmin;
-
-        if (!$_canManagePermissions) {
-            $errorMessage = "Acesso negado. É necessário privilégio Admin neste recurso (ou ser Administrador Global) para gerenciar permissões.";
+    // CONFIGURAÇÕES GLOBAIS (SOMENTE SUPER ADMIN)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_system_settings'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode alterar configurações globais.';
         } else {
-            if (!in_array($resType, ['category', 'subcategory', 'subject']) || $resId <= 0) {
-                $errorMessage = "Recurso inválido para configuração de permissão.";
+            try {
+                $portalName = trim((string)($_POST['portal_name'] ?? ''));
+                $organizationNameInput = trim((string)($_POST['organization_name'] ?? ''));
+                $portalDescription = trim((string)($_POST['portal_description'] ?? ''));
+                $selectedPortalTheme = SystemSettingsService::normalizePortalTheme($_POST['portal_theme'] ?? 'emerald');
+                $systemLogoFile = isset($_FILES['system_logo']) && is_array($_FILES['system_logo'])
+                    ? $_FILES['system_logo']
+                    : null;
+                $removeSystemLogo = isset($_POST['remove_system_logo']);
+                $supportEmail = strtolower(trim((string)($_POST['support_email'] ?? '')));
+                $timezoneInput = trim((string)($_POST['timezone'] ?? 'America/Sao_Paulo'));
+                $sessionTimeout = (int)($_POST['session_timeout_minutes'] ?? 120);
+                $corsEnabled = isset($_POST['cors_enabled']);
+                $corsCredentials = isset($_POST['cors_allow_credentials']);
+                $origins = array_values(array_unique(array_filter(array_map('trim', preg_split('/\R+/', (string)($_POST['cors_allowed_origins'] ?? '')) ?: []))));
+                $allowedMethodOptions = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+                $corsMethods = array_values(array_intersect($allowedMethodOptions, array_map('strtoupper', (array)($_POST['cors_allowed_methods'] ?? []))));
+                $maintenanceEnabled = isset($_POST['maintenance_enabled']);
+                $maintenanceMode = strtolower(trim((string)($_POST['maintenance_mode'] ?? 'full')));
+                $maintenanceScope = array_values(array_intersect(['portal', 'admin', 'api', 'files'], (array)($_POST['maintenance_scope'] ?? [])));
+                $maintenanceReason = trim((string)($_POST['maintenance_reason'] ?? ''));
+                $maintenanceReference = trim((string)($_POST['maintenance_reference'] ?? ''));
+                $maintenanceResponsible = trim((string)($_POST['maintenance_responsible'] ?? ''));
+                $maintenanceProgress = (int)($_POST['maintenance_progress'] ?? 0);
+                $maintenanceAnnounceMinutes = (int)($_POST['maintenance_announce_minutes'] ?? 60);
+                $maintenanceRefreshSeconds = (int)($_POST['maintenance_auto_refresh_seconds'] ?? 30);
+                $maintenanceTitle = trim((string)($_POST['maintenance_title'] ?? ''));
+                $maintenanceMessage = trim((string)($_POST['maintenance_message'] ?? ''));
+
+                if (mb_strlen($portalName) < 2 || mb_strlen($portalName) > 60) {
+                    throw new InvalidArgumentException('O nome do portal deve ter entre 2 e 60 caracteres.');
+                }
+                if (mb_strlen($organizationNameInput) < 2 || mb_strlen($organizationNameInput) > 100) {
+                    throw new InvalidArgumentException('O nome da organização deve ter entre 2 e 100 caracteres.');
+                }
+                if (mb_strlen($portalDescription) < 2 || mb_strlen($portalDescription) > 160) {
+                    throw new InvalidArgumentException('A descrição deve ter entre 2 e 160 caracteres.');
+                }
+                if ($selectedPortalTheme !== strtolower(trim((string)($_POST['portal_theme'] ?? 'emerald')))) {
+                    throw new InvalidArgumentException('Tema padrão inválido.');
+                }
+                if (($systemLogoError = $categoryImageService->validate($systemLogoFile, 'logo do sistema')) !== null) {
+                    throw new InvalidArgumentException($systemLogoError);
+                }
+                if ($supportEmail !== '' && !filter_var($supportEmail, FILTER_VALIDATE_EMAIL)) {
+                    throw new InvalidArgumentException('Informe um e-mail de suporte válido.');
+                }
+                if (!in_array($timezoneInput, ['America/Sao_Paulo', 'UTC'], true)) {
+                    throw new InvalidArgumentException('Fuso horário inválido.');
+                }
+                if ($sessionTimeout < 15 || $sessionTimeout > 480) {
+                    throw new InvalidArgumentException('A expiração da sessão deve ficar entre 15 e 480 minutos.');
+                }
+                if ($corsEnabled && empty($origins)) {
+                    throw new InvalidArgumentException('Informe ao menos uma origem quando o CORS estiver habilitado.');
+                }
+                foreach ($origins as $origin) {
+                    if ($origin !== '*' && !preg_match('#^https?://[a-z0-9.-]+(?::\d{1,5})?$#i', $origin)) {
+                        throw new InvalidArgumentException("Origem CORS inválida: {$origin}");
+                    }
+                }
+                if ($corsCredentials && in_array('*', $origins, true)) {
+                    throw new InvalidArgumentException('CORS com credenciais não pode usar origem curinga (*).');
+                }
+                if ($corsEnabled && empty($corsMethods)) {
+                    throw new InvalidArgumentException('Selecione ao menos um método permitido pelo CORS.');
+                }
+                if (mb_strlen($maintenanceTitle) < 3 || mb_strlen($maintenanceTitle) > 100 || mb_strlen($maintenanceMessage) < 5 || mb_strlen($maintenanceMessage) > 500) {
+                    throw new InvalidArgumentException('Revise o título e a mensagem de manutenção.');
+                }
+                if (!in_array($maintenanceMode, ['full', 'read_only'], true)) {
+                    throw new InvalidArgumentException('Modo de manutenção inválido.');
+                }
+                if ($maintenanceEnabled && empty($maintenanceScope)) {
+                    throw new InvalidArgumentException('Selecione ao menos uma área afetada pela manutenção.');
+                }
+                if (mb_strlen($maintenanceReason) < 3 || mb_strlen($maintenanceReason) > 160) {
+                    throw new InvalidArgumentException('O motivo deve ter entre 3 e 160 caracteres.');
+                }
+                if (mb_strlen($maintenanceReference) > 80 || mb_strlen($maintenanceResponsible) > 100) {
+                    throw new InvalidArgumentException('Referência ou responsável excedeu o tamanho permitido.');
+                }
+                if ($maintenanceProgress < 0 || $maintenanceProgress > 100) {
+                    throw new InvalidArgumentException('O progresso deve ficar entre 0% e 100%.');
+                }
+                if (!in_array($maintenanceAnnounceMinutes, [0, 15, 30, 60, 120, 240, 1440], true)) {
+                    throw new InvalidArgumentException('Antecedência do aviso inválida.');
+                }
+                if (!in_array($maintenanceRefreshSeconds, [0, 15, 30, 60, 120], true)) {
+                    throw new InvalidArgumentException('Intervalo de atualização inválido.');
+                }
+
+                $inputTimezone = new DateTimeZone($timezoneInput);
+                $toUtc = static function (string $value) use ($inputTimezone): ?string {
+                    $value = trim($value);
+                    if ($value === '') {
+                        return null;
+                    }
+                    $date = DateTimeImmutable::createFromFormat('Y-m-d\TH:i', $value, $inputTimezone);
+                    if (!$date || DateTimeImmutable::getLastErrors() && DateTimeImmutable::getLastErrors()['warning_count'] > 0) {
+                        throw new InvalidArgumentException('Data ou hora de manutenção inválida.');
+                    }
+                    return $date->setTimezone(new DateTimeZone('UTC'))->format(DateTimeInterface::ATOM);
+                };
+                $maintenanceStart = $toUtc((string)($_POST['maintenance_start_at'] ?? ''));
+                $maintenanceEnd = $toUtc((string)($_POST['maintenance_end_at'] ?? ''));
+                if ($maintenanceEnabled && (!$maintenanceStart || !$maintenanceEnd)) {
+                    throw new InvalidArgumentException('Defina o início e o fim da janela de manutenção.');
+                }
+                if ($maintenanceStart && $maintenanceEnd && new DateTimeImmutable($maintenanceEnd) <= new DateTimeImmutable($maintenanceStart)) {
+                    throw new InvalidArgumentException('O fim da manutenção deve ser posterior ao início.');
+                }
+                if ($maintenanceEnabled && $maintenanceEnd && new DateTimeImmutable($maintenanceEnd) <= new DateTimeImmutable('now', new DateTimeZone('UTC'))) {
+                    throw new InvalidArgumentException('O término da manutenção precisa estar no futuro.');
+                }
+
+                $currentLogoPath = trim((string)$systemSettingsService->get('system_logo_path', ''));
+                $newLogoPath = null;
+                $hasNewLogo = $systemLogoFile !== null
+                    && (int)($systemLogoFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+                try {
+                    if ($hasNewLogo) {
+                        $newLogoPath = $categoryImageService->storeFor($systemLogoFile, 1, 'system_logo');
+                    }
+
+                    $systemSettingsService->saveMany([
+                    'portal_name' => $portalName,
+                    'organization_name' => $organizationNameInput,
+                    'portal_description' => $portalDescription,
+                    'portal_theme' => $selectedPortalTheme,
+                    'system_logo_path' => $newLogoPath ?? ($removeSystemLogo ? '' : $currentLogoPath),
+                    'support_email' => $supportEmail,
+                    'timezone' => $timezoneInput,
+                    'session_timeout_minutes' => $sessionTimeout,
+                    'cors_enabled' => $corsEnabled,
+                    'cors_allowed_origins' => $origins,
+                    'cors_allowed_methods' => $corsMethods ?: ['GET', 'POST', 'OPTIONS'],
+                    'cors_allow_credentials' => $corsCredentials,
+                    'maintenance_enabled' => $maintenanceEnabled,
+                    'maintenance_mode' => $maintenanceMode,
+                    'maintenance_scope' => $maintenanceScope,
+                    'maintenance_start_at' => $maintenanceStart,
+                    'maintenance_end_at' => $maintenanceEnd,
+                    'maintenance_reason' => $maintenanceReason,
+                    'maintenance_reference' => $maintenanceReference,
+                    'maintenance_responsible' => $maintenanceResponsible,
+                    'maintenance_progress' => $maintenanceProgress,
+                    'maintenance_announce_minutes' => $maintenanceAnnounceMinutes,
+                    'maintenance_auto_refresh_seconds' => $maintenanceRefreshSeconds,
+                    'maintenance_title' => $maintenanceTitle,
+                    'maintenance_message' => $maintenanceMessage,
+                    ], $currentAdminUserId);
+                } catch (Throwable $exception) {
+                    if ($newLogoPath !== null) {
+                        $categoryImageService->remove($newLogoPath);
+                    }
+                    throw $exception;
+                }
+                if (($newLogoPath !== null || $removeSystemLogo) && $currentLogoPath !== '') {
+                    $categoryImageService->remove($currentLogoPath);
+                }
+                $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                    'action' => 'system_settings_updated',
+                    'maintenance_enabled' => $maintenanceEnabled,
+                    'cors_enabled' => $corsEnabled,
+                    'system_logo_updated' => $newLogoPath !== null || $removeSystemLogo,
+                    'portal_theme' => $selectedPortalTheme,
+                ]);
+                header('Location: index.php?tab=configuracoes&msg=settings_saved');
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // 0.0 CURADORIA DO CATÁLOGO DE TAGS (SOMENTE SUPER ADMIN)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['tag_admin_action'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode organizar o catálogo de tags.';
+        } else {
+            try {
+                $tagAction = (string)$_POST['tag_admin_action'];
+                $tagId = (int)($_POST['tag_id'] ?? 0);
+                if ($tagAction === 'create') {
+                    $tagService->create((string)($_POST['tag_name'] ?? ''), (string)($_POST['tag_type'] ?? 'topic'), $currentAdminUserId);
+                } elseif ($tagAction === 'update') {
+                    $tagService->update($tagId, (string)($_POST['tag_name'] ?? ''), (string)($_POST['tag_type'] ?? 'topic'));
+                } elseif ($tagAction === 'toggle') {
+                    $tagService->setActive($tagId, (string)($_POST['active'] ?? '') === '1');
+                } elseif ($tagAction === 'add_alias') {
+                    $tagService->addAlias($tagId, (string)($_POST['tag_alias'] ?? ''));
+                } else {
+                    throw new InvalidArgumentException('Ação de tag inválida.');
+                }
+                $usageAuditService->logAdminAction($currentAdminUserId, 'tag_catalog_' . $tagAction, 'TAG', $tagId ?: null);
+                header('Location: index.php?tab=tags&msg=tag_catalog_saved');
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // 0. CADASTRO DE USUÁRIOS (SOMENTE SUPER ADMIN)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['create_user'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode cadastrar usuários.';
+        } else {
+            $adUserLogin = trim($_POST['ad_username'] ?? '');
+            $importAdDomain = strtoupper(trim((string)($_POST['ad_domain'] ?? $selectedAdDomain)));
+
+            if (!in_array($importAdDomain, $availableAdDomains, true)) {
+                $errorMessage = 'Domínio corporativo inválido.';
+            } elseif ($adUserLogin === '') {
+                $errorMessage = 'Informe o usuário corporativo que já existe no Active Directory.';
             } else {
-                $resTypeInput = ($resType === 'category') ? 'categoria' : (($resType === 'subcategory') ? 'subcategoria' : 'assunto');
-
-                if ($resPermAction === 'add_permission') {
-                    $principalType = trim($_POST['principal_type'] ?? 'group');
-                    $principalId = (int)($_POST['principal_id'] ?? 0);
-                    $permLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
-
-                    $userId = ($principalType === 'user') ? $principalId : null;
-                    $groupId = ($principalType === 'group') ? $principalId : null;
-
-                    if (!in_array($principalType, ['user', 'group']) || $principalId <= 0) {
-                        $errorMessage = "Selecione um Usuário ou Grupo válido para conceder acesso.";
-                    } elseif (!in_array($permLevel, ['view', 'edit', 'admin'])) {
-                        $errorMessage = "Nível de permissão inválido.";
-                    } else {
-                        // Validação estrita da existência do recurso
-                        $resTable = ($resType === 'category') ? 'categories' : (($resType === 'subcategory') ? 'subcategories' : 'subjects');
-                        $checkR = $pdo->prepare("SELECT id FROM {$resTable} WHERE id = ?");
-                        $checkR->execute([$resId]);
-                        if (!$checkR->fetchColumn()) {
-                            $errorMessage = "O recurso informado não foi encontrado no banco de dados.";
-                        } else {
-                            // Validação estrita da existência do principal
-                            if ($principalType === 'user') {
-                                $checkP = $pdo->prepare("SELECT id FROM users WHERE id = ? AND active = TRUE");
-                                $checkP->execute([$principalId]);
-                                if (!$checkP->fetchColumn()) {
-                                    $errorMessage = "O Usuário selecionado não existe ou está inativo.";
-                                }
-                            } else {
-                                $checkP = $pdo->prepare("SELECT id FROM groups WHERE id = ? AND active = TRUE");
-                                $checkP->execute([$principalId]);
-                                if (!$checkP->fetchColumn()) {
-                                    $errorMessage = "O Grupo selecionado não existe ou está inativo.";
-                                }
-                            }
-                        }
-
-                        if (empty($errorMessage)) {
-                            try {
-                                $permService->saveResourcePermission($resType, $resId, $userId, $groupId, $permLevel, $_managerUserId);
-                                header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_saved");
-                                exit;
-                            } catch (Exception $e) {
-                                $errorMessage = "Erro ao salvar permissão: " . $e->getMessage();
-                            }
-                        }
-                    }
-                }
-
-                if ($resPermAction === 'update_level') {
-                    $permId = (int)($_POST['permission_id'] ?? 0);
-                    $newLevel = trim($_POST['permission_level'] ?? 'view');
-
-                    if ($permId > 0 && in_array($newLevel, ['view', 'edit', 'admin'])) {
-                        // Verificar que a permissão pertence EXATAMENTE ao recurso autorizado (evitar scope escalation)
-                        $colName = ($resType === 'category') ? 'category_id' : (($resType === 'subcategory') ? 'subcategory_id' : 'subject_id');
-                        $stmtChkPerm = $pdo->prepare("SELECT id FROM permissions WHERE id = ? AND {$colName} = ?");
-                        $stmtChkPerm->execute([$permId, $resId]);
-                        if (!$stmtChkPerm->fetchColumn()) {
-                            $errorMessage = "Permissão não encontrada ou não pertence a este recurso.";
-                        } else {
-                            $stmtUpdLvl = $pdo->prepare("UPDATE permissions SET permission_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                            $stmtUpdLvl->execute([$newLevel, $permId]);
-                            header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_updated");
-                            exit;
-                        }
-                    }
-                }
-
-                if ($resPermAction === 'delete_permission') {
-                    $permId = (int)($_POST['permission_id'] ?? 0);
-                    if ($permId > 0) {
-                        // Verificar que a permissão pertence EXATAMENTE ao recurso autorizado (evitar scope escalation)
-                        $colName = ($resType === 'category') ? 'category_id' : (($resType === 'subcategory') ? 'subcategory_id' : 'subject_id');
-                        $stmtChkPerm = $pdo->prepare("SELECT id FROM permissions WHERE id = ? AND {$colName} = ?");
-                        $stmtChkPerm->execute([$permId, $resId]);
-                        if ($stmtChkPerm->fetchColumn()) {
-                            $permService->deletePermission($permId);
-                            header("Location: index.php?tab=editar_estrutura&type=$resTypeInput&id=$resId&res_tab=permissions&msg=perm_deleted");
-                            exit;
-                        } else {
-                            $errorMessage = "Permissão não encontrada ou não pertence a este recurso.";
-                        }
-                    }
+                $importResult = $adAuthService->importExistingDirectoryUser($importAdDomain . '\\' . $adUserLogin);
+                if ($importResult['success']) {
+                    $importedUser = $importResult['user'];
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                        'action' => 'user_imported_from_ad',
+                        'target_name' => (string)$importedUser['name'],
+                        'target_username' => (string)$importedUser['username'],
+                    ]);
+                    header('Location: index.php?tab=usuarios&msg=user_imported');
+                    exit;
+                } else {
+                    $errorMessage = (string)$importResult['message'];
                 }
             }
         }
     }
 
-    // 0.0.1 PROCESSAMENTO DE PERMISSÕES DA VISÃO DO GRUPO (GRUPO -> PERMISSÕES)
-    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['group_permission_action'])) {
-        if (($loggedUser['role'] ?? '') !== 'admin') {
-            $errorMessage = "Apenas administradores podem gerenciar permissões de grupos.";
+    // 0.1. ACESSO INDIVIDUAL DO USUÁRIO (SOMENTE SUPER ADMIN)
+    // A regra é gravada diretamente para a pessoa escolhida, sem depender de equipe.
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_direct_user_permission'])) {
+        $targetUserId = (int)($_POST['target_user_id'] ?? 0);
+        $resourceSelection = trim((string)($_POST['direct_resource'] ?? ''));
+        $permissionLevel = strtolower(trim((string)($_POST['permission_level'] ?? '')));
+        [$resourceType, $resourceIdRaw] = array_pad(explode(':', $resourceSelection, 2), 2, '');
+        $resourceType = strtolower(trim($resourceType));
+        $resourceId = (int)$resourceIdRaw;
+
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode conceder acesso individual pela tela de usuários.';
+        } elseif ($targetUserId <= 0 || !in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $resourceId <= 0) {
+            $errorMessage = 'Selecione um usuário e uma área válida para liberar o acesso.';
+        } elseif (!in_array($permissionLevel, ['view', 'edit', 'admin'], true)) {
+            $errorMessage = 'Selecione um nível de acesso válido.';
         } else {
-            require_once __DIR__ . '/../services/PermissionService.php';
-            $permService = new PermissionService($pdo);
+            $targetUserStmt = $pdo->prepare('SELECT id, active, role FROM users WHERE id = :id');
+            $targetUserStmt->execute([':id' => $targetUserId]);
+            $targetUser = $targetUserStmt->fetch(PDO::FETCH_ASSOC);
 
-            $grpPermAction = $_POST['group_permission_action'];
-            $groupId = (int)($_POST['group_id'] ?? 0);
-
-            if ($groupId <= 0) {
-                $errorMessage = "Grupo de acesso inválido.";
+            if (!$targetUser) {
+                $errorMessage = 'Usuário não encontrado.';
+            } elseif (!filter_var($targetUser['active'], FILTER_VALIDATE_BOOLEAN)) {
+                $errorMessage = 'Não é possível liberar acesso para um usuário inativo.';
+            } elseif (strtolower((string)$targetUser['role']) === 'admin') {
+                $errorMessage = 'Este usuário já é Administrador Global e possui acesso completo.';
             } else {
-                if ($grpPermAction === 'add_group_access') {
-                    $resType = trim($_POST['resource_type'] ?? '');
-                    $resId = (int)($_POST['resource_id'] ?? 0);
-                    $permLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
-
-                    if (!in_array($resType, ['category', 'subcategory', 'subject']) || $resId <= 0) {
-                        $errorMessage = "Selecione uma Categoria, Subcategoria ou Assunto válido.";
-                    } elseif (!in_array($permLevel, ['view', 'edit', 'admin'])) {
-                        $errorMessage = "Nível de permissão inválido.";
-                    } else {
-                        try {
-                            $permService->saveResourcePermission($resType, $resId, null, $groupId, $permLevel, (int)($loggedUser['id'] ?? 0));
-                            header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=access_saved");
-                            exit;
-                        } catch (Exception $e) {
-                            $errorMessage = "Erro ao conceder acesso ao grupo: " . $e->getMessage();
-                        }
-                    }
+                try {
+                    $permService->saveResourcePermission(
+                        $resourceType,
+                        $resourceId,
+                        $targetUserId,
+                        null,
+                        $permissionLevel,
+                        $currentAdminUserId
+                    );
+                    $usageAuditService->logAdminAction(
+                        $currentAdminUserId,
+                        'direct_user_access_granted',
+                        strtoupper($resourceType),
+                        $resourceId
+                    );
+                    header('Location: index.php?tab=editar_usuario&id=' . $targetUserId . '&user_tab=access&msg=direct_user_access_saved');
+                    exit;
+                } catch (Throwable $exception) {
+                    error_log('DocGov: falha ao conceder acesso individual: ' . $exception->getMessage());
+                    $errorMessage = 'Não foi possível salvar o acesso individual. Verifique a área selecionada e tente novamente.';
                 }
+            }
+        }
+    }
 
-                if ($grpPermAction === 'update_group_level') {
-                    $permId = (int)($_POST['permission_id'] ?? 0);
-                    $newLevel = strtolower(trim($_POST['permission_level'] ?? 'view'));
+    // 0.2. REMOÇÃO DE UMA REGRA INDIVIDUAL DE USUÁRIO (SOMENTE SUPER ADMIN)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['remove_direct_user_permission'])) {
+        $targetUserId = (int)($_POST['target_user_id'] ?? 0);
+        $permissionId = (int)($_POST['permission_id'] ?? 0);
 
-                    if ($permId > 0 && in_array($newLevel, ['view', 'edit', 'admin'])) {
-                        $stmtUpd = $pdo->prepare("UPDATE permissions SET permission_level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND group_id = ?");
-                        $stmtUpd->execute([$newLevel, $permId, $groupId]);
-                        header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=level_updated");
-                        exit;
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode remover acessos individuais pela tela de usuários.';
+        } elseif ($targetUserId <= 0 || $permissionId <= 0) {
+            $errorMessage = 'Regra de acesso inválida.';
+        } else {
+            $ruleStmt = $pdo->prepare('SELECT id FROM permissions WHERE id = :id AND user_id = :user_id');
+            $ruleStmt->execute([':id' => $permissionId, ':user_id' => $targetUserId]);
+
+            if (!$ruleStmt->fetchColumn()) {
+                $errorMessage = 'A regra individual não foi encontrada para este usuário.';
+            } else {
+                try {
+                    if (!$permService->deletePermission($permissionId, $currentAdminUserId)) {
+                        throw new RuntimeException('Regra não encontrada.');
                     }
-                }
-
-                if ($grpPermAction === 'delete_group_permission') {
-                    $permId = (int)($_POST['permission_id'] ?? 0);
-                    if ($permId > 0) {
-                        $stmtDel = $pdo->prepare("DELETE FROM permissions WHERE id = ? AND group_id = ?");
-                        $stmtDel->execute([$permId, $groupId]);
-                        header("Location: index.php?tab=editar_grupo&id=$groupId&group_tab=permissions&msg=access_deleted");
-                        exit;
-                    }
+                    $usageAuditService->logAdminAction($currentAdminUserId, 'direct_user_access_removed', 'ADMIN', null);
+                    header('Location: index.php?tab=editar_usuario&id=' . $targetUserId . '&user_tab=access&msg=direct_user_access_removed');
+                    exit;
+                } catch (Throwable $exception) {
+                    error_log('DocGov: falha ao remover acesso individual: ' . $exception->getMessage());
+                    $errorMessage = 'Não foi possível remover o acesso individual.';
                 }
             }
         }
@@ -444,155 +463,306 @@ if ($isLogged) {
 
     // 0. PROCESSAMENTO DE AÇÕES DE GRUPOS DE ACESSO (APENAS ADMIN)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['group_action'])) {
-        if (($loggedUser['role'] ?? '') !== 'admin') {
-            $errorMessage = "Apenas administradores podem gerenciar grupos de acesso.";
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = "Apenas administradores podem gerenciar equipes.";
         } else {
-            $grpAction = $_POST['group_action'];
+            $grpAction = strtolower(trim((string)$_POST['group_action']));
+            $allowedGroupActions = ['create_group', 'edit_group', 'toggle_status', 'delete_group', 'add_user', 'remove_user'];
 
-            // A. CRIAR NOVO GRUPO
-            if ($grpAction === 'create_group') {
-                $gName = trim($_POST['name'] ?? '');
-                $gDesc = trim($_POST['description'] ?? '');
-                $gActive = isset($_POST['active']) && in_array($_POST['active'], ['1', 'true', 'on']);
+            if (!in_array($grpAction, $allowedGroupActions, true)) {
+                http_response_code(400);
+                $errorMessage = 'Ação de equipe inválida.';
+            } elseif ($grpAction === 'create_group') {
+                $gName = trim((string)($_POST['name'] ?? ''));
+                $gDesc = trim((string)($_POST['description'] ?? ''));
+                $gActive = isset($_POST['active']) && in_array((string)$_POST['active'], ['1', 'true', 'on'], true);
 
-                if (!empty($gName)) {
+                if ($gName === '' || mb_strlen($gName) > 255) {
+                    $errorMessage = 'Informe um nome de equipe com até 255 caracteres.';
+                } else {
                     try {
-                        $stmtInsG = $pdo->prepare("INSERT INTO groups (name, description, active) VALUES (?, ?, ?)");
-                        $stmtInsG->execute([$gName, $gDesc, $gActive ? 'true' : 'false']);
-                        $message = "Grupo '" . htmlspecialchars($gName) . "' criado com sucesso!";
-                    } catch (PDOException $e) {
-                        if ($e->getCode() === '23505') {
-                            $errorMessage = "Já existe um grupo de acesso cadastrado com o nome '$gName'.";
-                        } else {
-                            $errorMessage = "Erro ao criar grupo: " . $e->getMessage();
+                        $stmtInsG = $pdo->prepare('INSERT INTO groups (name, description, active) VALUES (:name, :description, :active) RETURNING id');
+                        $stmtInsG->execute([':name' => $gName, ':description' => $gDesc, ':active' => $gActive ? 'true' : 'false']);
+                        $gId = (int)$stmtInsG->fetchColumn();
+                        $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => 'team_created', 'team_id' => $gId, 'team_name' => $gName]);
+                        header('Location: index.php?tab=grupos&msg=team_created');
+                        exit;
+                    } catch (PDOException $exception) {
+                        $errorMessage = $exception->getCode() === '23505'
+                            ? 'Já existe uma equipe com esse nome.'
+                            : 'Não foi possível criar a equipe.';
+                    }
+                }
+            } elseif ($grpAction === 'edit_group') {
+                $gId = (int)($_POST['group_id'] ?? 0);
+                $gName = trim((string)($_POST['name'] ?? ''));
+                $gDesc = trim((string)($_POST['description'] ?? ''));
+                $gActive = isset($_POST['active']) && in_array((string)$_POST['active'], ['1', 'true', 'on'], true);
+
+                if ($gId <= 0 || $gName === '' || mb_strlen($gName) > 255) {
+                    $errorMessage = 'Equipe ou nome inválido.';
+                } else {
+                    try {
+                        $stmtUpdG = $pdo->prepare('UPDATE groups SET name = :name, description = :description, active = :active WHERE id = :id RETURNING id');
+                        $stmtUpdG->execute([':name' => $gName, ':description' => $gDesc, ':active' => $gActive ? 'true' : 'false', ':id' => $gId]);
+                        if (!$stmtUpdG->fetchColumn()) {
+                            throw new RuntimeException('Equipe não encontrada.');
+                        }
+                        $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => 'team_updated', 'team_id' => $gId, 'team_name' => $gName, 'active' => $gActive]);
+                        header('Location: index.php?tab=editar_grupo&id=' . $gId . '&group_tab=info&msg=team_updated');
+                        exit;
+                    } catch (PDOException $exception) {
+                        $errorMessage = $exception->getCode() === '23505'
+                            ? 'Já existe outra equipe com esse nome.'
+                            : 'Não foi possível atualizar a equipe.';
+                    } catch (Throwable $exception) {
+                        $errorMessage = $exception->getMessage();
+                    }
+                }
+            } elseif ($grpAction === 'toggle_status') {
+                $gId = (int)($_POST['group_id'] ?? 0);
+                $stmtTgl = $pdo->prepare('UPDATE groups SET active = NOT active WHERE id = :id RETURNING name, active');
+                $stmtTgl->execute([':id' => $gId]);
+                $updatedGroup = $stmtTgl->fetch(PDO::FETCH_ASSOC);
+                if (!$updatedGroup) {
+                    $errorMessage = 'Equipe não encontrada.';
+                } else {
+                    $groupActive = filter_var($updatedGroup['active'], FILTER_VALIDATE_BOOLEAN);
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => $groupActive ? 'team_activated' : 'team_deactivated', 'team_id' => $gId, 'team_name' => $updatedGroup['name']]);
+                    header('Location: index.php?tab=grupos&msg=team_status_updated');
+                    exit;
+                }
+            } elseif ($grpAction === 'delete_group') {
+                $gId = (int)($_POST['group_id'] ?? 0);
+                try {
+                    $pdo->beginTransaction();
+                    $groupStmt = $pdo->prepare('SELECT name FROM groups WHERE id = :id FOR UPDATE');
+                    $groupStmt->execute([':id' => $gId]);
+                    $groupName = $groupStmt->fetchColumn();
+                    if ($groupName === false) {
+                        throw new RuntimeException('Equipe não encontrada.');
+                    }
+
+                    $permissionStmt = $pdo->prepare('SELECT id FROM permissions WHERE group_id = :group_id ORDER BY id');
+                    $permissionStmt->execute([':group_id' => $gId]);
+                    foreach (array_map('intval', $permissionStmt->fetchAll(PDO::FETCH_COLUMN)) as $groupPermissionId) {
+                        if (!$permService->deletePermission($groupPermissionId, $currentAdminUserId)) {
+                            throw new RuntimeException('Falha ao auditar a remoção de uma permissão da equipe.');
                         }
                     }
-                } else {
-                    $errorMessage = "Informe o nome do grupo!";
-                }
-            }
 
-            // B. EDITAR GRUPO
-            if ($grpAction === 'edit_group') {
-                $gId = (int)($_POST['group_id'] ?? 0);
-                $gName = trim($_POST['name'] ?? '');
-                $gDesc = trim($_POST['description'] ?? '');
-                $gActive = isset($_POST['active']) && in_array($_POST['active'], ['1', 'true', 'on']);
-
-                if ($gId > 0 && !empty($gName)) {
-                    try {
-                        $stmtUpdG = $pdo->prepare("UPDATE groups SET name = ?, description = ?, active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                        $stmtUpdG->execute([$gName, $gDesc, $gActive ? 'true' : 'false', $gId]);
-                        $message = "Informações do grupo '" . htmlspecialchars($gName) . "' atualizadas com sucesso!";
-                    } catch (PDOException $e) {
-                        if ($e->getCode() === '23505') {
-                            $errorMessage = "Já existe outro grupo cadastrado com o nome '$gName'.";
-                        } else {
-                            $errorMessage = "Erro ao atualizar grupo: " . $e->getMessage();
-                        }
+                    $deleteGroupStmt = $pdo->prepare('DELETE FROM groups WHERE id = :id');
+                    $deleteGroupStmt->execute([':id' => $gId]);
+                    if ($deleteGroupStmt->rowCount() !== 1) {
+                        throw new RuntimeException('Equipe não encontrada.');
                     }
-                } else {
-                    $errorMessage = "Preencha todos os campos obrigatórios!";
-                }
-            }
-
-            // C. ALTERNAR STATUS ATIVO / INATIVO (TOGGLE)
-            if ($grpAction === 'toggle_status') {
-                $gId = (int)($_POST['group_id'] ?? 0);
-                if ($gId > 0) {
-                    $stmtTgl = $pdo->prepare("UPDATE groups SET active = NOT active, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                    $stmtTgl->execute([$gId]);
-                    $message = "Status do grupo alterado com sucesso!";
-                }
-            }
-
-            // D. EXCLUIR GRUPO
-            if ($grpAction === 'delete_group') {
-                $gId = (int)($_POST['group_id'] ?? 0);
-                if ($gId > 0) {
-                    try {
-                        $stmtDel = $pdo->prepare("DELETE FROM groups WHERE id = ?");
-                        $stmtDel->execute([$gId]);
-                        $message = "Grupo excluído com sucesso.";
-                    } catch (PDOException $e) {
-                        $errorMessage = "Erro ao excluir grupo: " . $e->getMessage();
+                    $pdo->commit();
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => 'team_deleted', 'team_id' => $gId, 'team_name' => (string)$groupName]);
+                    header('Location: index.php?tab=grupos&msg=team_deleted');
+                    exit;
+                } catch (Throwable $exception) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
                     }
+                    $errorMessage = $exception->getMessage();
                 }
-            }
-
-            // E. ADICIONAR USUÁRIO AO GRUPO
-            if ($grpAction === 'add_user') {
+            } elseif ($grpAction === 'add_user') {
                 $gId = (int)($_POST['group_id'] ?? 0);
                 $uId = (int)($_POST['user_id'] ?? 0);
+                $groupStmt = $pdo->prepare('SELECT name, active FROM groups WHERE id = :id');
+                $groupStmt->execute([':id' => $gId]);
+                $group = $groupStmt->fetch(PDO::FETCH_ASSOC);
+                $userStmt = $pdo->prepare('SELECT name FROM users WHERE id = :id AND active = TRUE');
+                $userStmt->execute([':id' => $uId]);
+                $userName = $userStmt->fetchColumn();
 
-                if ($gId > 0 && $uId > 0) {
-                    try {
-                        $stmtAddU = $pdo->prepare("INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)");
-                        $stmtAddU->execute([$uId, $gId]);
-                        $message = "Usuário adicionado ao grupo com sucesso!";
-                    } catch (PDOException $e) {
-                        if ($e->getCode() === '23505') {
-                            $errorMessage = "Este usuário já pertence a este grupo.";
-                        } else {
-                            $errorMessage = "Erro ao associar usuário: " . $e->getMessage();
+                if (!$group || $userName === false) {
+                    $errorMessage = 'Selecione uma equipe existente e um usuário ativo.';
+                } else {
+                    $stmtAddU = $pdo->prepare('INSERT INTO user_groups (user_id, group_id) VALUES (:user_id, :group_id) ON CONFLICT DO NOTHING');
+                    $stmtAddU->execute([':user_id' => $uId, ':group_id' => $gId]);
+                    if ($stmtAddU->rowCount() !== 1) {
+                        $errorMessage = 'Este usuário já pertence a esta equipe.';
+                    } else {
+                        try {
+                            $teamIsActive = filter_var($group['active'], FILTER_VALIDATE_BOOLEAN);
+                            $notificationService->create(
+                                $uId,
+                                'team_membership_added',
+                                'Você foi adicionado a uma equipe',
+                                'Você agora faz parte da equipe “' . $group['name'] . '”. ' . ($teamIsActive ? 'Os acessos associados já estão disponíveis.' : 'A equipe está inativa e ainda não concede acesso.')
+                            );
+                        } catch (Throwable $exception) {
+                            error_log('DocGov: falha ao notificar novo membro de equipe: ' . $exception->getMessage());
                         }
+                        $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => 'team_member_added', 'team_id' => $gId, 'target_user_id' => $uId]);
+                        header('Location: index.php?tab=editar_grupo&id=' . $gId . '&group_tab=users&msg=team_member_added');
+                        exit;
                     }
                 }
-            }
-
-            // F. REMOVER USUÁRIO DO GRUPO
-            if ($grpAction === 'remove_user') {
+            } elseif ($grpAction === 'remove_user') {
                 $gId = (int)($_POST['group_id'] ?? 0);
                 $uId = (int)($_POST['user_id'] ?? 0);
+                $groupStmt = $pdo->prepare('SELECT name FROM groups WHERE id = :id');
+                $groupStmt->execute([':id' => $gId]);
+                $groupName = $groupStmt->fetchColumn();
+                $stmtRemU = $pdo->prepare('DELETE FROM user_groups WHERE user_id = :user_id AND group_id = :group_id');
+                $stmtRemU->execute([':user_id' => $uId, ':group_id' => $gId]);
 
-                if ($gId > 0 && $uId > 0) {
-                    $stmtRemU = $pdo->prepare("DELETE FROM user_groups WHERE user_id = ? AND group_id = ?");
-                    $stmtRemU->execute([$uId, $gId]);
-                    $message = "Usuário removido do grupo com sucesso. (O cadastro do usuário permanece intacto no sistema).";
+                if ($groupName === false || $stmtRemU->rowCount() !== 1) {
+                    $errorMessage = 'O vínculo informado não existe.';
+                } else {
+                    try {
+                        $notificationService->create($uId, 'team_membership_removed', 'Acesso por equipe removido', 'Você não faz mais parte da equipe “' . $groupName . '”.');
+                    } catch (Throwable $exception) {
+                        error_log('DocGov: falha ao notificar remoção de membro: ' . $exception->getMessage());
+                    }
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, ['action' => 'team_member_removed', 'team_id' => $gId, 'target_user_id' => $uId]);
+                    header('Location: index.php?tab=editar_grupo&id=' . $gId . '&group_tab=users&msg=team_member_removed');
+                    exit;
                 }
             }
         }
     }
 
-    // 1. SALVAR / EDITAR DOCUMENTO E LAYOUT VISUAL
+    // 1. ENVIO EM LOTE DE ARQUIVOS (assíncrono, com uma entrada por arquivo)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_doc'], $_POST['batch_upload'])) {
+        $batchResponse = static function (int $status, array $payload): never {
+            http_response_code($status);
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            exit;
+        };
+
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            $batchResponse(419, ['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
+        }
+        if (!empty($_POST['id'])) {
+            $batchResponse(422, ['success' => false, 'error' => 'O envio em lote está disponível apenas para novos documentos.']);
+        }
+
+        $assuntoInput = trim((string)($_POST['assunto'] ?? ''));
+        $subcategoriaInput = trim((string)($_POST['subcategoria'] ?? ''));
+        $categoriaInput = trim((string)($_POST['categoria'] ?? ''));
+        $workflowAction = trim((string)($_POST['workflow_action'] ?? $_POST['publication_action'] ?? 'save_draft'));
+        if ($workflowAction === '') {
+            $workflowAction = 'save_draft';
+        }
+
+        try {
+            $subjectContext = $hierarchyService->resolveActiveSubject($assuntoInput, $subcategoriaInput, $categoriaInput);
+            $subjectId = (int)($subjectContext['id'] ?? 0);
+            if ($subjectId <= 0) {
+                throw new InvalidArgumentException('Selecione uma categoria, uma subcategoria e um assunto ativos.');
+            }
+            $createdDocuments = $batchDocumentUploadService->create(
+                (int)($loggedUser['id'] ?? 0),
+                $subjectId,
+                trim((string)($_POST['descricao'] ?? '')),
+                $workflowAction,
+                trim((string)($_POST['workflow_note'] ?? '')),
+                is_array($_FILES['arquivo_file'] ?? null) ? $_FILES['arquivo_file'] : [],
+                array_values(array_map('strval', (array)($_POST['batch_titles'] ?? []))),
+                array_values(array_map('intval', (array)($_POST['tag_ids'] ?? []))),
+                array_values(array_map('strval', (array)($_POST['new_tags'] ?? []))),
+            );
+            $batchResponse(201, [
+                'success' => true,
+                'created_count' => count($createdDocuments),
+                'documents' => $createdDocuments,
+                'redirect' => 'index.php?tab=documentos&msg=batch_docs_created&count=' . count($createdDocuments),
+            ]);
+        } catch (Throwable $exception) {
+            $batchResponse(422, ['success' => false, 'error' => $exception->getMessage()]);
+        }
+    }
+
+    // 1.1 SALVAR / EDITAR DOCUMENTO E LAYOUT VISUAL
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_doc'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        }
         $titulo = trim($_POST['titulo'] ?? '');
         $descricao = trim($_POST['descricao'] ?? '');
         $catInput = trim($_POST['categoria'] ?? '');
         $subInput = trim($_POST['subcategoria'] ?? '');
         $assuntoInput = trim($_POST['assunto'] ?? '');
-        $status = trim($_POST['status'] ?? 'published');
-        $tipoConteudo = trim($_POST['tipo_conteudo'] ?? 'arquivo');
-        $conteudoHtmlRaw = trim($_POST['conteudo_html'] ?? '');
-        $linkExterno = trim($_POST['link_externo'] ?? '');
-        $id = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
-
-        if (!in_array($status, ['draft', 'published', 'inactive'])) {
-            $status = 'published';
+        $publicationAction = trim($_POST['publication_action'] ?? '');
+        $workflowAction = trim($_POST['workflow_action'] ?? '');
+        if ($workflowAction === '') {
+            $workflowAction = $publicationAction === 'publish' ? 'submit_review' : 'save_draft';
         }
-        if (!in_array($tipoConteudo, ['file', 'text', 'link'])) {
+        $workflowNote = trim($_POST['workflow_note'] ?? '');
+        $tipoConteudo = trim($_POST['tipo_conteudo'] ?? 'file');
+        $conteudoHtmlRaw = trim($_POST['conteudo_html'] ?? '');
+        $codigoFonteRaw = str_replace(["\r\n", "\r"], "\n", (string)($_POST['codigo_fonte'] ?? ''));
+        $linguagemCodigo = strtolower(trim($_POST['linguagem_codigo'] ?? 'auto'));
+        $linkExterno = trim($_POST['link_externo'] ?? '');
+        $videoSource = trim($_POST['video_source'] ?? 'upload');
+        $videoUrl = trim($_POST['video_url'] ?? '');
+        $id = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
+        $requestedTagIds = array_values(array_map('intval', (array)($_POST['tag_ids'] ?? [])));
+        $requestedNewTagNames = array_values(array_map('strval', (array)($_POST['new_tags'] ?? [])));
+        $previousDocumentStatus = null;
+
+        if ($id && $id > 0) {
+            $stmtCurrentStatus = $pdo->prepare('SELECT status FROM documents WHERE id = :id');
+            $stmtCurrentStatus->execute([':id' => $id]);
+            $previousDocumentStatus = $stmtCurrentStatus->fetchColumn();
+            if ($previousDocumentStatus === false) {
+                $errorMessage = 'Documento não encontrado.';
+            }
+        }
+
+        if (!in_array($tipoConteudo, ['file', 'text', 'link', 'code', 'video'], true)) {
             $tipoConteudo = 'file';
+        }
+        if (!in_array($videoSource, ['upload', 'url'], true)) {
+            $videoSource = 'upload';
+        }
+        if ($tipoConteudo === 'video' && $videoSource === 'url') {
+            $linkExterno = $videoUrl;
+        }
+
+        $linguagensPermitidas = [
+            'auto', 'plaintext', 'javascript', 'typescript', 'xml', 'css', 'php', 'python',
+            'sql', 'bash', 'json', 'java', 'csharp', 'cpp', 'go', 'yaml', 'markdown'
+        ];
+        if (!in_array($linguagemCodigo, $linguagensPermitidas, true)) {
+            $linguagemCodigo = 'auto';
         }
 
         $conteudoHtml = strip_tags($conteudoHtmlRaw, '<h3><h4><p><b><i><strong><em><ul><ol><li><a><br>');
+        $conteudoArmazenado = $tipoConteudo === 'code' ? $codigoFonteRaw : $conteudoHtml;
 
-        // Resolver subject_id a partir de assuntoInput (pode ser ID ou nome/slug)
+        // Resolver o ramo completo. IDs são usados pelo formulário; nomes/slugs antigos
+        // continuam aceitos somente quando identificam um único ramo ativo.
         $subjectId = 0;
-        if (!empty($assuntoInput)) {
-            $stmtRes = $pdo->prepare("SELECT id FROM subjects WHERE id::text = :a OR slug = :a OR name = :a LIMIT 1");
-            $stmtRes->execute([':a' => $assuntoInput]);
-            $subjectId = (int)$stmtRes->fetchColumn();
+        try {
+            $subjectContext = $hierarchyService->resolveActiveSubject($assuntoInput, $subInput, $catInput);
+            $subjectId = (int)($subjectContext['id'] ?? 0);
+        } catch (Throwable $exception) {
+            $errorMessage = $exception->getMessage();
         }
 
         // VALIDAÇÃO DE AUTORIZAÇÃO NO BACKEND (canCreateDocument / canEditDocument)
         $editorUserId = (int)($loggedUser['id'] ?? 0);
 
-        if (!$id || $id <= 0) {
+        if (empty($errorMessage) && (!$id || $id <= 0)) {
             if ($subjectId <= 0 || !$permService->canCreateDocument($editorUserId, $subjectId)) {
-                http_response_code(403);
-                $errorMessage = "Acesso Negado: Você não possui permissão para criar documentos neste Assunto.";
+                if ($subjectId <= 0) {
+                    $errorMessage = 'Selecione uma categoria, uma subcategoria e um assunto ativos.';
+                } else {
+                    http_response_code(403);
+                    $errorMessage = "Acesso Negado: Você não possui permissão para criar documentos neste Assunto.";
+                }
             }
-        } else {
+        } elseif (empty($errorMessage) && $id && $id > 0) {
             if (!$permService->canEditDocument($editorUserId, $id)) {
                 http_response_code(403);
                 $errorMessage = "Acesso Negado: Você não possui permissão para editar este documento.";
@@ -602,13 +772,47 @@ if ($isLogged) {
             }
         }
 
+        $workflowTransition = null;
+        if (empty($errorMessage)) {
+            try {
+                $workflowTransition = $workflowService->prepareAction(
+                    $workflowAction,
+                    $previousDocumentStatus,
+                    $editorUserId,
+                    $id,
+                    $workflowNote
+                );
+                $status = $workflowTransition['status'];
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+
         if (!empty($errorMessage)) {
             // Mantém $errorMessage e ignora o salvamento
         } elseif (empty($titulo) || $subjectId <= 0) {
             $errorMessage = "Por favor, preencha o Título e selecione um Assunto válido.";
         } elseif ($tipoConteudo === 'link' && (empty($linkExterno) || !filter_var($linkExterno, FILTER_VALIDATE_URL))) {
             $errorMessage = "Por favor, informe uma URL válida para o link externo.";
+        } elseif ($tipoConteudo === 'video' && $videoSource === 'url' && VideoEmbedService::normalizeExternalUrl($linkExterno) === null) {
+            $errorMessage = "Por favor, informe uma URL HTTP ou HTTPS válida para o vídeo.";
+        } elseif ($tipoConteudo === 'video' && $videoSource === 'upload' && (!$id || $id <= 0) && (!isset($_FILES['video_file']) || ($_FILES['video_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK)) {
+            $errorMessage = "Selecione um arquivo de vídeo para publicar.";
+        } elseif ($tipoConteudo === 'code' && trim($codigoFonteRaw) === '') {
+            $errorMessage = "Por favor, informe o trecho de código.";
+        } elseif ($tipoConteudo === 'code' && strlen($codigoFonteRaw) > 1048576) {
+            $errorMessage = "O trecho de código excede o limite de 1 MB.";
         } else {
+            try {
+                // Tags existentes são validadas antes de qualquer upload. As novas são criadas apenas no salvamento.
+                $requestedTagIds = $tagService->assertActiveIds($requestedTagIds);
+                $requestedNewTagNames = $tagService->assertNewNames($requestedNewTagNames, count($requestedTagIds));
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+
+        if (empty($errorMessage) && !empty($titulo) && $subjectId > 0) {
             $storedFilename = null;
             $originalFilename = null;
             $tipoMime = null;
@@ -616,17 +820,24 @@ if ($isLogged) {
             $fileExt = null;
             $filePath = null;
 
-            if ($tipoConteudo === 'file' && isset($_FILES['arquivo_file']) && $_FILES['arquivo_file']['error'] === UPLOAD_ERR_OK) {
-                $file = $_FILES['arquivo_file'];
+            $uploadField = $tipoConteudo === 'video' ? 'video_file' : 'arquivo_file';
+            if (in_array($tipoConteudo, ['file', 'video'], true) && isset($_FILES[$uploadField]) && $_FILES[$uploadField]['error'] === UPLOAD_ERR_OK) {
+                $file = $_FILES[$uploadField];
                 $originalFilename = basename($file['name']);
                 $tamanhoBytes = (int)$file['size'];
                 $fileExt = strtolower(pathinfo($originalFilename, PATHINFO_EXTENSION));
 
-                $extsPermitidas = ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'txt', 'doc', 'docx'];
+                $extsPermitidas = [
+                    'pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif',
+                    'txt', 'log', 'csv', 'md', 'json', 'xml', 'doc', 'docx',
+                    'mp3', 'wav', 'ogg', 'mp4', 'webm', 'ogv', 'm4v', 'mov'
+                ];
                 if (!in_array($fileExt, $extsPermitidas)) {
-                    $errorMessage = "Formato de arquivo não suportado. Utilize PDF, PNG, JPG, WEBP, GIF, TXT ou DOCX.";
-                } elseif ($tamanhoBytes > 25 * 1024 * 1024) {
-                    $errorMessage = "O arquivo excede o limite máximo permitido de 25MB.";
+                    $errorMessage = "Formato não suportado. Utilize PDF, imagens, textos, DOC/DOCX, áudio ou vídeo.";
+                } elseif ($tamanhoBytes > ($tipoConteudo === 'video' ? 250 : 25) * 1024 * 1024) {
+                    $errorMessage = $tipoConteudo === 'video'
+                        ? "O vídeo excede o limite máximo permitido de 250MB."
+                        : "O arquivo excede o limite máximo permitido de 25MB.";
                 } else {
                     $storedFilename = sprintf('%s_%s.%s', uniqid('doc_'), md5($originalFilename . microtime()), $fileExt);
                     $targetDir = __DIR__ . '/../storage/documents';
@@ -646,19 +857,26 @@ if ($isLogged) {
 
             if (empty($errorMessage)) {
                 $slug = slugify($titulo);
+                $publishedAt = $status === 'published' ? date(DATE_ATOM) : null;
                 if ($id) {
                     if ($storedFilename) {
                         $stmt = $pdo->prepare("
                             UPDATE documents SET 
                                 subject_id = :sub_id, title = :title, slug = :slug, description = :desc, 
-                                content_type = :type, status = :status, text_content = :text_content, external_url = :url,
+                                content_type = :type, status = :status,
+                                published_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN COALESCE(:published_at, published_at, CURRENT_TIMESTAMP) ELSE NULL END,
+                                approval_expires_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN NULL ELSE COALESCE(approval_expires_at, CURRENT_TIMESTAMP + INTERVAL '1 month') END,
+                                text_content = :text_content,
+                                code_language = :code_language, external_url = :url,
                                 stored_filename = :stored_name, original_filename = :orig_name, mime_type = :mime, 
                                 file_extension = :ext, file_size = :size, file_path = :path
                             WHERE id = :id
                         ");
                         $stmt->execute([
                             ':sub_id' => $subjectId, ':title' => $titulo, ':slug' => $slug, ':desc' => $descricao,
-                            ':type' => $tipoConteudo, ':status' => $status, ':text_content' => $conteudoHtml, ':url' => $linkExterno,
+                            ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
+                            ':text_content' => $conteudoArmazenado,
+                            ':code_language' => $linguagemCodigo, ':url' => $linkExterno,
                             ':stored_name' => $storedFilename, ':orig_name' => $originalFilename, ':mime' => $tipoMime,
                             ':ext' => $fileExt, ':size' => $tamanhoBytes, ':path' => $filePath, ':id' => $id
                         ]);
@@ -666,15 +884,34 @@ if ($isLogged) {
                         $stmt = $pdo->prepare("
                             UPDATE documents SET 
                                 subject_id = :sub_id, title = :title, slug = :slug, description = :desc, 
-                                content_type = :type, status = :status, text_content = :text_content, external_url = :url
+                                content_type = :type, status = :status,
+                                published_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN COALESCE(:published_at, published_at, CURRENT_TIMESTAMP) ELSE NULL END,
+                                approval_expires_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN NULL ELSE COALESCE(approval_expires_at, CURRENT_TIMESTAMP + INTERVAL '1 month') END,
+                                text_content = :text_content,
+                                code_language = :code_language, external_url = :url
+                                " . ($tipoConteudo === 'video' && $videoSource === 'url'
+                                    ? ', stored_filename = NULL, original_filename = NULL, mime_type = NULL, file_extension = NULL, file_size = NULL, file_path = NULL'
+                                    : '') . "
                             WHERE id = :id
                         ");
                         $stmt->execute([
                             ':sub_id' => $subjectId, ':title' => $titulo, ':slug' => $slug, ':desc' => $descricao,
-                            ':type' => $tipoConteudo, ':status' => $status, ':text_content' => $conteudoHtml, ':url' => $linkExterno,
+                            ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
+                            ':text_content' => $conteudoArmazenado,
+                            ':code_language' => $linguagemCodigo, ':url' => $linkExterno,
                             ':id' => $id
                         ]);
                     }
+                    $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
+                    $tagService->syncDocumentTags($id, $resolvedTagIds);
+                    try {
+                        $workflowService->applyTransitionMetadata($id, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
+                        $workflowService->record($id, $editorUserId, $workflowTransition['action'], $previousDocumentStatus, $status, $workflowTransition['note']);
+                        $workflowService->notifyForTransition($id, $editorUserId, $workflowTransition['action']);
+                    } catch (Throwable $exception) {
+                        error_log('DocGov workflow: falha ao registrar transição: ' . $exception->getMessage());
+                    }
+                    $usageAuditService->logAdminAction($editorUserId, 'document_updated', 'DOCUMENT', $id);
                     header('Location: index.php?tab=detalhes_documento&id=' . $id . '&msg=doc_updated');
                     exit;
                 } else {
@@ -682,24 +919,123 @@ if ($isLogged) {
                         INSERT INTO documents (
                             subject_id, created_by, title, slug, description, content_type, status, published_at,
                             original_filename, stored_filename, file_path, mime_type, file_extension, file_size,
-                            text_content, external_url
+                            text_content, code_language, external_url
                         ) VALUES (
-                            :sub_id, :created_by, :title, :slug, :desc, :type, :status, CURRENT_TIMESTAMP,
+                            :sub_id, :created_by, :title, :slug, :desc, :type, :status, :published_at,
                             :orig_name, :stored_name, :path, :mime, :ext, :size,
-                            :text_content, :url
+                            :text_content, :code_language, :url
                         ) RETURNING id
                     ");
                     $stmt->execute([
                         ':sub_id' => $subjectId, ':created_by' => (int)$loggedUser['id'], ':title' => $titulo, ':slug' => $slug,
-                        ':desc' => $descricao, ':type' => $tipoConteudo, ':status' => $status,
+                        ':desc' => $descricao, ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt,
                         ':orig_name' => $originalFilename, ':stored_name' => $storedFilename, ':path' => $filePath,
                         ':mime' => $tipoMime, ':ext' => $fileExt, ':size' => $tamanhoBytes,
-                        ':text_content' => $conteudoHtml, ':url' => $linkExterno
+                        ':text_content' => $conteudoArmazenado, ':code_language' => $linguagemCodigo, ':url' => $linkExterno
                     ]);
                     $newId = (int)$stmt->fetchColumn();
+                    $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
+                    $tagService->syncDocumentTags($newId, $resolvedTagIds);
+                    try {
+                        $workflowService->applyTransitionMetadata($newId, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
+                        $workflowService->record($newId, $editorUserId, $workflowTransition['action'], 'draft', $status, $workflowTransition['note']);
+                        $workflowService->notifyForTransition($newId, $editorUserId, $workflowTransition['action']);
+                    } catch (Throwable $exception) {
+                        error_log('DocGov workflow: falha ao registrar criação: ' . $exception->getMessage());
+                    }
+                    $usageAuditService->logAdminAction($editorUserId, 'document_created', 'DOCUMENT', $newId);
                     header('Location: index.php?tab=detalhes_documento&id=' . $newId . '&msg=doc_created');
                     exit;
                 }
+            }
+        }
+    }
+
+    // 1.1 TRANSIÇÃO EDITORIAL RÁPIDA (aprovar ou devolver para ajustes sem abrir o editor)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['workflow_quick_action'])) {
+        $documentId = (int)($_POST['document_id'] ?? 0);
+        $workflowAction = trim($_POST['workflow_quick_action'] ?? '');
+        $workflowNote = trim($_POST['workflow_note'] ?? '');
+
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif ($documentId <= 0 || !$permService->canEditDocument($currentAdminUserId, $documentId)) {
+            http_response_code(403);
+            $errorMessage = 'Você não possui acesso a este documento.';
+        } else {
+            $stmtCurrent = $pdo->prepare('SELECT status FROM documents WHERE id = :id');
+            $stmtCurrent->execute([':id' => $documentId]);
+            $previousStatus = (string)$stmtCurrent->fetchColumn();
+            try {
+                $transition = $workflowService->prepareAction($workflowAction, $previousStatus, $currentAdminUserId, $documentId, $workflowNote);
+                $workflowService->applyStatus($documentId, $transition['status']);
+                $workflowService->applyTransitionMetadata($documentId, $currentAdminUserId, $transition['action'], $transition['note']);
+                $workflowService->record($documentId, $currentAdminUserId, $transition['action'], $previousStatus, $transition['status'], $transition['note']);
+                $workflowService->notifyForTransition($documentId, $currentAdminUserId, $transition['action']);
+                $usageAuditService->logAdminAction($currentAdminUserId, 'workflow_' . $transition['action'], 'DOCUMENT', $documentId);
+                header('Location: index.php?tab=detalhes_documento&id=' . $documentId . '&msg=workflow_updated');
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // 1.2 AÇÕES EM LOTE: respeitam as mesmas regras e registram cada transição.
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['batch_action'])) {
+        $batchAction = trim($_POST['batch_action'] ?? '');
+        $selectedDocumentIds = array_values(array_unique(array_filter(
+            array_map('intval', (array)($_POST['selected_docs'] ?? [])),
+            static fn (int $documentId): bool => $documentId > 0
+        )));
+        $workflowActions = [
+            'submit_review' => 'submit_review',
+            'publish' => 'approve_publish',
+            'draft' => 'save_draft',
+            'trash' => 'archive',
+        ];
+
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!isset($workflowActions[$batchAction])) {
+            $errorMessage = 'Ação em lote inválida.';
+        } elseif (empty($selectedDocumentIds)) {
+            $errorMessage = 'Selecione pelo menos um documento.';
+        } else {
+            try {
+                $pdo->beginTransaction();
+                $processed = 0;
+                $stmtCurrent = $pdo->prepare('SELECT status FROM documents WHERE id = :id FOR UPDATE');
+                foreach ($selectedDocumentIds as $selectedDocumentId) {
+                    if (!$permService->canEditDocument($currentAdminUserId, $selectedDocumentId)) {
+                        throw new RuntimeException('Um ou mais documentos selecionados estão fora da sua área autorizada.');
+                    }
+                    $stmtCurrent->execute([':id' => $selectedDocumentId]);
+                    $previousStatus = (string)$stmtCurrent->fetchColumn();
+                    if ($previousStatus === '') {
+                        throw new RuntimeException('Documento selecionado não encontrado.');
+                    }
+                    $transition = $workflowService->prepareAction($workflowActions[$batchAction], $previousStatus, $currentAdminUserId, $selectedDocumentId);
+                    $workflowService->applyStatus($selectedDocumentId, $transition['status']);
+                    $workflowService->applyTransitionMetadata($selectedDocumentId, $currentAdminUserId, $transition['action'], 'Ação em lote');
+                    $workflowService->record($selectedDocumentId, $currentAdminUserId, $transition['action'], $previousStatus, $transition['status'], 'Ação em lote');
+                    $processed++;
+                }
+                $pdo->commit();
+
+                foreach ($selectedDocumentIds as $selectedDocumentId) {
+                    $workflowService->notifyForTransition($selectedDocumentId, $currentAdminUserId, $workflowActions[$batchAction] === 'submit_review' ? 'submitted_for_review' : ($workflowActions[$batchAction] === 'approve_publish' ? 'approved_and_published' : ''));
+                    $usageAuditService->logAdminAction($currentAdminUserId, 'batch_' . $workflowActions[$batchAction], 'DOCUMENT', $selectedDocumentId);
+                }
+                header('Location: index.php?tab=documentos&msg=docs_workflow_updated&count=' . $processed);
+                exit;
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                $errorMessage = $exception->getMessage();
             }
         }
     }
@@ -711,38 +1047,92 @@ if ($isLogged) {
         $statusVal = trim($_POST['status'] ?? 'ativo') === 'ativo';
         $catId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'categorias');
+        $categoryImageFile = isset($_FILES['category_image']) && is_array($_FILES['category_image'])
+            ? $_FILES['category_image']
+            : null;
+        $removeCategoryImage = $catId !== null && isset($_POST['remove_category_image']);
 
         $userId = (int)($loggedUser['id'] ?? 0);
+        $canSaveCategory = $catId
+            ? ($permService->canAdminCategory($userId, $catId) || $permService->isGlobalAdmin($userId))
+            : $permService->canCreateCategory($userId);
 
-        if (!$catId) {
-            // CRIAR CATEGORIA: SOMENTE ADMIN GERAL
-            if (!$permService->canCreateCategory($userId)) {
-                http_response_code(403);
-                $errorMessage = "Acesso negado. Apenas o Administrador Global pode criar novas Categorias no nível raiz.";
-            } elseif (!empty($nome)) {
-                $slug = slugify($nome);
-                $stmt = $pdo->prepare("INSERT INTO categories (name, slug, description, active) VALUES (:name, :slug, :desc, :active)");
-                $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
-                header('Location: index.php?tab=' . $redirectTab . '&msg=category_saved');
-                exit;
-            }
+        if (!$canSaveCategory) {
+            http_response_code(403);
+            $errorMessage = $catId
+                ? 'Acesso negado. É necessário privilégio Admin nesta Categoria (ou ser Administrador Global) para alterá-la.'
+                : 'Acesso negado. Apenas o Administrador Global pode criar novas Categorias no nível raiz.';
+        } elseif (empty($nome)) {
+            $errorMessage = 'Informe o nome da categoria.';
+        } elseif (($imageError = $categoryImageService->validate($categoryImageFile)) !== null) {
+            $errorMessage = $imageError;
         } else {
-            // EDITAR CATEGORIA: ADMIN DA CATEGORIA OU ADMIN GERAL
-            if (!$permService->canAdminCategory($userId, $catId) && !$permService->isGlobalAdmin($userId)) {
-                http_response_code(403);
-                $errorMessage = "Acesso negado. É necessário privilégio Admin nesta Categoria (ou ser Administrador Global) para alterá-la.";
-            } elseif (!empty($nome)) {
-                $slug = slugify($nome);
-                $stmt = $pdo->prepare("UPDATE categories SET name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
-                $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $catId]);
-                header('Location: index.php?tab=' . $redirectTab . '&msg=category_saved');
+            $oldImagePath = null;
+            $newImagePath = null;
+            $savedCategoryId = (int)($catId ?? 0);
+
+            try {
+                $pdo->beginTransaction();
+
+                if ($catId) {
+                    $oldImageStmt = $pdo->prepare('SELECT image_path FROM categories WHERE id = :id FOR UPDATE');
+                    $oldImageStmt->execute([':id' => $catId]);
+                    $oldImagePath = $oldImageStmt->fetchColumn();
+                    if ($oldImagePath === false) {
+                        throw new RuntimeException('Categoria não encontrada.');
+                    }
+
+                    $slug = slugify($nome);
+                    $stmt = $pdo->prepare('UPDATE categories SET name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id');
+                    $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $catId]);
+                } else {
+                    $slug = slugify($nome);
+                    $stmt = $pdo->prepare('INSERT INTO categories (name, slug, description, active) VALUES (:name, :slug, :desc, :active) RETURNING id');
+                    $stmt->execute([':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
+                    $savedCategoryId = (int)$stmt->fetchColumn();
+                }
+
+                $hasNewImage = $categoryImageFile !== null
+                    && (int)($categoryImageFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+                if ($hasNewImage) {
+                    $newImagePath = $categoryImageService->store($categoryImageFile, $savedCategoryId);
+                    $imageStmt = $pdo->prepare('UPDATE categories SET image_path = :image_path WHERE id = :id');
+                    $imageStmt->execute([':image_path' => $newImagePath, ':id' => $savedCategoryId]);
+                } elseif ($removeCategoryImage) {
+                    $imageStmt = $pdo->prepare('UPDATE categories SET image_path = NULL WHERE id = :id');
+                    $imageStmt->execute([':id' => $savedCategoryId]);
+                }
+
+                $pdo->commit();
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                if ($newImagePath !== null) {
+                    $categoryImageService->remove($newImagePath);
+                }
+                $errorMessage = $exception->getMessage();
+            }
+
+            if ($errorMessage === '') {
+                if (($newImagePath !== null || $removeCategoryImage) && is_string($oldImagePath)) {
+                    $categoryImageService->remove($oldImagePath);
+                }
+                $usageAuditService->logAdminAction($userId, $catId ? 'category_updated' : 'category_created', 'CATEGORY', $savedCategoryId);
+                $redirectParams = ['tab' => $redirectTab, 'msg' => 'category_saved'];
+                if ($redirectTab === 'novo_documento' && !$catId && $statusVal) {
+                    $redirectParams += ['setup' => 'subcategory', 'cat_id' => $savedCategoryId];
+                } elseif ($redirectTab === 'novo_documento' && !$statusVal) {
+                    $redirectParams['tab'] = 'categorias';
+                }
+                header('Location: index.php?' . http_build_query($redirectParams));
                 exit;
             }
         }
     }
 
     if (isset($_GET['action']) && $_GET['action'] === 'delete_category' && isset($_GET['id'])) {
-        if ($loggedUser['role'] !== 'admin') {
+        if (!$isGlobalAdminCurrent) {
             $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Categorias.";
         } else {
             $catId = (int)$_GET['id'];
@@ -752,6 +1142,7 @@ if ($isLogged) {
                 $errorMessage = "Esta categoria possui subcategorias vinculadas. Desative-a em vez de excluir.";
             } else {
                 $pdo->prepare("DELETE FROM categories WHERE id = :id")->execute([':id' => $catId]);
+                $usageAuditService->logAdminAction($currentAdminUserId, 'category_deleted', 'CATEGORY', $catId);
                 header('Location: index.php?tab=categorias&msg=category_deleted');
                 exit;
             }
@@ -773,31 +1164,105 @@ if ($isLogged) {
         $statusVal = trim($_POST['status'] ?? 'ativo') === 'ativo';
         $subId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'subcategorias');
+        $subcategoryImageFile = isset($_FILES['subcategory_image']) && is_array($_FILES['subcategory_image'])
+            ? $_FILES['subcategory_image']
+            : null;
+        $removeSubcategoryImage = $subId !== null && isset($_POST['remove_subcategory_image']);
+
+        $originalCategoryId = 0;
+        if ($subId) {
+            $parentCategoryStmt = $pdo->prepare('SELECT category_id FROM subcategories WHERE id = :id');
+            $parentCategoryStmt->execute([':id' => $subId]);
+            $originalCategoryId = (int)$parentCategoryStmt->fetchColumn();
+            if ($catId <= 0) {
+                $catId = $originalCategoryId;
+            }
+        }
 
         $userId = (int)($loggedUser['id'] ?? 0);
 
         if (!$subId && ($catId <= 0 || !$permService->canCreateSubcategory($userId, $catId))) {
             http_response_code(403);
             $errorMessage = "Acesso negado. Você não possui permissão para criar subcategorias nesta categoria.";
+        } elseif ($subId && $originalCategoryId <= 0) {
+            $errorMessage = 'Subcategoria não encontrada.';
         } elseif ($subId && !$permService->canEditSubcategory($userId, $subId)) {
             http_response_code(403);
             $errorMessage = "Acesso negado. Você não possui permissão para editar esta subcategoria.";
-        } elseif (!empty($nome) && $catId > 0) {
-            $slug = slugify($nome);
-            if ($subId) {
-                $stmt = $pdo->prepare("UPDATE subcategories SET category_id = :cat_id, name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
-                $stmt->execute([':cat_id' => $catId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $subId]);
-            } else {
-                $stmt = $pdo->prepare("INSERT INTO subcategories (category_id, name, slug, description, active) VALUES (:cat_id, :name, :slug, :desc, :active)");
-                $stmt->execute([':cat_id' => $catId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
+        } elseif ($subId && $catId !== $originalCategoryId
+            && (!$permService->canAdminSubcategory($userId, $subId) || !$permService->canAdminCategory($userId, $catId))) {
+            http_response_code(403);
+            $errorMessage = 'Para mover uma subcategoria é necessário possuir Admin tanto na origem quanto na categoria de destino.';
+        } elseif (empty($nome) || $catId <= 0) {
+            $errorMessage = 'Informe a categoria pai e o nome da subcategoria.';
+        } elseif (($imageError = $categoryImageService->validate($subcategoryImageFile, 'subcategoria')) !== null) {
+            $errorMessage = $imageError;
+        } else {
+            $oldImagePath = null;
+            $newImagePath = null;
+            $savedSubcategoryId = (int)($subId ?? 0);
+
+            try {
+                $pdo->beginTransaction();
+                $slug = slugify($nome);
+
+                if ($subId) {
+                    $oldImageStmt = $pdo->prepare('SELECT image_path FROM subcategories WHERE id = :id FOR UPDATE');
+                    $oldImageStmt->execute([':id' => $subId]);
+                    $oldImagePath = $oldImageStmt->fetchColumn();
+                    if ($oldImagePath === false) {
+                        throw new RuntimeException('Subcategoria não encontrada.');
+                    }
+
+                    $stmt = $pdo->prepare('UPDATE subcategories SET category_id = :cat_id, name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id');
+                    $stmt->execute([':cat_id' => $catId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $subId]);
+                } else {
+                    $stmt = $pdo->prepare('INSERT INTO subcategories (category_id, name, slug, description, active) VALUES (:cat_id, :name, :slug, :desc, :active) RETURNING id');
+                    $stmt->execute([':cat_id' => $catId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
+                    $savedSubcategoryId = (int)$stmt->fetchColumn();
+                }
+
+                $hasNewImage = $subcategoryImageFile !== null
+                    && (int)($subcategoryImageFile['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+                if ($hasNewImage) {
+                    $newImagePath = $categoryImageService->storeFor($subcategoryImageFile, $savedSubcategoryId, 'subcategory');
+                    $imageStmt = $pdo->prepare('UPDATE subcategories SET image_path = :image_path WHERE id = :id');
+                    $imageStmt->execute([':image_path' => $newImagePath, ':id' => $savedSubcategoryId]);
+                } elseif ($removeSubcategoryImage) {
+                    $imageStmt = $pdo->prepare('UPDATE subcategories SET image_path = NULL WHERE id = :id');
+                    $imageStmt->execute([':id' => $savedSubcategoryId]);
+                }
+
+                $pdo->commit();
+            } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                if ($newImagePath !== null) {
+                    $categoryImageService->remove($newImagePath);
+                }
+                $errorMessage = $exception->getMessage();
             }
-            header('Location: index.php?tab=' . $redirectTab . '&msg=subcategory_saved');
-            exit;
+
+            if ($errorMessage === '') {
+                if (($newImagePath !== null || $removeSubcategoryImage) && is_string($oldImagePath)) {
+                    $categoryImageService->remove($oldImagePath);
+                }
+                $usageAuditService->logAdminAction($userId, $subId ? 'subcategory_updated' : 'subcategory_created', 'SUBCATEGORY', $savedSubcategoryId);
+                $redirectParams = ['tab' => $redirectTab, 'msg' => 'subcategory_saved'];
+                if ($redirectTab === 'novo_documento' && !$subId && $statusVal) {
+                    $redirectParams += ['setup' => 'subject', 'cat_id' => $catId, 'subcat_id' => $savedSubcategoryId];
+                } elseif ($redirectTab === 'novo_documento' && !$statusVal) {
+                    $redirectParams['tab'] = 'subcategorias';
+                }
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
         }
     }
 
     if (isset($_GET['action']) && $_GET['action'] === 'delete_subcategory' && isset($_GET['id'])) {
-        if ($loggedUser['role'] !== 'admin') {
+        if (!$isGlobalAdminCurrent) {
             $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Subcategorias.";
         } else {
             $subId = (int)$_GET['id'];
@@ -807,6 +1272,7 @@ if ($isLogged) {
                 $errorMessage = "Esta subcategoria possui assuntos vinculados. Desative-a em vez de excluir.";
             } else {
                 $pdo->prepare("DELETE FROM subcategories WHERE id = :id")->execute([':id' => $subId]);
+                $usageAuditService->logAdminAction($currentAdminUserId, 'subcategory_deleted', 'SUBCATEGORY', $subId);
                 header('Location: index.php?tab=subcategorias&msg=subcategory_deleted');
                 exit;
             }
@@ -827,32 +1293,64 @@ if ($isLogged) {
         $descricao = trim($_POST['descricao'] ?? '');
         $statusVal = trim($_POST['status'] ?? 'ativo') === 'ativo';
         $assId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
+        $isNewSubject = !$assId;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'assuntos');
+
+        $originalSubcategoryId = 0;
+        if ($assId) {
+            $parentSubcategoryStmt = $pdo->prepare('SELECT subcategory_id FROM subjects WHERE id = :id');
+            $parentSubcategoryStmt->execute([':id' => $assId]);
+            $originalSubcategoryId = (int)$parentSubcategoryStmt->fetchColumn();
+            if ($subId <= 0) {
+                $subId = $originalSubcategoryId;
+            }
+        }
 
         $userId = (int)($loggedUser['id'] ?? 0);
 
         if (!$assId && ($subId <= 0 || !$permService->canCreateSubject($userId, $subId))) {
             http_response_code(403);
             $errorMessage = "Acesso negado. Você não possui permissão para criar assuntos nesta subcategoria.";
+        } elseif ($assId && $originalSubcategoryId <= 0) {
+            $errorMessage = 'Assunto não encontrado.';
         } elseif ($assId && !$permService->canEditSubject($userId, $assId)) {
             http_response_code(403);
             $errorMessage = "Acesso negado. Você não possui permissão para editar este assunto.";
+        } elseif ($assId && $subId !== $originalSubcategoryId
+            && (!$permService->canAdminSubject($userId, $assId) || !$permService->canAdminSubcategory($userId, $subId))) {
+            http_response_code(403);
+            $errorMessage = 'Para mover um assunto é necessário possuir Admin tanto na origem quanto na subcategoria de destino.';
         } elseif (!empty($nome) && $subId > 0) {
             $slug = slugify($nome);
             if ($assId) {
                 $stmt = $pdo->prepare("UPDATE subjects SET subcategory_id = :sub_id, name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
                 $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $assId]);
             } else {
-                $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active) VALUES (:sub_id, :name, :slug, :desc, :active)");
+                $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active) VALUES (:sub_id, :name, :slug, :desc, :active) RETURNING id");
                 $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
+                $assId = (int)$stmt->fetchColumn();
             }
-            header('Location: index.php?tab=' . $redirectTab . '&msg=subject_saved');
+            $usageAuditService->logAdminAction($userId, $isNewSubject ? 'subject_created' : 'subject_updated', 'SUBJECT', (int)$assId);
+            $redirectParams = ['tab' => $redirectTab, 'msg' => 'subject_saved'];
+            if ($redirectTab === 'novo_documento' && $isNewSubject && $statusVal) {
+                $parentStmt = $pdo->prepare('SELECT sc.category_id FROM subcategories sc WHERE sc.id = :id');
+                $parentStmt->execute([':id' => $subId]);
+                $redirectParams += [
+                    'setup' => 'document',
+                    'cat_id' => (int)$parentStmt->fetchColumn(),
+                    'subcat_id' => $subId,
+                    'subject_id' => (int)$assId,
+                ];
+            } elseif ($redirectTab === 'novo_documento' && !$statusVal) {
+                $redirectParams['tab'] = 'assuntos';
+            }
+            header('Location: index.php?' . http_build_query($redirectParams));
             exit;
         }
     }
 
     if (isset($_GET['action']) && $_GET['action'] === 'delete_subject' && isset($_GET['id'])) {
-        if ($loggedUser['role'] !== 'admin') {
+        if (!$isGlobalAdminCurrent) {
             $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Assuntos.";
         } else {
             $assId = (int)$_GET['id'];
@@ -862,6 +1360,7 @@ if ($isLogged) {
                 $errorMessage = "Este assunto possui documentos vinculados. Desative-o em vez de excluir.";
             } else {
                 $pdo->prepare("DELETE FROM subjects WHERE id = :id")->execute([':id' => $assId]);
+                $usageAuditService->logAdminAction($currentAdminUserId, 'subject_deleted', 'SUBJECT', $assId);
                 header('Location: index.php?tab=assuntos&msg=subject_deleted');
                 exit;
             }
@@ -870,62 +1369,105 @@ if ($isLogged) {
 
     // CARREGAR EDICÃO DE ENTIDADES DA HIERARQUIA
     if (isset($_GET['action']) && $_GET['action'] === 'edit_category' && isset($_GET['id'])) {
-        $stmt = $pdo->prepare("SELECT id, name AS nome, description AS descricao, active FROM categories WHERE id = :id");
-        $stmt->execute([':id' => (int)$_GET['id']]);
-        $editCat = $stmt->fetch();
-        if ($editCat) {
-            $editCat['status'] = $editCat['active'] ? 'ativo' : 'inativo';
+        $requestedCategoryId = (int)$_GET['id'];
+        if (!$permService->canEdit($currentAdminUserId, 'category', $requestedCategoryId)) {
+            http_response_code(403);
+            $errorMessage = 'Acesso negado: categoria fora do seu escopo administrativo.';
+        } else {
+            $stmt = $pdo->prepare("SELECT id, name AS nome, description AS descricao, image_path, active FROM categories WHERE id = :id");
+            $stmt->execute([':id' => $requestedCategoryId]);
+            $editCat = $stmt->fetch();
+            if ($editCat) {
+                $editCat['status'] = $editCat['active'] ? 'ativo' : 'inativo';
+            }
         }
     }
     if (isset($_GET['action']) && $_GET['action'] === 'edit_subcategory' && isset($_GET['id'])) {
-        $stmt = $pdo->prepare("SELECT sc.id, sc.category_id, sc.name AS nome, sc.description AS descricao, sc.active, c.name AS categoria_nome FROM subcategories sc JOIN categories c ON sc.category_id = c.id WHERE sc.id = :id");
-        $stmt->execute([':id' => (int)$_GET['id']]);
-        $editSub = $stmt->fetch();
-        if ($editSub) {
-            $editSub['status'] = $editSub['active'] ? 'ativo' : 'inativo';
+        $requestedSubcategoryId = (int)$_GET['id'];
+        if (!$permService->canEdit($currentAdminUserId, 'subcategory', $requestedSubcategoryId)) {
+            http_response_code(403);
+            $errorMessage = 'Acesso negado: subcategoria fora do seu escopo administrativo.';
+        } else {
+            $stmt = $pdo->prepare("SELECT sc.id, sc.category_id, sc.name AS nome, sc.description AS descricao, sc.image_path, sc.active, c.name AS categoria_nome FROM subcategories sc JOIN categories c ON sc.category_id = c.id WHERE sc.id = :id");
+            $stmt->execute([':id' => $requestedSubcategoryId]);
+            $editSub = $stmt->fetch();
+            if ($editSub) {
+                $editSub['status'] = $editSub['active'] ? 'ativo' : 'inativo';
+            }
         }
     }
     if (isset($_GET['action']) && $_GET['action'] === 'edit_subject' && isset($_GET['id'])) {
-        $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name AS nome, s.description AS descricao, s.active, sc.name AS subcategoria_nome FROM subjects s JOIN subcategories sc ON s.subcategory_id = sc.id WHERE s.id = :id");
-        $stmt->execute([':id' => (int)$_GET['id']]);
-        $editAss = $stmt->fetch();
-        if ($editAss) {
-            $editAss['status'] = $editAss['active'] ? 'ativo' : 'inativo';
+        $requestedSubjectId = (int)$_GET['id'];
+        if (!$permService->canEdit($currentAdminUserId, 'subject', $requestedSubjectId)) {
+            http_response_code(403);
+            $errorMessage = 'Acesso negado: assunto fora do seu escopo administrativo.';
+        } else {
+            $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name AS nome, s.description AS descricao, s.active, sc.name AS subcategoria_nome FROM subjects s JOIN subcategories sc ON s.subcategory_id = sc.id WHERE s.id = :id");
+            $stmt->execute([':id' => $requestedSubjectId]);
+            $editAss = $stmt->fetch();
+            if ($editAss) {
+                $editAss['status'] = $editAss['active'] ? 'ativo' : 'inativo';
+            }
         }
     }
     if (isset($_GET['action']) && $_GET['action'] === 'edit_doc' && isset($_GET['id'])) {
-        $stmt = $pdo->prepare("
-            SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
-                   d.text_content AS conteudo_html, d.external_url AS link_externo,
-                   s.name AS assunto, sc.name AS subcategoria, c.name AS categoria
-            FROM documents d
-            JOIN subjects s ON d.subject_id = s.id
-            JOIN subcategories sc ON s.subcategory_id = sc.id
-            JOIN categories c ON sc.category_id = c.id
-            WHERE d.id = :id
-        ");
-        $stmt->execute([':id' => (int)$_GET['id']]);
-        $editDoc = $stmt->fetch();
+        $requestedDocumentId = (int)$_GET['id'];
+        if (!$permService->canEditDocument($currentAdminUserId, $requestedDocumentId)) {
+            http_response_code(403);
+            $errorMessage = 'Acesso negado: documento fora do seu escopo administrativo.';
+        } else {
+            $stmt = $pdo->prepare("
+                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
+                       d.text_content AS conteudo_html, d.code_language AS linguagem_codigo, d.external_url AS link_externo,
+                       s.id AS assunto_id, s.name AS assunto,
+                       sc.id AS subcategoria_id, sc.name AS subcategoria,
+                       c.id AS categoria_id, c.name AS categoria
+                FROM documents d
+                JOIN subjects s ON d.subject_id = s.id
+                JOIN subcategories sc ON s.subcategory_id = sc.id
+                JOIN categories c ON sc.category_id = c.id
+                WHERE d.id = :id
+            ");
+            $stmt->execute([':id' => $requestedDocumentId]);
+            $editDoc = $stmt->fetch();
+        }
     }
 
     // CARREGAR DETALHES DE DOCUMENTO
     if ($activeTab === 'detalhes_documento' || $activeTab === 'substituir_arquivo') {
         $id = (int)($_GET['id'] ?? 0);
-        $stmt = $pdo->prepare("
-            SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
-                   d.original_filename AS nome_original, d.file_path AS caminho_arquivo, d.file_size AS tamanho_bytes,
-                   d.mime_type AS tipo_mime, d.published_at, d.created_at,
-                   s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
-                   u.name AS autor_nome
-            FROM documents d
-            JOIN subjects s ON d.subject_id = s.id
-            JOIN subcategories sc ON s.subcategory_id = sc.id
-            JOIN categories c ON sc.category_id = c.id
-            LEFT JOIN users u ON d.created_by = u.id
-            WHERE d.id = :id
-        ");
-        $stmt->execute([':id' => $id]);
-        $docDetails = $stmt->fetch();
+        if (!$permService->canEditDocument($currentAdminUserId, $id)) {
+            http_response_code(403);
+            $errorMessage = 'Acesso negado: os detalhes deste documento pertencem a outra área.';
+        } else {
+            $stmt = $pdo->prepare("
+                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
+                       d.original_filename AS nome_original, d.file_path AS caminho_arquivo, d.file_size AS tamanho_bytes,
+                       d.mime_type AS tipo_mime, d.published_at, d.created_at, d.approval_expires_at,
+                       d.reviewed_at, d.approved_at, d.rejected_at, d.rejection_reason,
+                       s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
+                       u.name AS autor_nome, reviewer.name AS revisor_nome,
+                       approver.name AS aprovador_nome, rejector.name AS recusador_nome
+                FROM documents d
+                JOIN subjects s ON d.subject_id = s.id
+                JOIN subcategories sc ON s.subcategory_id = sc.id
+                JOIN categories c ON sc.category_id = c.id
+                LEFT JOIN users u ON d.created_by = u.id
+                LEFT JOIN users reviewer ON d.reviewed_by = reviewer.id
+                LEFT JOIN users approver ON d.approved_by = approver.id
+                LEFT JOIN users rejector ON d.rejected_by = rejector.id
+                WHERE d.id = :id
+            ");
+            $stmt->execute([':id' => $id]);
+            $docDetails = $stmt->fetch();
+            if ($docDetails) {
+                try {
+                    $workflowHistory = $workflowService->history($id);
+                } catch (Throwable $exception) {
+                    error_log('DocGov workflow: histórico indisponível: ' . $exception->getMessage());
+                }
+            }
+        }
     }
 }
 
@@ -943,7 +1485,7 @@ $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 10;
 $offset = ($page - 1) * $perPage;
 
-$whereClauses = ["d.status != 'inactive'"];
+$whereClauses = ["d.status != 'inactive'", $administrativeDocumentScopeSql];
 $params = [];
 
 if (!empty($searchQuery)) {
@@ -988,7 +1530,7 @@ $totalPages = max(1, ceil($totalDocsFiltered / $perPage));
 
 $sqlDocs = "
     SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, 
-           d.status, d.created_at, d.published_at,
+           d.status, d.created_at, d.published_at, d.approval_expires_at,
            s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
            u.name AS autor_nome
     FROM documents d
@@ -1003,75 +1545,450 @@ $stmtDocs = $pdo->prepare($sqlDocs);
 $stmtDocs->execute($params);
 $documentosPaginados = $stmtDocs->fetchAll();
 
-// Métricas de Visão Geral
-$totalDocs = (int)$pdo->query("SELECT COUNT(*) FROM documents")->fetchColumn();
-$totalPublicados = (int)$pdo->query("SELECT COUNT(*) FROM documents WHERE status = 'published'")->fetchColumn();
-$totalRascunhos = (int)$pdo->query("SELECT COUNT(*) FROM documents WHERE status = 'draft'")->fetchColumn();
-$totalInativos = (int)$pdo->query("SELECT COUNT(*) FROM documents WHERE status = 'inactive'")->fetchColumn();
+// Métricas da Visão Geral sempre limitadas ao escopo administrativo atual.
+$metricsStmt = $pdo->query("
+    SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE d.status = 'published') AS published,
+        COUNT(*) FILTER (WHERE d.status = 'draft') AS draft,
+        COUNT(*) FILTER (WHERE d.status = 'review') AS review,
+        COUNT(*) FILTER (WHERE d.status = 'inactive') AS inactive
+    FROM documents d
+    WHERE {$administrativeDocumentScopeSql}
+");
+$metrics = $metricsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+$totalDocs = (int)($metrics['total'] ?? 0);
+$totalPublicados = (int)($metrics['published'] ?? 0);
+$totalRascunhos = (int)($metrics['draft'] ?? 0);
+$totalEmRevisao = (int)($metrics['review'] ?? 0);
+$totalInativos = (int)($metrics['inactive'] ?? 0);
 $totalLixeira = $totalInativos;
 
 $ultimosDocumentos = $pdo->query("
-    SELECT d.id, d.title AS titulo, d.status, d.created_at, u.name AS autor_nome
+    SELECT d.id, d.title AS titulo, d.status, d.created_at, d.updated_at AS atualizado_em,
+           s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
+           u.name AS autor_nome
     FROM documents d
+    JOIN subjects s ON d.subject_id = s.id
+    JOIN subcategories sc ON s.subcategory_id = sc.id
+    JOIN categories c ON sc.category_id = c.id
     LEFT JOIN users u ON d.created_by = u.id
-    ORDER BY d.id DESC LIMIT 5
+    WHERE {$administrativeDocumentScopeSql}
+    ORDER BY d.updated_at DESC, d.id DESC LIMIT 5
 ")->fetchAll();
 
+// Indicadores e auditoria globais: consultados somente para o Super Admin.
+// Gestores locais continuam recebendo apenas os dados do próprio escopo.
+$globalDashboard = null;
+if ($isGlobalAdminCurrent) {
+    $userStats = $pdo->query("
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE active = TRUE) AS active,
+            COUNT(*) FILTER (WHERE active = FALSE) AS inactive,
+            COUNT(*) FILTER (WHERE role = 'admin' AND active = TRUE) AS global_admins,
+            COUNT(*) FILTER (WHERE auth_source = 'ad') AS active_directory,
+            COUNT(*) FILTER (WHERE auth_source <> 'ad' OR auth_source IS NULL) AS local_auth,
+            COUNT(*) FILTER (WHERE last_login_at >= CURRENT_TIMESTAMP - INTERVAL '30 days') AS logins_30d,
+            COUNT(*) FILTER (WHERE last_login_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})) AS logins_in_period,
+            COUNT(*) FILTER (WHERE last_login_at IS NULL) AS never_logged
+        FROM users
+    ")->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $structureStats = $pdo->query("
+        SELECT
+            (SELECT COUNT(*) FROM categories) AS categories_total,
+            (SELECT COUNT(*) FROM categories WHERE active = TRUE) AS categories_active,
+            (SELECT COUNT(*) FROM subcategories) AS subcategories_total,
+            (SELECT COUNT(*) FROM subjects) AS subjects_total
+    ")->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $accessStats = $pdo->query("
+        SELECT
+            (SELECT COUNT(*) FROM groups) AS teams_total,
+            (SELECT COUNT(*) FROM groups WHERE active = TRUE) AS teams_active,
+            (SELECT COUNT(*) FROM user_groups) AS memberships_total,
+            (SELECT COUNT(*) FROM permissions) AS permission_rules_total,
+            (SELECT COUNT(*) FROM permissions WHERE user_id IS NOT NULL) AS direct_user_rules,
+            (SELECT COUNT(*) FROM permissions WHERE group_id IS NOT NULL) AS team_rules,
+            (SELECT COUNT(*) FROM permissions WHERE permission_level = 'admin') AS admin_rules,
+            (SELECT COUNT(*) FROM permissions WHERE permission_level = 'edit') AS edit_rules,
+            (SELECT COUNT(*) FROM permissions WHERE permission_level = 'view') AS view_rules
+    ")->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $contentStats = $pdo->query("
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status = 'published') AS published,
+            COUNT(*) FILTER (WHERE status = 'draft') AS draft,
+            COUNT(*) FILTER (WHERE status = 'review') AS review,
+            COUNT(*) FILTER (WHERE status = 'inactive') AS inactive,
+            COUNT(*) FILTER (WHERE content_type = 'file') AS files,
+            COUNT(*) FILTER (WHERE content_type = 'text') AS texts,
+            COUNT(*) FILTER (WHERE content_type = 'link') AS links,
+            COUNT(*) FILTER (WHERE content_type = 'code') AS codes,
+            COUNT(*) FILTER (WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '30 days') AS created_30d,
+            COUNT(*) FILTER (WHERE updated_at >= CURRENT_TIMESTAMP - INTERVAL '30 days') AS updated_30d,
+            COUNT(*) FILTER (WHERE created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})) AS created_in_period,
+            COUNT(*) FILTER (WHERE updated_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})) AS updated_in_period
+        FROM documents
+    ")->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $documentsByCategory = $pdo->query("
+        SELECT
+            c.id,
+            c.name,
+            COUNT(d.id) AS documents_total,
+            COUNT(d.id) FILTER (WHERE d.status = 'published') AS published_total,
+            COUNT(d.id) FILTER (WHERE d.status = 'draft') AS draft_total,
+            MAX(d.updated_at) AS last_activity_at
+        FROM categories c
+        LEFT JOIN subcategories sc ON sc.category_id = c.id
+        LEFT JOIN subjects s ON s.subcategory_id = sc.id
+        LEFT JOIN documents d ON d.subject_id = s.id
+        GROUP BY c.id, c.name
+        ORDER BY COUNT(d.id) DESC, c.name ASC
+        LIMIT 8
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    $documentActivity = $pdo->query("
+        SELECT
+            d.id,
+            d.title,
+            d.status,
+            d.created_at,
+            d.updated_at,
+            c.name AS category_name,
+            sc.name AS subcategory_name,
+            s.name AS subject_name,
+            u.name AS author_name
+        FROM documents d
+        JOIN subjects s ON s.id = d.subject_id
+        JOIN subcategories sc ON sc.id = s.subcategory_id
+        JOIN categories c ON c.id = sc.category_id
+        LEFT JOIN users u ON u.id = d.created_by
+        ORDER BY d.updated_at DESC, d.id DESC
+        LIMIT 8
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    $loginActivity = $pdo->query("
+        SELECT id, name, username, last_login_at, auth_source
+        FROM users
+        WHERE last_login_at IS NOT NULL
+        ORDER BY last_login_at DESC
+        LIMIT 8
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    $activityByDay = $pdo->query("
+        SELECT
+            activity_day::date AS activity_day,
+            COUNT(d.id) AS documents_created
+        FROM generate_series(
+            CURRENT_DATE - INTERVAL '{$dashboardPeriodStartOffset} days',
+            CURRENT_DATE,
+            INTERVAL '1 day'
+        ) AS activity_day
+        LEFT JOIN documents d
+            ON d.created_at >= activity_day
+           AND d.created_at < activity_day + INTERVAL '1 day'
+        GROUP BY activity_day
+        ORDER BY activity_day ASC
+    ")->fetchAll(PDO::FETCH_ASSOC);
+
+    $permissionAuditAvailable = (bool)$pdo->query("SELECT to_regclass('public.permission_audit') IS NOT NULL")->fetchColumn();
+    $permissionAudit = [];
+    if ($permissionAuditAvailable) {
+        $accessStats['permission_audit_total'] = (int)$pdo->query("SELECT COUNT(*) FROM permission_audit")->fetchColumn();
+        $accessStats['permission_audit_in_period'] = (int)$pdo->query("SELECT COUNT(*) FROM permission_audit WHERE created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})")->fetchColumn();
+        $permissionAudit = $pdo->query("
+            SELECT
+                pa.id,
+                pa.action,
+                pa.principal_type,
+                pa.principal_id,
+                pa.resource_type,
+                pa.resource_id,
+                pa.old_permission,
+                pa.new_permission,
+                pa.ip_address,
+                pa.created_at,
+                actor.name AS actor_name,
+                COALESCE(target_user.name, target_team.name, 'Principal removido') AS principal_name,
+                COALESCE(category_resource.name, subcategory_resource.name, subject_resource.name, 'Recurso removido') AS resource_name
+            FROM permission_audit pa
+            LEFT JOIN users actor ON actor.id = pa.user_id
+            LEFT JOIN users target_user ON pa.principal_type = 'USER' AND target_user.id = pa.principal_id
+            LEFT JOIN groups target_team ON pa.principal_type = 'TEAM' AND target_team.id = pa.principal_id
+            LEFT JOIN categories category_resource ON pa.resource_type = 'CATEGORY' AND category_resource.id = pa.resource_id
+            LEFT JOIN subcategories subcategory_resource ON pa.resource_type = 'SUBCATEGORY' AND subcategory_resource.id = pa.resource_id
+            LEFT JOIN subjects subject_resource ON pa.resource_type = 'SUBJECT' AND subject_resource.id = pa.resource_id
+            ORDER BY pa.created_at DESC, pa.id DESC
+            LIMIT 12
+        ")->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $usageAuditAvailable = (bool)$pdo->query("SELECT to_regclass('public.usage_audit_events') IS NOT NULL")->fetchColumn();
+    $usageAuditStats = [];
+    $usageByPerson = [];
+    $usageByDocument = [];
+    $usageByNavigation = [];
+    $usageRecentEvents = [];
+    $usageByDay = [];
+    $publicationsByDay = [];
+    $adminTimeline = [];
+
+    if ($usageAuditAvailable) {
+        $usageAuditStats = $pdo->query("
+            SELECT
+                COUNT(*) AS total_events,
+                COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL) AS unique_users,
+                COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND created_at >= CURRENT_TIMESTAMP - INTERVAL '15 minutes') AS online_now,
+                COUNT(*) FILTER (WHERE event_type = 'login') AS logins,
+                COUNT(*) FILTER (WHERE event_type = 'document_view') AS document_views,
+                COUNT(*) FILTER (WHERE event_type = 'document_download') AS downloads,
+                COUNT(*) FILTER (WHERE event_type = 'external_open') AS external_opens,
+                COUNT(*) FILTER (WHERE event_type = 'search') AS searches,
+                COUNT(*) FILTER (WHERE event_type IN ('admin_action', 'admin_page_view')) AS admin_events,
+                COUNT(DISTINCT resource_id) FILTER (WHERE resource_type = 'DOCUMENT' AND event_type IN ('document_view', 'document_download', 'external_open')) AS documents_consulted
+            FROM usage_audit_events
+            WHERE created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+        ")->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $usageByPerson = $pdo->query("
+            SELECT
+                u.id, u.name, u.username, u.role,
+                MAX(e.created_at) AS last_activity_at,
+                COUNT(*) AS events_total,
+                COUNT(*) FILTER (WHERE e.event_type = 'document_view') AS document_views,
+                COUNT(*) FILTER (WHERE e.event_type = 'document_download') AS downloads,
+                COUNT(DISTINCT e.resource_id) FILTER (WHERE e.resource_type = 'DOCUMENT' AND e.event_type IN ('document_view', 'document_download', 'external_open')) AS documents_used
+            FROM usage_audit_events e
+            JOIN users u ON u.id = e.user_id
+            WHERE e.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+            GROUP BY u.id, u.name, u.username, u.role
+            ORDER BY COUNT(*) DESC, MAX(e.created_at) DESC
+            LIMIT 8
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $usageByDocument = $pdo->query("
+            SELECT
+                d.id, d.title, c.name AS category_name, sc.name AS subcategory_name,
+                COUNT(*) FILTER (WHERE e.event_type = 'document_view') AS views,
+                COUNT(*) FILTER (WHERE e.event_type = 'document_download') AS downloads,
+                COUNT(*) FILTER (WHERE e.event_type = 'external_open') AS external_opens,
+                COUNT(DISTINCT e.user_id) FILTER (WHERE e.user_id IS NOT NULL) AS users_total,
+                MAX(e.created_at) AS last_access_at
+            FROM usage_audit_events e
+            JOIN documents d ON e.resource_type = 'DOCUMENT' AND e.resource_id = d.id
+            JOIN subjects s ON s.id = d.subject_id
+            JOIN subcategories sc ON sc.id = s.subcategory_id
+            JOIN categories c ON c.id = sc.category_id
+            WHERE e.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+              AND e.event_type IN ('document_view', 'document_download', 'external_open')
+            GROUP BY d.id, d.title, c.name, sc.name
+            ORDER BY (COUNT(*) FILTER (WHERE e.event_type = 'document_view') + COUNT(*) FILTER (WHERE e.event_type = 'document_download') + COUNT(*) FILTER (WHERE e.event_type = 'external_open')) DESC, MAX(e.created_at) DESC
+            LIMIT 8
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $usageByNavigation = $pdo->query("
+            SELECT
+                e.resource_type, e.resource_id,
+                COALESCE(c.name, sc.name, s.name, 'Recurso removido') AS resource_name,
+                COUNT(*) AS accesses,
+                COUNT(DISTINCT e.user_id) FILTER (WHERE e.user_id IS NOT NULL) AS users_total,
+                MAX(e.created_at) AS last_access_at
+            FROM usage_audit_events e
+            LEFT JOIN categories c ON e.resource_type = 'CATEGORY' AND e.resource_id = c.id
+            LEFT JOIN subcategories sc ON e.resource_type = 'SUBCATEGORY' AND e.resource_id = sc.id
+            LEFT JOIN subjects s ON e.resource_type = 'SUBJECT' AND e.resource_id = s.id
+            WHERE e.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+              AND e.event_type IN ('category_view', 'subcategory_view', 'subject_view')
+            GROUP BY e.resource_type, e.resource_id, c.name, sc.name, s.name
+            ORDER BY COUNT(*) DESC, MAX(e.created_at) DESC
+            LIMIT 6
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $usageRecentEvents = $pdo->query("
+            SELECT
+                e.id, e.event_type, e.resource_type, e.created_at,
+                u.name AS user_name, u.username,
+                COALESCE(d.title, c.name, sc.name, s.name, e.metadata->>'target_name', e.metadata->>'tab', 'Portal') AS resource_name
+            FROM usage_audit_events e
+            LEFT JOIN users u ON u.id = e.user_id
+            LEFT JOIN documents d ON e.resource_type = 'DOCUMENT' AND e.resource_id = d.id
+            LEFT JOIN categories c ON e.resource_type = 'CATEGORY' AND e.resource_id = c.id
+            LEFT JOIN subcategories sc ON e.resource_type = 'SUBCATEGORY' AND e.resource_id = sc.id
+            LEFT JOIN subjects s ON e.resource_type = 'SUBJECT' AND e.resource_id = s.id
+            WHERE e.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT 14
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $usageByDay = $pdo->query("
+            SELECT
+                activity_day::date AS activity_day,
+                COUNT(e.id) AS events_total,
+                COUNT(e.id) FILTER (WHERE e.event_type = 'document_view') AS document_views,
+                COUNT(e.id) FILTER (WHERE e.event_type = 'document_download') AS downloads,
+                COUNT(e.id) FILTER (WHERE e.event_type IN ('admin_action', 'admin_page_view')) AS admin_events
+            FROM generate_series(CURRENT_DATE - INTERVAL '{$dashboardPeriodStartOffset} days', CURRENT_DATE, INTERVAL '1 day') AS activity_day
+            LEFT JOIN usage_audit_events e ON e.created_at >= activity_day AND e.created_at < activity_day + INTERVAL '1 day'
+            GROUP BY activity_day
+            ORDER BY activity_day ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $publicationsByDay = $pdo->query("
+            SELECT
+                activity_day::date AS activity_day,
+                COUNT(d.id) AS publications_total
+            FROM generate_series(CURRENT_DATE - INTERVAL '{$dashboardPeriodStartOffset} days', CURRENT_DATE, INTERVAL '1 day') AS activity_day
+            LEFT JOIN documents d ON d.published_at >= activity_day AND d.published_at < activity_day + INTERVAL '1 day' AND d.status = 'published'
+            GROUP BY activity_day
+            ORDER BY activity_day ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
+
+        $timelineParts = ["
+            SELECT
+                e.created_at, 'usage' AS source, COALESCE(e.metadata->>'action', e.event_type) AS action,
+                u.name AS actor_name,
+                COALESCE(d.title, c.name, sc.name, s.name, e.metadata->>'target_name', e.metadata->>'tab', 'Portal') AS resource_name
+            FROM usage_audit_events e
+            LEFT JOIN users u ON u.id = e.user_id
+            LEFT JOIN documents d ON e.resource_type = 'DOCUMENT' AND e.resource_id = d.id
+            LEFT JOIN categories c ON e.resource_type = 'CATEGORY' AND e.resource_id = c.id
+            LEFT JOIN subcategories sc ON e.resource_type = 'SUBCATEGORY' AND e.resource_id = sc.id
+            LEFT JOIN subjects s ON e.resource_type = 'SUBJECT' AND e.resource_id = s.id
+            WHERE e.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays}) AND e.event_type = 'admin_action'
+        "];
+        if ($permissionAuditAvailable) {
+            $timelineParts[] = "
+                SELECT
+                    pa.created_at, 'permission' AS source, pa.action AS action,
+                    actor.name AS actor_name,
+                    COALESCE(category_resource.name, subcategory_resource.name, subject_resource.name, 'Recurso removido') AS resource_name
+                FROM permission_audit pa
+                LEFT JOIN users actor ON actor.id = pa.user_id
+                LEFT JOIN categories category_resource ON pa.resource_type = 'CATEGORY' AND category_resource.id = pa.resource_id
+                LEFT JOIN subcategories subcategory_resource ON pa.resource_type = 'SUBCATEGORY' AND subcategory_resource.id = pa.resource_id
+                LEFT JOIN subjects subject_resource ON pa.resource_type = 'SUBJECT' AND subject_resource.id = pa.resource_id
+                WHERE pa.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+            ";
+        }
+        $timelineParts[] = "
+            SELECT
+                h.created_at, 'workflow' AS source, h.action AS action,
+                actor.name AS actor_name, d.title AS resource_name
+            FROM document_workflow_history h
+            JOIN documents d ON d.id = h.document_id
+            LEFT JOIN users actor ON actor.id = h.actor_id
+            WHERE h.created_at >= CURRENT_TIMESTAMP - make_interval(days => {$dashboardPeriodDays})
+        ";
+        $adminTimeline = $pdo->query('SELECT * FROM (' . implode(' UNION ALL ', $timelineParts) . ') AS timeline ORDER BY created_at DESC LIMIT 16')->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $globalDashboard = [
+        'users' => $userStats,
+        'structure' => $structureStats,
+        'access' => $accessStats,
+        'content' => $contentStats,
+        'categories' => $documentsByCategory,
+        'documents' => $documentActivity,
+        'logins' => $loginActivity,
+        'activity_by_day' => $activityByDay,
+        'period_days' => $dashboardPeriodDays,
+        'permission_audit_available' => $permissionAuditAvailable,
+        'permission_audit' => $permissionAudit,
+        'usage_audit_available' => $usageAuditAvailable,
+        'usage' => $usageAuditStats,
+        'usage_by_person' => $usageByPerson,
+        'usage_by_document' => $usageByDocument,
+        'usage_by_navigation' => $usageByNavigation,
+        'usage_recent_events' => $usageRecentEvents,
+        'usage_by_day' => $usageByDay,
+        'publications_by_day' => $publicationsByDay,
+        'admin_timeline' => $adminTimeline,
+    ];
+}
+
 $documentosLixeira = $pdo->query("
-    SELECT d.id, d.title AS titulo, d.status, d.updated_at AS removido_em
+    SELECT d.id, d.title AS titulo, d.status, d.updated_at AS removido_em,
+           s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
+           u.name AS removido_por_nome
     FROM documents d
-    WHERE d.status = 'inactive'
+    JOIN subjects s ON d.subject_id = s.id
+    JOIN subcategories sc ON s.subcategory_id = sc.id
+    JOIN categories c ON sc.category_id = c.id
+    LEFT JOIN users u ON d.created_by = u.id
+    WHERE d.status = 'inactive' AND {$administrativeDocumentScopeSql}
     ORDER BY d.updated_at DESC
 ")->fetchAll();
 
 // Entidades de Organização
 $listCategorias = $pdo->query("
-    SELECT c.id, c.name AS nome, c.slug, c.description AS descricao, c.active,
+    SELECT c.id, c.name AS nome, c.slug, c.description AS descricao, c.image_path, c.active,
            CASE WHEN c.active THEN 'ativo' ELSE 'inativo' END AS status,
            COUNT(sc.id) AS total_subcat
     FROM categories c
     LEFT JOIN subcategories sc ON sc.category_id = c.id
-    GROUP BY c.id, c.name, c.slug, c.description, c.active
+    GROUP BY c.id, c.name, c.slug, c.description, c.image_path, c.active
     ORDER BY c.name ASC
 ")->fetchAll();
 
 $listSubcategorias = $pdo->query("
-    SELECT sc.id, sc.category_id, sc.name AS nome, sc.slug, sc.description AS descricao, sc.active,
+    SELECT sc.id, sc.category_id, sc.name AS nome, sc.slug, sc.description AS descricao, sc.image_path, sc.active,
            CASE WHEN sc.active THEN 'ativo' ELSE 'inativo' END AS status,
-           c.name AS categoria_nome,
+           c.name AS categoria_nome, c.active AS categoria_active,
            COUNT(s.id) AS total_assuntos
     FROM subcategories sc
     JOIN categories c ON sc.category_id = c.id
     LEFT JOIN subjects s ON s.subcategory_id = sc.id
-    GROUP BY sc.id, sc.category_id, sc.name, sc.slug, sc.description, sc.active, c.name
+    GROUP BY sc.id, sc.category_id, sc.name, sc.slug, sc.description, sc.image_path, sc.active, c.name, c.active
     ORDER BY c.name ASC, sc.name ASC
 ")->fetchAll();
 
 $listAssuntos = $pdo->query("
     SELECT s.id, s.subcategory_id, s.name AS nome, s.slug, s.description AS descricao, s.active,
            CASE WHEN s.active THEN 'ativo' ELSE 'inativo' END AS status,
-           sc.name AS subcategoria_nome, c.name AS categoria_nome,
+           sc.category_id, sc.name AS subcategoria_nome, sc.active AS subcategoria_active,
+           c.name AS categoria_nome, c.active AS categoria_active,
            COUNT(d.id) AS total_docs
     FROM subjects s
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
     LEFT JOIN documents d ON d.subject_id = s.id
-    GROUP BY s.id, s.subcategory_id, s.name, s.slug, s.description, s.active, sc.name, c.name
+    GROUP BY s.id, s.subcategory_id, s.name, s.slug, s.description, s.active, sc.category_id, sc.name, sc.active, c.name, c.active
     ORDER BY c.name ASC, sc.name ASC, s.name ASC
 ")->fetchAll();
 
-require_once __DIR__ . '/../services/AccessService.php';
-$accessServiceAdmin = new AccessService($pdo);
-$loggedAdminUserId = (int)($loggedUser['id'] ?? 0);
+if ($loggedUser && !$isGlobalAdminCurrent) {
+    $listCategorias = array_values(array_filter(
+        $listCategorias,
+        fn($category) => in_array((int)$category['id'], $administrativeCategoryIds, true)
+    ));
+    $listSubcategorias = array_values(array_filter(
+        $listSubcategorias,
+        fn($subcategory) => in_array((int)$subcategory['id'], $administrativeSubcategoryIds, true)
+    ));
+    $listAssuntos = array_values(array_filter(
+        $listAssuntos,
+        fn($subject) => in_array((int)$subject['id'], $administrativeSubjectIds, true)
+    ));
 
-if ($loggedUser && !$permService->isGlobalAdmin($loggedAdminUserId)) {
-    $allowedCatIdsAdmin = $accessServiceAdmin->getAllowedCategoryIds($loggedAdminUserId);
-    $allowedSubcatIdsAdmin = $accessServiceAdmin->getAllowedSubcategoryIds($loggedAdminUserId);
-    $allowedSubjectIdsAdmin = $accessServiceAdmin->getAllowedSubjectIds($loggedAdminUserId);
-
-    $listCategorias = array_values(array_filter($listCategorias, fn($c) => in_array((int)$c['id'], $allowedCatIdsAdmin)));
-    $listSubcategorias = array_values(array_filter($listSubcategorias, fn($sc) => in_array((int)$sc['id'], $allowedSubcatIdsAdmin)));
-    $listAssuntos = array_values(array_filter($listAssuntos, fn($s) => in_array((int)$s['id'], $allowedSubjectIdsAdmin)));
+    // Contadores locais não revelam a existência de irmãos fora do escopo.
+    foreach ($listCategorias as &$scopedCategory) {
+        $scopedCategory['total_subcat'] = count(array_filter(
+            $listSubcategorias,
+            fn($subcategory) => (int)$subcategory['category_id'] === (int)$scopedCategory['id']
+        ));
+    }
+    unset($scopedCategory);
+    foreach ($listSubcategorias as &$scopedSubcategory) {
+        $scopedSubcategory['total_assuntos'] = count(array_filter(
+            $listAssuntos,
+            fn($subject) => (int)$subject['subcategory_id'] === (int)$scopedSubcategory['id']
+        ));
+    }
+    unset($scopedSubcategory);
 }
 
 $rawCategorias = array_column($listCategorias, 'nome');
@@ -1091,31 +2008,46 @@ $_canCreateAnyDoc = false;
 // Listas filtradas para cada formulário de criação (somente onde o usuário tem capacidade)
 // Para Subcategoria: categorias onde canCreateSubcategory = true
 $catsParaSubcategoria = array_values(array_filter($listCategorias, function($c) use ($permService, $_currentUserId) {
-    return $permService->canCreateSubcategory($_currentUserId, (int)$c['id']);
+    return docgovDatabaseBoolean($c['active'])
+        && $permService->canCreateSubcategory($_currentUserId, (int)$c['id']);
 }));
 $_canCreateAnySub = !empty($catsParaSubcategoria);
 
 // Para Assunto: subcategorias onde canCreateSubject = true
 $subcatsParaAssunto = array_values(array_filter($listSubcategorias, function($sc) use ($permService, $_currentUserId) {
-    return $permService->canCreateSubject($_currentUserId, (int)$sc['id']);
+    return docgovDatabaseBoolean($sc['active'])
+        && docgovDatabaseBoolean($sc['categoria_active'])
+        && $permService->canCreateSubject($_currentUserId, (int)$sc['id']);
 }));
 $_canCreateAnyAss = !empty($subcatsParaAssunto);
 
 // Para Documento: assuntos onde canCreateDocument = true
 $assuntosParaDocumento = array_values(array_filter($listAssuntos, function($s) use ($permService, $_currentUserId) {
-    return $permService->canCreateDocument($_currentUserId, (int)$s['id']);
+    return docgovDatabaseBoolean($s['active'])
+        && docgovDatabaseBoolean($s['subcategoria_active'])
+        && docgovDatabaseBoolean($s['categoria_active'])
+        && $permService->canCreateDocument($_currentUserId, (int)$s['id']);
 }));
 $_canCreateAnyDoc = !empty($assuntosParaDocumento);
 
-// Subcategorias acessíveis para Documento (derivado dos assuntos autorizados)
+// O formulário mostra também ramos ativos ainda vazios. Assim uma Categoria recém-criada
+// não desaparece; a própria tela orienta a completar Subcategoria e Assunto.
 $subcatIdsParaDoc = array_unique(array_column($assuntosParaDocumento, 'subcategory_id'));
-$subcatsParaDocumento = array_values(array_filter($listSubcategorias, function($sc) use ($subcatIdsParaDoc) {
-    return in_array((int)$sc['id'], $subcatIdsParaDoc);
+$subcatsParaDocumento = array_values(array_filter($listSubcategorias, function($sc) use ($subcatIdsParaDoc, $permService, $_currentUserId) {
+    $active = docgovDatabaseBoolean($sc['active'])
+        && docgovDatabaseBoolean($sc['categoria_active']);
+    return $active && (
+        in_array((int)$sc['id'], $subcatIdsParaDoc, true)
+        || $permService->canCreateSubject($_currentUserId, (int)$sc['id'])
+    );
 }));
-// Categorias acessíveis para Documento
+// Categorias acessíveis para Documento, inclusive as ainda sem descendentes.
 $catIdsParaDoc = array_unique(array_column($subcatsParaDocumento, 'category_id'));
-$catsParaDocumento = array_values(array_filter($listCategorias, function($c) use ($catIdsParaDoc) {
-    return in_array((int)$c['id'], $catIdsParaDoc);
+$catsParaDocumento = array_values(array_filter($listCategorias, function($c) use ($catIdsParaDoc, $permService, $_currentUserId) {
+    return docgovDatabaseBoolean($c['active']) && (
+        in_array((int)$c['id'], $catIdsParaDoc, true)
+        || $permService->canCreateSubcategory($_currentUserId, (int)$c['id'])
+    );
 }));
 
 // Categorias visíveis para Assunto (derivado das subcategorias autorizadas)
@@ -1144,18 +2076,18 @@ foreach ($subcatsParaDocumento as $sc) {
 // Mapeamento Completo da Árvore Hierárquica
 $treeStructure = [];
 foreach ($listCategorias as $catItem) {
-    $catName = $catItem['nome'];
-    $treeStructure[$catName] = [
+    $categoryId = (int)$catItem['id'];
+    $treeStructure[$categoryId] = [
         'info' => $catItem,
         'subcategorias' => []
     ];
 }
 
 foreach ($listSubcategorias as $subItem) {
-    $catName = $subItem['categoria_nome'];
-    $subName = $subItem['nome'];
-    if (isset($treeStructure[$catName])) {
-        $treeStructure[$catName]['subcategorias'][$subName] = [
+    $categoryId = (int)$subItem['category_id'];
+    $subcategoryId = (int)$subItem['id'];
+    if (isset($treeStructure[$categoryId])) {
+        $treeStructure[$categoryId]['subcategorias'][$subcategoryId] = [
             'info' => $subItem,
             'assuntos' => []
         ];
@@ -1163,55 +2095,110 @@ foreach ($listSubcategorias as $subItem) {
 }
 
 foreach ($listAssuntos as $assItem) {
-    $subName = $assItem['subcategoria_nome'];
-    $assName = $assItem['nome'];
-
-    foreach ($treeStructure as $cName => &$cData) {
-        if (isset($cData['subcategorias'][$subName])) {
-            $cData['subcategorias'][$subName]['assuntos'][$assName] = [
-                'info' => $assItem,
-                'documentos' => []
-            ];
-        }
+    $categoryId = (int)$assItem['category_id'];
+    $subcategoryId = (int)$assItem['subcategory_id'];
+    $subjectId = (int)$assItem['id'];
+    if (isset($treeStructure[$categoryId]['subcategorias'][$subcategoryId])) {
+        $treeStructure[$categoryId]['subcategorias'][$subcategoryId]['assuntos'][$subjectId] = [
+            'info' => $assItem,
+            'documentos' => []
+        ];
     }
 }
 
 $allDocsTree = $pdo->query("
-    SELECT d.id, d.title AS titulo, d.status, d.content_type AS tipo_conteudo,
+    SELECT d.id, d.subject_id, s.subcategory_id, sc.category_id,
+           d.title AS titulo, d.status, d.content_type AS tipo_conteudo,
            s.name AS assunto, sc.name AS subcategoria, c.name AS categoria
     FROM documents d
     JOIN subjects s ON d.subject_id = s.id
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
+    WHERE {$administrativeDocumentScopeSql}
     ORDER BY d.id DESC, d.title ASC
 ")->fetchAll();
 
 foreach ($allDocsTree as $dItem) {
-    $cName = $dItem['categoria'];
-    $sName = $dItem['subcategoria'];
-    $aName = $dItem['assunto'];
-    if (isset($treeStructure[$cName]['subcategorias'][$sName]['assuntos'][$aName])) {
-        $treeStructure[$cName]['subcategorias'][$sName]['assuntos'][$aName]['documentos'][] = $dItem;
+    $categoryId = (int)$dItem['category_id'];
+    $subcategoryId = (int)$dItem['subcategory_id'];
+    $subjectId = (int)$dItem['subject_id'];
+    if (isset($treeStructure[$categoryId]['subcategorias'][$subcategoryId]['assuntos'][$subjectId])) {
+        $treeStructure[$categoryId]['subcategorias'][$subcategoryId]['assuntos'][$subjectId]['documentos'][] = $dItem;
     }
 }
 
 $hierarchyMap = [];
-foreach ($treeStructure as $cName => $cData) {
+foreach ($treeStructure as $cData) {
+    $cName = $cData['info']['nome'];
     $hierarchyMap[$cName] = [];
-    foreach ($cData['subcategorias'] as $sName => $sData) {
-        $hierarchyMap[$cName][$sName] = array_keys($sData['assuntos']);
+    foreach ($cData['subcategorias'] as $sData) {
+        $sName = $sData['info']['nome'];
+        $hierarchyMap[$cName][$sName] = array_values(array_map(
+            static fn(array $subjectData): string => (string)$subjectData['info']['nome'],
+            $sData['assuntos']
+        ));
+    }
+}
+
+// Tags podem ser criadas por quem publica conteúdo; o Super Admin apenas faz a curadoria.
+$tagCatalog = $tagService->allActive();
+$editDocumentTagIds = $editDoc ? $tagService->getDocumentTagIds((int)$editDoc['id']) : [];
+$tagCatalogDetails = $isGlobalAdminCurrent ? $tagService->allWithDetails() : [];
+
+// Define o status HTTP antes de iniciar a saída HTML. As telas abaixo ainda
+// exibem a mensagem contextual, mas não podem chamar http_response_code depois
+// que o cabeçalho da página já foi enviado.
+if ($activeTab === 'editar_estrutura') {
+    $preflightTypeInput = strtolower(trim($_GET['type'] ?? 'categoria'));
+    $preflightResourceType = match ($preflightTypeInput) {
+        'subcategoria', 'subcategory' => 'subcategory',
+        'assunto', 'subject' => 'subject',
+        default => 'category',
+    };
+    $preflightResourceId = (int)($_GET['id'] ?? 0);
+    // Sem ID, a rota representa a página inicial do Editor da Árvore.
+    // Somente uma tentativa de abrir um recurso específico fora do escopo é 403.
+    if ($preflightResourceId > 0 && !$permService->canEdit($currentAdminUserId, $preflightResourceType, $preflightResourceId)) {
+        http_response_code(403);
+    }
+}
+
+if ($activeTab === 'detalhes_usuario') {
+    $preflightTargetUserId = (int)($_GET['id'] ?? 0);
+    if (!$permService->canViewUserInAdministrativeScope($currentAdminUserId, $preflightTargetUserId)) {
+        http_response_code(403);
     }
 }
 
 $userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
 $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 ?>
+<?php
+$currentSystemSettings = $systemSettingsService->all(true);
+$currentMaintenanceStatus = $systemSettingsService->maintenanceStatus();
+$settingsTimezone = new DateTimeZone((string)($currentSystemSettings['timezone'] ?? 'America/Sao_Paulo'));
+$formatSettingDate = static function (mixed $value) use ($settingsTimezone): string {
+    if (!is_string($value) || trim($value) === '') {
+        return '';
+    }
+    try {
+        return (new DateTimeImmutable($value))->setTimezone($settingsTimezone)->format('Y-m-d\TH:i');
+    } catch (Throwable) {
+        return '';
+    }
+};
+$settingsMaintenanceStartLocal = $formatSettingDate($currentSystemSettings['maintenance_start_at'] ?? null);
+$settingsMaintenanceEndLocal = $formatSettingDate($currentSystemSettings['maintenance_end_at'] ?? null);
+$settingsDbVersion = (string)$pdo->query('SHOW server_version')->fetchColumn();
+$settingsStorageWritable = is_dir(dirname(__DIR__) . '/storage') && is_writable(dirname(__DIR__) . '/storage');
+$settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')->fetchColumn() ?: null;
+?>
 <!DOCTYPE html>
-<html lang="pt-BR" class="<?= $userThemeClass ?>">
+<html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestão de Documentos - Prefeitura Municipal</title>
+    <title>Gestão de Documentos - <?= htmlspecialchars($appName) ?></title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -1221,11 +2208,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
           extend: {
             colors: {
               graphite: {
-                950: '#181a1f',
-                900: '#23252a',
-                800: '#2c2e33',
-                700: '#353842',
-                600: '#454956'
+                950: '#171717',
+                900: '#212121',
+                800: '#2f2f2f',
+                700: '#383838',
+                600: '#424242'
               }
             }
           }
@@ -1245,6 +2232,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
         })();
     </script>
     <link rel="stylesheet" href="../assets/style.css">
+    <link rel="stylesheet" href="../assets/permissions.css">
+    <link rel="stylesheet" href="../assets/code-snippets.css">
+    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
+    <script defer src="../assets/code-snippets.js"></script>
     <!-- GridStack.js (Base para o Editor Visual) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@7.3.0/dist/gridstack.min.css">
     <script src="https://cdn.jsdelivr.net/npm/gridstack@7.3.0/dist/gridstack-all.js"></script>
@@ -1283,15 +2274,15 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             background: transparent;
         }
         .dark .nc-type-btn {
-            color: #94a3b8; /* slate-400 */
+            color: #b4b4b4;
         }
         .nc-type-btn:hover {
             color: #1e293b;
             background: rgba(255,255,255,0.7);
         }
         .dark .nc-type-btn:hover {
-            color: #f1f5f9;
-            background: rgba(255,255,255,0.08);
+            color: #ececec;
+            background: rgba(255, 255, 255, 0.08);
         }
         .nc-type-btn.nc-type-active {
             color: #0f172a;
@@ -1299,9 +2290,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             box-shadow: 0 1px 3px 0 rgba(0,0,0,0.12), 0 1px 2px -1px rgba(0,0,0,0.10);
         }
         .dark .nc-type-btn.nc-type-active {
-            color: #f8fafc;
-            background: #353842;
-            box-shadow: 0 1px 4px 0 rgba(0,0,0,0.35);
+            color: #ececec;
+            background: #3a3a3a;
+            box-shadow: 0 4px 12px 0 rgba(0,0,0,0.28);
         }
 
         /* Painel de formulário — transição suave */
@@ -1319,7 +2310,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             background: transparent;
         }
         .dark .doc-type-btn {
-            color: #94a3b8;
+            color: #b4b4b4;
         }
         .doc-type-btn:has(input:checked) {
             color: #0f172a;
@@ -1327,15 +2318,64 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             box-shadow: 0 1px 3px 0 rgba(0,0,0,0.12);
         }
         .dark .doc-type-btn:has(input:checked) {
-            color: #f8fafc;
-            background: #454956;
+            color: #ececec;
+            background: #3a3a3a;
         }
         .doc-type-btn:hover {
             color: #1e293b;
         }
+
+        /* Visão Geral — cartões com hierarquia visual e foco acessível */
+        .dashboard-panel {
+            border-radius: 0.875rem;
+        }
+        .dashboard-link-card {
+            position: relative;
+            overflow: hidden;
+        }
+        .dashboard-link-card::after {
+            content: '';
+            position: absolute;
+            inset: auto 1rem 0;
+            height: 2px;
+            background: currentColor;
+            opacity: 0;
+            transition: opacity 150ms ease;
+        }
+        .dashboard-link-card:hover::after,
+        .dashboard-link-card:focus-visible::after {
+            opacity: .72;
+        }
+        .dashboard-link-card:focus-visible,
+        .dashboard-period-link:focus-visible {
+            outline: 2px solid #10a37f;
+            outline-offset: 2px;
+        }
+        .dark .dashboard-stat-card {
+            background: var(--dg-surface-raised) !important;
+            border-color: var(--dg-border) !important;
+        }
+        .dark .dashboard-stat-card:not(.dashboard-stat-card--primary) .dashboard-stat-label,
+        .dark .dashboard-stat-card:not(.dashboard-stat-card--primary) .dashboard-stat-icon {
+            color: #b4b4b4 !important;
+        }
+        .dark .dashboard-stat-card:not(.dashboard-stat-card--primary) .dashboard-stat-icon {
+            background: #424242 !important;
+        }
+        .dark .dashboard-stat-card:not(.dashboard-stat-card--primary) .dashboard-stat-progress {
+            background: #424242 !important;
+        }
+        .dark .dashboard-stat-card:not(.dashboard-stat-card--primary) .dashboard-stat-progress__fill {
+            background: #b4b4b4 !important;
+        }
+        .dark .dashboard-stat-card--primary {
+            background: rgba(16, 163, 127, 0.12) !important;
+            border-color: rgba(16, 163, 127, 0.32) !important;
+        }
     </style>
 </head>
 <body class="bg-[#f8f9fa] dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 min-h-screen flex flex-col selection:bg-slate-800 selection:text-white dark:selection:bg-slate-200 dark:selection:text-slate-900">
+    <?php require __DIR__ . '/../partials/maintenance-banner.php'; ?>
 
     <?php if (!$isLogged): ?>
         <!-- CARD DE LOGIN OU BLOQUEIO 403 -->
@@ -1353,15 +2393,23 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     </div>
                 <?php endif; ?>
 
-                <form method="POST" action="index.php">
+                <form method="POST" action="index.php" autocomplete="off">
                     <input type="hidden" name="action" value="login">
                     <div class="mb-3 text-left">
-                        <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Usuário ou E-mail</label>
-                        <input type="text" name="username" required class="input-minimal w-full text-slate-900 dark:text-slate-100 px-3 py-2 text-sm" placeholder="Ex: samuel ou admin@prefeitura.gov.br">
+                        <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Domínio</label>
+                        <select name="ad_domain" class="input-minimal w-full text-slate-900 dark:text-slate-100 px-3 py-2 text-sm">
+                            <?php foreach ($availableAdDomains as $domain): ?>
+                                <option value="<?= htmlspecialchars($domain) ?>" <?= $selectedAdDomain === $domain ? 'selected' : '' ?>><?= htmlspecialchars($domain === 'SAUDE' ? 'SAÚDE' : $domain) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="mb-3 text-left">
+                        <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Usuário do AD</label>
+                        <input type="text" name="username" required autocomplete="off" autocapitalize="none" spellcheck="false" class="input-minimal w-full text-slate-900 dark:text-slate-100 px-3 py-2 text-sm" placeholder="Ex.: maria.silva">
                     </div>
                     <div class="mb-4 text-left">
-                        <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Senha de Acesso</label>
-                        <input type="password" name="password" required class="input-minimal w-full text-slate-900 dark:text-slate-100 px-3 py-2 text-sm" placeholder="Digite sua senha...">
+                        <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Senha do Active Directory</label>
+                        <input type="password" name="password" required autocomplete="new-password" class="input-minimal w-full text-slate-900 dark:text-slate-100 px-3 py-2 text-sm" placeholder="Digite sua senha...">
                     </div>
                     <button type="submit" class="w-full bg-slate-900 dark:bg-white hover:bg-slate-800 dark:hover:bg-slate-100 text-white dark:text-slate-900 font-semibold py-2 rounded-md text-xs transition mb-3">
                         Entrar no Painel &rarr;
@@ -1385,14 +2433,19 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <!-- MARCA / CABEÇALHO DA SIDEBAR -->
                         <div class="p-4 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
                             <a href="../index.php" class="flex items-center gap-3 text-decoration-none min-w-0" title="Ir ao Portal Público">
-                                <div class="w-8 h-8 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-                                </div>
+                                <?php if ($appLogoUrl): ?>
+                                    <img src="../<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 shrink-0 rounded-md border border-slate-200 bg-white object-contain p-0.5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <?php else: ?>
+                                    <div class="w-8 h-8 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                                    </div>
+                                <?php endif; ?>
                                 <div class="flex flex-col brand-text truncate">
-                                    <span class="font-bold text-sm text-slate-900 dark:text-slate-100 leading-tight truncate">Administração</span>
-                                    <span class="text-[10px] text-slate-400 dark:text-slate-500 font-medium truncate">Prefeitura Municipal</span>
+                                    <span class="font-bold text-sm text-slate-900 dark:text-slate-100 leading-tight truncate"><?= htmlspecialchars($appName) ?></span>
+                                    <span class="text-[10px] text-slate-400 dark:text-slate-500 font-medium truncate"><?= htmlspecialchars($organizationName) ?></span>
                                 </div>
                             </a>
+                            <?php $notificationLink = '../notificacoes.php'; require __DIR__ . '/../partials/notification_link.php'; ?>
                             <button type="button" onclick="toggleMobileSidebar()" class="md:hidden text-slate-400 hover:text-slate-600 text-base">✕</button>
                         </div>
 
@@ -1470,15 +2523,15 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
 
                             <!-- SEÇÃO GESTÃO DE ACESSO -->
-                            <?php if (($loggedUser['role'] ?? '') === 'admin'): ?>
+                            <?php if ($isGlobalAdminCurrent): ?>
                                 <div class="pt-3 border-t border-slate-100 dark:border-[#454956]">
                                     <div class="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 menu-section-title">
                                         GESTÃO DE ACESSO
                                     </div>
                                     <div class="mt-1 space-y-1">
-                                        <a href="index.php?tab=grupos" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= in_array($activeTab, ['grupos', 'editar_grupo']) ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Grupos de Acesso">
+                                        <a href="index.php?tab=grupos" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= in_array($activeTab, ['grupos', 'editar_grupo']) ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Equipes">
                                             <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                                            <span class="menu-label font-bold">Grupos</span>
+                                            <span class="menu-label font-bold">Equipes</span>
                                         </a>
                                     </div>
                                 </div>
@@ -1495,10 +2548,16 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         <span class="menu-label font-bold">Usuários</span>
                                     </a>
 
+                                    <?php if ($isGlobalAdminCurrent): ?>
+                                    <a href="index.php?tab=tags" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'tags' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Tags">
+                                        <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+                                        <span class="menu-label font-bold">Tags</span>
+                                    </a>
                                     <a href="index.php?tab=configuracoes" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'configuracoes' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Configurações">
                                         <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                                         <span class="menu-label font-bold">Configurações</span>
                                     </a>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </nav>
@@ -1513,7 +2572,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 </div>
                                 <div class="truncate text-xs user-info-text">
                                     <p class="font-semibold text-slate-900 dark:text-slate-100 truncate leading-tight"><?= htmlspecialchars($loggedUser['nome'] ?? 'Administrador') ?></p>
-                                    <p class="text-[10px] text-slate-400 font-mono capitalize leading-tight"><?= htmlspecialchars($loggedUser['role'] ?? 'Admin') ?></p>
+                                    <p class="text-[10px] text-slate-400 leading-tight"><?= htmlspecialchars($adminAccessLabel) ?></p>
                                 </div>
                             </div>
                             <a href="index.php?action=logout" class="text-slate-400 hover:text-red-500 text-xs font-bold px-1" title="Sair do painel">✕</a>
@@ -1542,6 +2601,12 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <?php
                             if ($_GET['msg'] === 'doc_created') echo "✓ Documento criado com sucesso!";
                             if ($_GET['msg'] === 'doc_updated') echo "✓ Conteúdo e metadados atualizados com sucesso!";
+                            if ($_GET['msg'] === 'batch_docs_created') echo "✓ " . (int)($_GET['count'] ?? 0) . " documento(s) criado(s) com sucesso!";
+                            if ($_GET['msg'] === 'docs_published') echo "✓ " . (int)($_GET['count'] ?? 0) . " documento(s) publicado(s) com sucesso!";
+                            if ($_GET['msg'] === 'docs_drafted') echo "✓ " . (int)($_GET['count'] ?? 0) . " documento(s) movido(s) para rascunho.";
+                            if ($_GET['msg'] === 'docs_trashed') echo "✓ " . (int)($_GET['count'] ?? 0) . " documento(s) movido(s) para a lixeira.";
+                            if ($_GET['msg'] === 'docs_workflow_updated') echo "✓ " . (int)($_GET['count'] ?? 0) . " documento(s) atualizado(s) no fluxo editorial.";
+                            if ($_GET['msg'] === 'workflow_updated') echo "✓ Fluxo editorial atualizado com sucesso.";
                             if ($_GET['msg'] === 'layout_saved') echo "✓ Disposição visual e ordem dos conteúdos salvas com sucesso!";
                             if ($_GET['msg'] === 'file_replaced') echo "✓ Arquivo substituído com sucesso!";
                             if ($_GET['msg'] === 'moved_to_trash') echo "Documento movido para a lixeira.";
@@ -1553,6 +2618,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             if ($_GET['msg'] === 'subcategory_deleted') echo "Subcategoria removida com sucesso!";
                             if ($_GET['msg'] === 'subject_saved') echo "✓ Assunto criado com sucesso!";
                             if ($_GET['msg'] === 'subject_deleted') echo "Assunto removido com sucesso!";
+                            if ($_GET['msg'] === 'user_imported') echo "✓ Usuário localizado no Active Directory e importado para " . htmlspecialchars($appName) . ".";
+                            if ($_GET['msg'] === 'settings_saved') echo "✓ Configurações do sistema atualizadas.";
+                            if ($_GET['msg'] === 'tag_catalog_saved') echo "✓ Catálogo de tags atualizado.";
+                            if ($_GET['msg'] === 'direct_user_access_saved') echo "✓ Acesso individual salvo e o usuário foi notificado.";
+                            if ($_GET['msg'] === 'direct_user_access_removed') echo "✓ Acesso individual removido.";
+                            if ($_GET['msg'] === 'team_created') echo "✓ Equipe criada com sucesso.";
+                            if ($_GET['msg'] === 'team_updated') echo "✓ Equipe atualizada com sucesso.";
+                            if ($_GET['msg'] === 'team_status_updated') echo "✓ Status da equipe atualizado.";
+                            if ($_GET['msg'] === 'team_deleted') echo "✓ Equipe excluída e suas permissões foram auditadas.";
+                            if ($_GET['msg'] === 'team_member_added') echo "✓ Usuário adicionado à equipe.";
+                            if ($_GET['msg'] === 'team_member_removed') echo "✓ Usuário removido da equipe sem excluir seu cadastro.";
                         ?>
                     </div>
                 <?php endif; ?>
@@ -1563,562 +2639,346 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     </div>
                 <?php endif; ?>
 
-                <!-- ABA NOVAS DE EDIÇÃO DA ESTRUTURA COM ÁRVORE VERTICAL E PAINEL DUPLO (TOP-DOWN) -->
-                <?php if ($activeTab === 'editar_estrutura'): ?>
-                    <?php
-                        $selectedType = $_GET['type'] ?? 'categoria';
-                        $defaultCatId = (int)($listCategorias[0]['id'] ?? 0);
-                        $selectedId = (int)($_GET['id'] ?? $defaultCatId);
-                        if ($selectedId <= 0 && $defaultCatId > 0) {
-                            $selectedId = $defaultCatId;
-                        }
-
-                        $selCatItem = null;
-                        $selSubItem = null;
-                        $selAssItem = null;
-                        $selDocItem = null;
-
-                        if ($selectedType === 'categoria') {
-                            $stmt = $pdo->prepare("SELECT id, name AS nome, slug, description AS descricao, active AS ativo, CASE WHEN active THEN 'ativo' ELSE 'inativo' END AS status FROM categories WHERE id = ?");
-                            $stmt->execute([$selectedId]);
-                            $selCatItem = $stmt->fetch();
-                        } elseif ($selectedType === 'subcategoria') {
-                            $stmt = $pdo->prepare("
-                                SELECT sc.id, sc.category_id, sc.name AS nome, sc.slug, sc.description AS descricao, sc.active AS ativo,
-                                       CASE WHEN sc.active THEN 'ativo' ELSE 'inativo' END AS status, c.name AS categoria_nome
-                                FROM subcategories sc
-                                JOIN categories c ON sc.category_id = c.id
-                                WHERE sc.id = ?
-                            ");
-                            $stmt->execute([$selectedId]);
-                            $selSubItem = $stmt->fetch();
-                        } elseif ($selectedType === 'assunto') {
-                            $stmt = $pdo->prepare("
-                                SELECT s.id, s.subcategory_id, s.name AS nome, s.slug, s.description AS descricao, s.active AS ativo,
-                                       CASE WHEN s.active THEN 'ativo' ELSE 'inativo' END AS status,
-                                       sc.name AS subcategoria_nome, c.name AS categoria_nome
-                                FROM subjects s
-                                JOIN subcategories sc ON s.subcategory_id = sc.id
-                                JOIN categories c ON sc.category_id = c.id
-                                WHERE s.id = ?
-                            ");
-                            $stmt->execute([$selectedId]);
-                            $selAssItem = $stmt->fetch();
-                            if ($selAssItem) {
-                                $parentCatName = $selAssItem['categoria_nome'] ?? '';
+                <?php if ($activeTab === 'visao_geral'): ?>
+                    <?php if ($isGlobalAdminCurrent && $globalDashboard): ?>
+                        <?php
+                            $dashboardUsers = $globalDashboard['users'];
+                            $dashboardStructure = $globalDashboard['structure'];
+                            $dashboardAccess = $globalDashboard['access'];
+                            $dashboardContent = $globalDashboard['content'];
+                            $dashboardUsage = $globalDashboard['usage'];
+                            $categoryMaxDocuments = max(1, ...array_map(
+                                static fn(array $item): int => (int)$item['documents_total'],
+                                $globalDashboard['categories'] ?: [['documents_total' => 0]]
+                            ));
+                            $dailyMaxDocuments = max(1, ...array_map(
+                                static fn(array $item): int => (int)$item['documents_created'],
+                                $globalDashboard['activity_by_day'] ?: [['documents_created' => 0]]
+                            ));
+                            $usageDailyMax = max(1, ...array_map(
+                                static fn(array $item): int => (int)$item['events_total'],
+                                $globalDashboard['usage_by_day'] ?: [['events_total' => 0]]
+                            ));
+                            $publicationDailyMax = max(1, ...array_map(
+                                static fn(array $item): int => (int)$item['publications_total'],
+                                $globalDashboard['publications_by_day'] ?: [['publications_total' => 0]]
+                            ));
+                        ?>
+                        <?php
+                            $dashboardPeriodLabel = (int)$globalDashboard['period_days'] . ' dias';
+                            $dashboardActiveUserRate = (int)$dashboardUsers['total'] > 0
+                                ? round(((int)$dashboardUsers['active'] / (int)$dashboardUsers['total']) * 100)
+                                : 0;
+                            $dashboardPublishedRate = (int)$dashboardContent['total'] > 0
+                                ? round(((int)$dashboardContent['published'] / (int)$dashboardContent['total']) * 100)
+                                : 0;
+                            $dashboardAttentionItems = [];
+                            if ((int)$dashboardUsers['never_logged'] > 0) {
+                                $dashboardAttentionItems[] = [
+                                    'value' => (int)$dashboardUsers['never_logged'],
+                                    'title' => 'Primeiro acesso pendente',
+                                    'description' => 'usuários nunca acessaram o sistema',
+                                    'url' => 'index.php?tab=usuarios',
+                                    'tone' => 'amber',
+                                ];
                             }
-                        } elseif ($selectedType === 'documento') {
-                            $stmt = $pdo->prepare("
-                                SELECT d.id, d.title AS titulo, d.slug, d.description AS descricao, d.status,
-                                       s.name AS assunto_nome, sc.name AS subcategoria_nome, c.name AS categoria_nome
-                                FROM documents d
-                                JOIN subjects s ON d.subject_id = s.id
-                                JOIN subcategories sc ON s.subcategory_id = sc.id
-                                JOIN categories c ON sc.category_id = c.id
-                                WHERE d.id = ?
-                            ");
-                            $stmt->execute([$selectedId]);
-                            $selDocItem = $stmt->fetch();
-                        }
-                    ?>
-                    <div class="space-y-6">
-                        <!-- CABEÇALHO DA SEÇÃO DE ORGANIZAÇÃO -->
-                        <div class="pb-2 border-b border-slate-100 dark:border-[#454956]">
-                            <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Administração Hierárquica Top-Down</h1>
-                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie a estrutura documental e ordene o layout visual dos conteúdos ao lado do acervo.</p>
-                        </div>
-
-                        <!-- PAINEL DUPLO LADO A LADO: ÁRVORE DO ACERVO + EDITOR DE FORMULÁRIOS -->
-                        <div class="organization-layout grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-                            
-                            <!-- COLUNA ESQUERDA: ÁRVORE DO ACERVO (PAINEL LATERAL SECUNDÁRIO FIXO E PERMANENTE) -->
-                            <aside id="admin-tree-sidebar" class="lg:col-span-4 bg-white dark:bg-[#353842] p-4 rounded-md border border-slate-200 dark:border-[#454956] shadow-xs flex flex-col justify-between sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
-                                
-                                <!-- CONTEÚDO DA ÁRVORE DO ACERVO -->
-                                <div class="tree-content space-y-4">
-                                    <div class="pb-3 mb-3 border-b border-slate-100 dark:border-[#454956]">
-                                        <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block truncate">Estrutura do Acervo</h2>
-                                        <p class="text-[10px] text-slate-400 truncate mt-0.5 mb-2">Categoria → Subcategoria → Assunto → Documento</p>
-
-                                        <!-- BUSCA DISCRETA NA ÁRVORE DO ACERVO -->
-                                        <div class="mb-2">
-                                            <input type="text" id="tree-search-input" oninput="filterTreeNodes(this.value)" placeholder="Pesquisar na estrutura..." class="input-minimal w-full px-2.5 py-1.5 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 focus:bg-white dark:focus:bg-[#353842]" title="Pesquisar categoria, subcategoria, assunto ou documento">
+                            if ((int)$dashboardContent['draft'] > 0) {
+                                $dashboardAttentionItems[] = [
+                                    'value' => (int)$dashboardContent['draft'],
+                                    'title' => 'Rascunhos para revisar',
+                                    'description' => 'documentos ainda não publicados',
+                                    'url' => 'index.php?tab=documentos&filter_status=draft',
+                                    'tone' => 'blue',
+                                ];
+                            }
+                            if ((int)$dashboardContent['review'] > 0) {
+                                $dashboardAttentionItems[] = [
+                                    'value' => (int)$dashboardContent['review'],
+                                    'title' => 'Aguardando aprovação',
+                                    'description' => 'documentos enviados para revisão',
+                                    'url' => 'index.php?tab=documentos&filter_status=review',
+                                    'tone' => 'blue',
+                                ];
+                            }
+                            if ((int)$dashboardContent['inactive'] > 0) {
+                                $dashboardAttentionItems[] = [
+                                    'value' => (int)$dashboardContent['inactive'],
+                                    'title' => 'Itens na lixeira',
+                                    'description' => 'documentos inativos aguardando decisão',
+                                    'url' => 'index.php?tab=lixeira',
+                                    'tone' => 'rose',
+                                ];
+                            }
+                            $dashboardDailyTotal = array_sum(array_map(
+                                static fn(array $item): int => (int)$item['documents_created'],
+                                $globalDashboard['activity_by_day']
+                            ));
+                        ?>
+                        <div class="space-y-5">
+                            <header class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="flex flex-col justify-between gap-5 xl:flex-row xl:items-center">
+                                    <div>
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300"><span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Super Admin</span>
+                                            <span class="text-[11px] text-slate-400">Indicadores consolidados de <?= htmlspecialchars($appName) ?></span>
                                         </div>
-
-                                        <div class="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600 dark:text-slate-300">
-                                            <button type="button" onclick="expandAllTreeNodes()" class="hover:underline">Expandir tudo</button>
-                                            <span class="text-slate-300">|</span>
-                                            <button type="button" onclick="collapseAllTreeNodes()" class="hover:underline">Recolher tudo</button>
-                                        </div>
+                                        <h1 class="mt-3 text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Visão Geral da Gestão de Documentos</h1>
+                                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Acompanhe o que está saudável, o que precisa de atenção e as últimas movimentações.</p>
                                     </div>
-
-                                    <div class="space-y-2 text-xs font-medium overflow-x-auto pr-1">
-                                        <?php foreach ($treeStructure as $cName => $cData): ?>
-                                            <?php 
-                                                $cId = $cData['info']['id']; 
-                                                $isCatActive = ($selectedType === 'categoria' && $selectedId == $cId);
-                                                $hasSelectedSub = false;
-                                                foreach ($cData['subcategorias'] as $sName => $sData) {
-                                                    if (($selectedType === 'subcategoria' && $selectedId == $sData['info']['id']) ||
-                                                        ($selectedType === 'assunto' && isset($sData['assuntos'][$selAssItem['nome'] ?? '']))) {
-                                                        $hasSelectedSub = true;
-                                                        break;
-                                                    }
-                                                }
-                                                $catOpen = ($isCatActive || $hasSelectedSub || count($treeStructure) === 1);
-                                            ?>
-                                            <div class="tree-node-group border-l-2 border-slate-200 dark:border-[#454956] pl-2 space-y-1">
-                                                
-                                                <!-- NÍVEL 1: CATEGORIA -->
-                                                <div class="flex items-center justify-between group p-1.5 rounded-md transition <?= $isCatActive ? 'bg-slate-100 dark:bg-[#2c2e33] text-slate-900 dark:text-white font-bold border-l-2 border-slate-900 dark:border-white shadow-2xs' : 'text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#2c2e33]/60' ?>">
-                                                    <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                                                        <button type="button" onclick="toggleTreeNode(this)" class="tree-toggle-btn p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Expandir/Recolher Categoria">
-                                                            <svg class="w-3 h-3 transform transition-transform duration-200 <?= $catOpen ? 'rotate-90' : '' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                                                        </button>
-                                                        <a href="index.php?tab=editar_estrutura&type=categoria&id=<?= $cId ?>" class="flex items-center gap-1.5 truncate text-decoration-none text-current flex-1">
-                                                            <svg class="w-3.5 h-3.5 shrink-0 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-                                                            <span class="truncate font-semibold"><?= htmlspecialchars($cName) ?></span>
-                                                        </a>
-                                                    </div>
-                                                    <a href="index.php?tab=editar_estrutura&type=subcategoria_new&cat=<?= urlencode($cName) ?>" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-200/60 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300 font-semibold text-decoration-none hover:bg-slate-300" title="Criar Subcategoria">+ Subcat</a>
-                                                </div>
-
-                                                <!-- NÍVEL 2: SUBCATEGORIAS -->
-                                                <div class="tree-branch pl-3 space-y-1 <?= $catOpen ? '' : 'hidden' ?>">
-                                                    <?php foreach ($cData['subcategorias'] as $sName => $sData): ?>
-                                                        <?php 
-                                                            $sId = $sData['info']['id'];
-                                                            $isSubActive = ($selectedType === 'subcategoria' && $selectedId == $sId);
-                                                            $hasSelectedAss = ($selectedType === 'assunto' && isset($sData['assuntos'][$selAssItem['nome'] ?? '']));
-                                                            $subOpen = ($isSubActive || $hasSelectedAss);
-                                                        ?>
-                                                        <div class="tree-node-group border-l border-slate-200 dark:border-[#454956]/70 pl-2">
-                                                            <div class="flex items-center justify-between group p-1 rounded-md transition <?= $isSubActive ? 'bg-slate-100 dark:bg-[#2c2e33] text-slate-900 dark:text-white font-bold border-l-2 border-slate-700 dark:border-slate-300 shadow-2xs' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2c2e33]/60' ?>">
-                                                                <div class="flex items-center gap-1 min-w-0 flex-1">
-                                                                    <button type="button" onclick="toggleTreeNode(this)" class="tree-toggle-btn p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Expandir/Recolher Subcategoria">
-                                                                        <svg class="w-3 h-3 transform transition-transform duration-200 <?= $subOpen ? 'rotate-90' : '' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                                                                    </button>
-                                                                    <a href="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $sId ?>" class="flex items-center gap-1.5 truncate text-decoration-none text-current flex-1">
-                                                                        <svg class="w-3.5 h-3.5 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
-                                                                        <span class="truncate"><?= htmlspecialchars($sName) ?></span>
-                                                                    </a>
-                                                                </div>
-                                                                <a href="index.php?tab=editar_estrutura&type=assunto_new&sub=<?= urlencode($sName) ?>" class="text-[9px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-semibold text-decoration-none hover:bg-slate-200">+ Assunto</a>
-                                                            </div>
-
-                                                            <!-- NÍVEL 3: ASSUNTOS -->
-                                                            <div class="tree-branch pl-3 space-y-0.5 mt-0.5 <?= $subOpen ? '' : 'hidden' ?>">
-                                                                <?php foreach ($sData['assuntos'] as $aName => $aData): ?>
-                                                                    <?php 
-                                                                        $aId = $aData['info']['id']; 
-                                                                        $isAssActive = ($selectedType === 'assunto' && $selectedId == $aId);
-                                                                        $assDocs = $aData['documentos'] ?? [];
-                                                                        $assOpen = ($isAssActive || !empty($assDocs));
-                                                                    ?>
-                                                                    <div class="tree-node-group border-l border-slate-100 dark:border-[#454956]/50 pl-1.5">
-                                                                        <div class="flex items-center justify-between p-1 rounded transition <?= $isAssActive ? 'bg-slate-100 dark:bg-[#2c2e33] text-slate-900 dark:text-white font-bold border-l-2 border-slate-500 dark:border-slate-400 shadow-2xs' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-[#2c2e33]/60' ?>">
-                                                                            <div class="flex items-center gap-1 min-w-0 flex-1">
-                                                                                <?php if (!empty($assDocs)): ?>
-                                                                                    <button type="button" onclick="toggleTreeNode(this)" class="tree-toggle-btn p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition" title="Expandir/Recolher Documentos">
-                                                                                        <svg class="w-3 h-3 transform transition-transform duration-200 <?= $assOpen ? 'rotate-90' : '' ?>" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                                                                                    </button>
-                                                                                <?php else: ?>
-                                                                                    <span class="w-4 inline-block"></span>
-                                                                                <?php endif; ?>
-                                                                                <a href="index.php?tab=editar_estrutura&type=assunto&id=<?= $aId ?>" class="flex items-center gap-1.5 text-decoration-none text-current truncate flex-1">
-                                                                                    <svg class="w-3 h-3 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
-                                                                                    <span class="truncate"><?= htmlspecialchars($aName) ?></span>
-                                                                                </a>
-                                                                            </div>
-                                                                            <span class="text-[9px] font-mono text-slate-400 ml-1">(<?= count($assDocs) ?>)</span>
-                                                                        </div>
-
-                                                                        <!-- NÍVEL 4: DOCUMENTOS DO ASSUNTO -->
-                                                                        <?php if (!empty($assDocs)): ?>
-                                                                            <div class="tree-branch pl-4 space-y-0.5 my-0.5 <?= $assOpen ? '' : 'hidden' ?>">
-                                                                                <?php foreach ($assDocs as $dItem): ?>
-                                                                                    <div class="flex items-center justify-between p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] text-slate-500 dark:text-slate-400 text-[11px]">
-                                                                                        <a href="ver_conteudo.php?id=<?= $dItem['id'] ?>" class="flex items-center gap-1.5 text-decoration-none text-current truncate flex-1 hover:text-slate-900 dark:hover:text-white" title="Visualizar Documento">
-                                                                                            <svg class="w-3 h-3 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                                                                                            <span class="truncate"><?= htmlspecialchars($dItem['titulo']) ?></span>
-                                                                                        </a>
-                                                                                        <?php if ($permService->canEditDocument($_currentUserId, (int)$dItem['id'])): ?>
-                                                                                        <a href="index.php?tab=novo_documento&edit=<?= $dItem['id'] ?>" class="text-[9px] font-semibold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 ml-1 text-decoration-none">Editar</a>
-                                                                                        <?php endif; ?>
-                                                                                    </div>
-                                                                                <?php endforeach; ?>
-                                                                            </div>
-                                                                        <?php endif; ?>
-                                                                    </div>
-                                                                <?php endforeach; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endforeach; ?>
-                                                </div>
-                                            </div>
-                                        <?php endforeach; ?>
+                                    <div class="flex flex-col items-start gap-3 sm:flex-row sm:items-center xl:justify-end">
+                                        <nav aria-label="Período dos indicadores" class="inline-flex rounded-lg bg-slate-100 p-1 dark:bg-[#2c2e33]">
+                                            <?php foreach ($dashboardPeriodOptions as $periodOption): ?>
+                                                <?php $isCurrentPeriod = $dashboardPeriodDays === $periodOption; ?>
+                                                <a href="index.php?tab=visao_geral&amp;dash_period=<?= $periodOption ?>" class="dashboard-period-link rounded-md px-2.5 py-1.5 text-[11px] font-bold text-decoration-none transition <?= $isCurrentPeriod ? 'bg-white text-slate-900 shadow-xs dark:bg-[#454956] dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100' ?>"<?= $isCurrentPeriod ? ' aria-current="page"' : '' ?>><?= $periodOption ?> dias</a>
+                                            <?php endforeach; ?>
+                                        </nav>
+                                        <div class="flex flex-wrap gap-2">
+                                            <a href="index.php?tab=novo_documento" class="rounded-md bg-slate-900 px-3.5 py-2 text-xs font-bold text-white text-decoration-none transition hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-100">Novo conteúdo</a>
+                                            <a href="index.php?tab=usuarios" class="rounded-md border border-slate-200 px-3.5 py-2 text-xs font-bold text-slate-700 text-decoration-none transition hover:bg-slate-50 dark:border-[#454956] dark:text-slate-200 dark:hover:bg-[#454956]">Gerir usuários</a>
+                                        </div>
                                     </div>
                                 </div>
-                            </aside>
+                            </header>
 
-                            <!-- COLUNA DIREITA: FORMULÁRIO DE EDIÇÃO E DETALHES -->
-                            <section id="admin-main-canvas" class="lg:col-span-8 bg-white dark:bg-[#353842] p-6 rounded-md border border-slate-200 dark:border-[#454956] shadow-xs">
-                                
-                                <!-- 1. EDITANDO CATEGORIA -->
-                                <?php if ($selectedType === 'categoria' && $selCatItem): ?>
-                                    <div class="space-y-6">
-                                        <div class="pb-3 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
-                                            <div>
-                                                <span class="text-[10px] font-bold uppercase text-slate-400 block">Editando Categoria</span>
-                                                <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($selCatItem['nome']) ?></h2>
-                                            </div>
-                                            <a href="index.php?tab=editar_estrutura&type=subcategoria_new&cat=<?= urlencode($selCatItem['nome']) ?>" class="px-3 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold text-xs rounded shadow-xs">
-                                                + Nova Subcategoria nesta Categoria
-                                            </a>
-                                        </div>
-
-                                        <form method="POST" action="index.php?tab=editar_estrutura&type=categoria&id=<?= $selCatItem['id'] ?>" class="space-y-4">
-                                            <input type="hidden" name="save_category" value="1">
-                                            <input type="hidden" name="id" value="<?= $selCatItem['id'] ?>">
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome da Categoria *</label>
-                                                <input type="text" name="nome" required value="<?= htmlspecialchars($selCatItem['nome']) ?>" class="input-minimal w-full px-3 py-2 text-xs">
-                                            </div>
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
-                                                <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($selCatItem['descricao']) ?></textarea>
-                                            </div>
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
-                                                <select name="status" class="input-minimal w-full px-3 py-2 text-xs">
-                                                    <option value="ativo" <?= $selCatItem['status'] === 'ativo' ? 'selected' : '' ?>>Ativo</option>
-                                                    <option value="inativo" <?= $selCatItem['status'] === 'inativo' ? 'selected' : '' ?>>Inativo</option>
-                                                </select>
-                                            </div>
-
-                                            <div class="flex justify-end gap-2 pt-2">
-                                                <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Categoria</button>
-                                            </div>
-                                        </form>
-
-                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (CATEGORIA) -->
-                                        <?php 
-                                            renderGrafanaPermissionsPanel(
-                                                $permService, 
-                                                'category', 
-                                                (int)$selCatItem['id'], 
-                                                'Categoria > ' . $selCatItem['nome'], 
-                                                (int)($loggedUser['id'] ?? 0)
-                                            ); 
-                                        ?>
-
-                                        <!-- LISTAGEM TOP-DOWN DAS SUBCATEGORIAS DESTA CATEGORIA -->
-                                        <div class="pt-4 border-t border-slate-100 dark:border-[#454956]">
-                                            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Subcategorias Pertencentes</h3>
-                                            <div class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                                <?php 
-                                                    $subsInCat = $treeStructure[$selCatItem['nome']]['subcategorias'] ?? [];
-                                                    if (empty($subsInCat)):
-                                                ?>
-                                                    <p class="text-xs text-slate-400 py-2">Nenhuma subcategoria cadastrada nesta categoria.</p>
-                                                <?php else: ?>
-                                                    <?php foreach ($subsInCat as $subN => $subD): ?>
-                                                        <div class="py-2.5 flex items-center justify-between text-xs">
-                                                            <div class="flex items-center gap-2">
-                                                                <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
-                                                                <div>
-                                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block"><?= htmlspecialchars($subN) ?></span>
-                                                                    <span class="text-[11px] text-slate-400"><?= count($subD['assuntos']) ?> assuntos cadastrados</span>
-                                                                </div>
-                                                            </div>
-                                                            <a href="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $subD['info']['id'] ?>" class="text-amber-600 font-semibold hover:underline">Administrar Subcategoria &rarr;</a>
-                                                        </div>
-                                                    <?php endforeach; ?>
-                                                <?php endif; ?>
-                                            </div>
-                                        </div>
+                            <section aria-labelledby="dashboard-attention-title" class="dashboard-panel border border-slate-200 bg-white p-4 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+                                    <div class="shrink-0 lg:w-48">
+                                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Prioridades</p>
+                                        <h2 id="dashboard-attention-title" class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Central de atenção</h2>
                                     </div>
-                                <?php endif; ?>
-
-                                <!-- 2. EDITANDO SUBCATEGORIA (REGRA TOP-DOWN: NÃO PERMITE EDITAR CATEGORIA PAI) -->
-                                <?php if ($selectedType === 'subcategoria' && $selSubItem): ?>
-                                    <div class="space-y-6">
-                                        <div class="pb-3 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
-                                            <div>
-                                                <span class="text-[10px] font-bold uppercase text-slate-400 block">Editando Subcategoria</span>
-                                                <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($selSubItem['nome']) ?></h2>
-                                            </div>
-                                            <?php if ($permService->canCreateSubject($_currentUserId, (int)$selSubItem['id'])): ?>
-                                            <a href="index.php?tab=editar_estrutura&type=assunto_new&sub=<?= urlencode($selSubItem['nome']) ?>" class="px-3 py-1.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold text-xs rounded shadow-xs">
-                                                + Novo Assunto nesta Subcategoria
-                                            </a>
-                                            <?php endif; ?>
+                                    <?php if (empty($dashboardAttentionItems)): ?>
+                                        <div class="flex min-h-14 flex-1 items-center gap-3 rounded-lg bg-emerald-500/8 px-3 text-xs text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300"><span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-sm font-bold text-white">✓</span><span><strong>Nenhuma pendência prioritária.</strong> Contas e documentos estão em situação regular.</span></div>
+                                    <?php else: ?>
+                                        <div class="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-<?= min(3, count($dashboardAttentionItems)) ?>">
+                                            <?php foreach ($dashboardAttentionItems as $attentionItem): ?>
+                                                <?php $attentionClasses = ['amber' => 'border-amber-500/20 bg-amber-500/7 text-amber-900 dark:text-amber-200', 'blue' => 'border-blue-500/20 bg-blue-500/7 text-blue-900 dark:text-blue-200', 'rose' => 'border-rose-500/20 bg-rose-500/7 text-rose-900 dark:text-rose-200'][$attentionItem['tone']] ?? 'border-slate-200 bg-slate-50 text-slate-800'; ?>
+                                                <a href="<?= htmlspecialchars($attentionItem['url']) ?>" class="dashboard-link-card rounded-lg border px-3 py-2.5 text-decoration-none transition hover:-translate-y-px hover:shadow-sm <?= $attentionClasses ?>">
+                                                    <span class="font-mono text-lg font-bold"><?= (int)$attentionItem['value'] ?></span>
+                                                    <span class="ml-1.5 text-xs font-bold"><?= htmlspecialchars($attentionItem['title']) ?></span>
+                                                    <span class="mt-0.5 block text-[10px] opacity-70"><?= htmlspecialchars($attentionItem['description']) ?></span>
+                                                </a>
+                                            <?php endforeach; ?>
                                         </div>
+                                    <?php endif; ?>
+                                </div>
+                            </section>
 
-                                        <form method="POST" action="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $selSubItem['id'] ?>" class="space-y-4">
-                                            <input type="hidden" name="save_subcategory" value="1">
-                                            <input type="hidden" name="id" value="<?= $selSubItem['id'] ?>">
+                            <section aria-label="Indicadores principais" class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                <a href="index.php?tab=usuarios" class="dashboard-link-card dashboard-stat-card dashboard-stat-card--primary rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:bg-emerald-500/10">
+                                    <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">Pessoas cadastradas</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2m18 0v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75M12 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg></span></div>
+                                    <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardUsers['total'] ?></span>
+                                    <div class="dashboard-stat-progress mt-3 h-1.5 overflow-hidden rounded-full bg-emerald-500/15"><div class="dashboard-stat-progress__fill h-full rounded-full bg-emerald-500" style="width: <?= $dashboardActiveUserRate ?>%"></div></div>
+                                    <span class="mt-2 block text-[11px] text-slate-500"><?= (int)$dashboardUsers['active'] ?> ativas · <?= $dashboardActiveUserRate ?>% da base</span>
+                                </a>
+                                <a href="index.php?tab=documentos&amp;filter_status=published" class="dashboard-link-card dashboard-stat-card rounded-xl border border-blue-500/20 bg-blue-500/5 p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:bg-blue-500/10">
+                                    <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">Acervo publicado</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-blue-500/15 text-blue-700 dark:text-blue-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2m5-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div>
+                                    <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardContent['published'] ?></span>
+                                    <div class="dashboard-stat-progress mt-3 h-1.5 overflow-hidden rounded-full bg-blue-500/15"><div class="dashboard-stat-progress__fill h-full rounded-full bg-blue-500" style="width: <?= $dashboardPublishedRate ?>%"></div></div>
+                                    <span class="mt-2 block text-[11px] text-slate-500"><?= $dashboardPublishedRate ?>% dos <?= (int)$dashboardContent['total'] ?> itens estão disponíveis</span>
+                                </a>
+                                <a href="index.php?tab=documentos" class="dashboard-link-card dashboard-stat-card rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:bg-violet-500/10">
+                                    <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-300">Novos conteúdos</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-violet-500/15 text-violet-700 dark:text-violet-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></span></div>
+                                    <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardContent['created_in_period'] ?></span>
+                                    <span class="mt-6 block text-[11px] text-slate-500">Criados nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?></span>
+                                </a>
+                                <a href="index.php?tab=documentos" class="dashboard-link-card dashboard-stat-card rounded-xl border border-slate-300 bg-white p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:border-[#454956] dark:bg-[#353842]">
+                                    <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-slate-500">Atualizações</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-slate-600 dark:bg-[#2c2e33] dark:text-slate-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div>
+                                    <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardContent['updated_in_period'] ?></span>
+                                    <span class="mt-6 block text-[11px] text-slate-500">Alterados nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?></span>
+                                </a>
+                            </section>
 
-                                            <!-- CATEGORIA PAI SOMENTE LEITURA -->
-                                            <div class="p-3 rounded bg-slate-50 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
-                                                <span class="text-slate-400 font-bold uppercase text-[10px] block">Categoria Pai (Somente Leitura):</span>
-                                                <span class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 mt-0.5">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-                                                    <?= htmlspecialchars($selSubItem['categoria_nome']) ?>
-                                                </span>
-                                                <input type="hidden" name="categoria_nome" value="<?= htmlspecialchars($selSubItem['categoria_nome']) ?>">
-                                            </div>
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome da Subcategoria *</label>
-                                                <input type="text" name="nome" required value="<?= htmlspecialchars($selSubItem['nome']) ?>" class="input-minimal w-full px-3 py-2 text-xs">
-                                            </div>
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
-                                                <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($selSubItem['descricao']) ?></textarea>
-                                            </div>
-
-                                            <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
-                                                <select name="status" class="input-minimal w-full px-3 py-2 text-xs">
-                                                    <option value="ativo" <?= $selSubItem['status'] === 'ativo' ? 'selected' : '' ?>>Ativo</option>
-                                                    <option value="inativo" <?= $selSubItem['status'] === 'inativo' ? 'selected' : '' ?>>Inativo</option>
-                                                </select>
-                                            </div>
-
-                                            <div class="flex justify-end gap-2 pt-2">
-                                                <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Subcategoria</button>
-                                            </div>
-                                        </form>
-
-                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (SUBCATEGORIA) -->
-                                        <?php 
-                                            renderGrafanaPermissionsPanel(
-                                                $permService, 
-                                                'subcategory', 
-                                                (int)$selSubItem['id'], 
-                                                $selSubItem['categoria_nome'] . ' > ' . $selSubItem['nome'], 
-                                                (int)($loggedUser['id'] ?? 0)
-                                            ); 
-                                        ?>
+                            <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-7">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Atividade documental</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Novos conteúdos nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?></h2></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:bg-[#2c2e33]"><?= $dashboardDailyTotal ?> no período</span></div>
+                                    <div class="mt-5 flex h-36 items-end gap-1 border-b border-slate-100 pb-1 dark:border-[#454956]">
+                                        <?php foreach ($globalDashboard['activity_by_day'] as $dailyActivity): ?>
+                                            <?php $dailyHeight = max(4, round(((int)$dailyActivity['documents_created'] / $dailyMaxDocuments) * 100)); ?>
+                                            <div class="group relative flex h-full flex-1 items-end" title="<?= date('d/m/Y', strtotime($dailyActivity['activity_day'])) ?>: <?= (int)$dailyActivity['documents_created'] ?> documento(s)"><div class="w-full rounded-t-sm bg-slate-300 transition group-hover:bg-emerald-500 dark:bg-slate-600" style="height: <?= $dailyHeight ?>%"></div></div>
+                                        <?php endforeach; ?>
                                     </div>
-                                <?php endif; ?>
+                                    <div class="mt-3 flex items-center justify-between text-[10px] text-slate-400"><span><?= date('d/m', strtotime($globalDashboard['activity_by_day'][0]['activity_day'] ?? 'today')) ?></span><span><?= (int)$dashboardContent['updated_in_period'] ?> atualizações no período</span><span>Hoje</span></div>
+                                    <div class="mt-5 grid grid-cols-4 gap-2 border-t border-slate-100 pt-4 text-center text-[10px] dark:border-[#454956]"><div class="rounded-md bg-slate-50 p-2 dark:bg-[#2c2e33]"><span class="block text-slate-400">Arquivo</span><span class="font-mono font-bold text-slate-700 dark:text-slate-200"><?= (int)$dashboardContent['files'] ?></span></div><div class="rounded-md bg-slate-50 p-2 dark:bg-[#2c2e33]"><span class="block text-slate-400">Texto</span><span class="font-mono font-bold text-slate-700 dark:text-slate-200"><?= (int)$dashboardContent['texts'] ?></span></div><div class="rounded-md bg-slate-50 p-2 dark:bg-[#2c2e33]"><span class="block text-slate-400">Link</span><span class="font-mono font-bold text-slate-700 dark:text-slate-200"><?= (int)$dashboardContent['links'] ?></span></div><div class="rounded-md bg-slate-50 p-2 dark:bg-[#2c2e33]"><span class="block text-slate-400">Código</span><span class="font-mono font-bold text-slate-700 dark:text-slate-200"><?= (int)$dashboardContent['codes'] ?></span></div></div>
+                                </section>
 
-                                <!-- 3. EDITANDO ASSUNTO & EDITOR VISUAL (GRIDSTACK CANVAS BASE) -->
-                                <?php if ($selectedType === 'assunto' && $selAssItem): ?>
-                                    <?php
-                                        $docsInAssunto = $pdo->prepare("
-                                            SELECT d.id, d.title AS titulo, d.slug, d.description AS descricao, d.status, d.content_type AS tipo_conteudo, d.published_at, d.updated_at
-                                            FROM documents d
-                                            WHERE d.subject_id = ? AND d.status != 'inactive'
-                                            ORDER BY d.title ASC
-                                        ");
-                                        $docsInAssunto->execute([$selAssItem['id']]);
-                                        $docsAssList = $docsInAssunto->fetchAll();
-                                    ?>
-                                    <div class="space-y-5">
-                                        <!-- 4. BREADCRUMB DO CONTEXTO -->
-                                        <nav class="flex items-center gap-1.5 text-xs text-slate-400 font-medium pb-2 border-b border-slate-100 dark:border-[#454956]">
-                                            <span><?= htmlspecialchars($parentCatName ?: 'Categoria') ?></span>
-                                            <span>/</span>
-                                            <span><?= htmlspecialchars($selAssItem['subcategoria_nome']) ?></span>
-                                            <span>/</span>
-                                            <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($selAssItem['nome']) ?></span>
-                                        </nav>
-
-                                        <!-- 5. BARRA SUPERIOR DO EDITOR -->
-                                        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-[#454956]">
-                                            <div class="flex flex-wrap items-center gap-3">
-                                                <h2 class="text-base font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($selAssItem['nome']) ?></h2>
-                                                <div class="inline-flex items-center rounded-md border border-slate-200 dark:border-[#454956] p-0.5 bg-slate-50 dark:bg-[#2c2e33]">
-                                                    <button type="button" id="btn-mode-edit" onclick="setEditorMode('edit')" class="px-3 py-1 rounded text-xs font-semibold bg-slate-900 dark:bg-white text-white dark:text-slate-900 transition">
-                                                        Editar layout
-                                                    </button>
-                                                    <button type="button" id="btn-mode-preview" onclick="setEditorMode('preview')" class="px-3 py-1 rounded text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition">
-                                                        Visualizar
-                                                    </button>
-                                                </div>
-                                            </div>
-
-                                            <div class="flex items-center gap-3">
-                                                <span id="save-status-indicator" class="text-xs text-slate-400 font-mono flex items-center gap-1.5">
-                                                    <span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-                                                    <span>Alterações salvas</span>
-                                                </span>
-                                                <button type="button" onclick="saveEditorLayoutState()" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition">
-                                                    Salvar
-                                                </button>
-                                            </div>
-                                        </div>
-
-                                        <!-- 6 & 7. CANVAS DO EDITOR VISUAL (GRIDSTACK & ESTADO VAZIO) -->
-                                        <div id="editor-visual-canvas">
-                                            <?php if (empty($docsAssList)): ?>
-                                                <!-- ESTADO VAZIO -->
-                                                <div class="p-10 text-center border-2 border-dashed border-slate-200 dark:border-[#454956] rounded-md bg-slate-50/50 dark:bg-[#2c2e33]/50">
-                                                    <div class="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-300 flex items-center justify-center mx-auto mb-3">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
-                                                    </div>
-                                                    <p class="text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Nenhum conteúdo neste assunto.</p>
-                                                    <p class="text-[11px] text-slate-400 mb-4">Adicione o primeiro documento para organizar este assunto.</p>
-                                                    <?php if ($permService->canCreateDocument($_currentUserId, (int)$selAssItem['id'])): ?>
-                                                    <a href="index.php?tab=novo_documento&cat=<?= urlencode($parentCatName) ?>&subcat=<?= urlencode($selAssItem['subcategoria_nome']) ?>&assunto=<?= urlencode($selAssItem['nome']) ?>" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold shadow-xs text-decoration-none">
-                                                        + Adicionar conteúdo
-                                                    </a>
-                                                    <?php endif; ?>
-                                                </div>
-                                            <?php else: ?>
-                                                <!-- GRIDSTACK CONTAINER BASE -->
-                                                <form method="POST" action="index.php?tab=editar_estrutura&type=assunto&id=<?= $selAssItem['id'] ?>" id="form-editor-grid" class="space-y-3">
-                                                    <input type="hidden" name="save_contents_layout" value="1">
-                                                    <div class="grid-stack grid-stack-12 min-h-[220px] p-2 bg-slate-50/60 dark:bg-[#2c2e33]/60 border border-slate-200 dark:border-[#454956] rounded-md">
-                                                        <?php foreach ($docsAssList as $idx => $dAss): ?>
-                                                            <?php
-                                                                $w = $dAss['layout_width'] ?? 'full';
-                                                                $gsW = 12;
-                                                                if ($w === 'half') $gsW = 6;
-                                                                elseif ($w === 'one-third') $gsW = 4;
-                                                                elseif ($w === 'two-thirds') $gsW = 8;
-                                                            ?>
-                                                            <div class="grid-stack-item p-1" data-gs-id="<?= $dAss['id'] ?>" data-gs-width="<?= $gsW ?>" data-gs-height="3" data-gs-auto-position="true">
-                                                                <div class="grid-stack-item-content p-4 bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-md shadow-xs flex flex-col justify-between h-full group">
-                                                                    <div>
-                                                                        <div class="flex items-center justify-between mb-2">
-                                                                            <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-[#454956]">
-                                                                                <?= strtoupper($dAss['tipo_conteudo'] ?? $dAss['content_type'] ?? 'DOC') ?>
-                                                                            </span>
-                                                                            <span class="text-[10px] font-mono text-slate-400">#<?= $dAss['id'] ?></span>
-                                                                        </div>
-                                                                        <h4 class="text-xs font-bold text-slate-900 dark:text-slate-100 line-clamp-1"><?= htmlspecialchars($dAss['titulo']) ?></h4>
-                                                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mt-1"><?= htmlspecialchars($dAss['descricao']) ?></p>
-                                                                    </div>
-
-                                                                    <div class="mt-3 pt-2.5 border-t border-slate-100 dark:border-[#454956] flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                                                                        <div class="flex items-center gap-2">
-                                                                            <label class="block text-[9px] font-bold uppercase text-slate-400">Largura:</label>
-                                                                            <select name="doc_widths[<?= $dAss['id'] ?>]" class="input-minimal px-1.5 py-0.5 text-[11px]" onchange="markEditorDirty()">
-                                                                                <option value="full" <?= ($w === 'full') ? 'selected' : '' ?>>Completa (100%)</option>
-                                                                                <option value="half" <?= ($w === 'half') ? 'selected' : '' ?>>Metade (50%)</option>
-                                                                                <option value="one-third" <?= ($w === 'one-third') ? 'selected' : '' ?>>1/3 (33%)</option>
-                                                                                <option value="two-thirds" <?= ($w === 'two-thirds') ? 'selected' : '' ?>>2/3 (66%)</option>
-                                                                            </select>
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        <?php endforeach; ?>
-                                                    </div>
-                                                </form>
-                                            <?php endif; ?>
-                                        </div>
-
-                                        <!-- COMPACT DETALHES DE METADADOS DO ASSUNTO -->
-                                        <?php if ($permService->canEditSubject($_currentUserId, (int)$selAssItem['id'])): ?>
-                                        <details class="pt-4 border-t border-slate-100 dark:border-[#454956]">
-                                            <summary class="text-xs font-bold text-slate-500 cursor-pointer hover:text-slate-800 dark:hover:text-slate-200">
-                                                Editar Dados do Assunto (Nome)
-                                            </summary>
-                                            <form method="POST" action="index.php?tab=editar_estrutura&type=assunto&id=<?= $selAssItem['id'] ?>" class="space-y-4 mt-3">
-                                                <input type="hidden" name="save_subject" value="1">
-                                                <input type="hidden" name="id" value="<?= $selAssItem['id'] ?>">
-
-                                                <div class="p-3 rounded bg-slate-50 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
-                                                    <span class="text-slate-400 font-bold uppercase text-[10px] block">Subcategoria Pai (Somente Leitura):</span>
-                                                    <span class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 mt-0.5">
-                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
-                                                        <?= htmlspecialchars($selAssItem['subcategoria_nome']) ?>
-                                                    </span>
-                                                    <input type="hidden" name="subcategoria_nome" value="<?= htmlspecialchars($selAssItem['subcategoria_nome']) ?>">
-                                                </div>
-
-                                                <div>
-                                                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome do Assunto *</label>
-                                                    <input type="text" name="nome" required value="<?= htmlspecialchars($selAssItem['nome']) ?>" class="input-minimal w-full px-3 py-2 text-xs">
-                                                </div>
-
-                                                <div class="flex justify-end gap-2 pt-2">
-                                                    <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Dados do Assunto</button>
-                                                </div>
-                                            </form>
-                                        </details>
-                                        <?php endif; ?>
-
-                                        <!-- PAINEL DE PERMISSÕES HIERÁRQUICAS ESTILO GRAFANA (ASSUNTO) -->
-                                        <?php 
-                                            renderGrafanaPermissionsPanel(
-                                                $permService, 
-                                                'subject', 
-                                                (int)$selAssItem['id'], 
-                                                ($parentCatName ?: 'Categoria') . ' > ' . $selAssItem['subcategoria_nome'] . ' > ' . $selAssItem['nome'], 
-                                                (int)($loggedUser['id'] ?? 0)
-                                            ); 
-                                        ?>
-                                    </div>
-                                <?php endif; ?>
-
-                                <!-- CRIAÇÃO CONTEXTUAL DE SUBCATEGORIA OU ASSUNTO -->
-                                <?php if ($selectedType === 'subcategoria_new'): ?>
-                                    <div class="space-y-4">
-                                        <h2 class="text-base font-bold text-slate-900 dark:text-slate-100 pb-2 border-b">Nova Subcategoria Contextual</h2>
-                                        <form method="POST" action="index.php?tab=editar_estrutura" class="space-y-3">
-                                            <input type="hidden" name="save_subcategory" value="1">
-                                            <div class="p-3 rounded bg-slate-50 dark:bg-[#2c2e33] border text-xs">
-                                                <span class="text-slate-400 font-bold uppercase text-[10px] block">Categoria Pai:</span>
-                                                <span class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 mt-0.5">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-                                                    <?= htmlspecialchars($_GET['cat'] ?? '') ?>
-                                                </span>
-                                                <input type="hidden" name="categoria_nome" value="<?= htmlspecialchars($_GET['cat'] ?? '') ?>">
-                                            </div>
-                                            <div>
-                                                <label class="block text-xs font-semibold mb-1">Nome da Subcategoria *</label>
-                                                <input type="text" name="nome" required class="input-minimal w-full px-3 py-1.5 text-xs">
-                                            </div>
-                                            <button type="submit" class="px-5 py-2 rounded bg-slate-900 text-white text-xs font-semibold">Cadastrar Subcategoria</button>
-                                        </form>
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($selectedType === 'assunto_new'): ?>
-                                    <div class="space-y-4">
-                                        <h2 class="text-base font-bold text-slate-900 dark:text-slate-100 pb-2 border-b">Novo Assunto Contextual</h2>
-                                        <form method="POST" action="index.php?tab=editar_estrutura" class="space-y-3">
-                                            <input type="hidden" name="save_subject" value="1">
-                                            <div class="p-3 rounded bg-slate-50 dark:bg-[#2c2e33] border text-xs">
-                                                <span class="text-slate-400 font-bold uppercase text-[10px] block">Subcategoria Pai:</span>
-                                                <span class="font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5 mt-0.5">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
-                                                    <?= htmlspecialchars($_GET['sub'] ?? '') ?>
-                                                </span>
-                                                <input type="hidden" name="subcategoria_nome" value="<?= htmlspecialchars($_GET['sub'] ?? '') ?>">
-                                            </div>
-                                            <div>
-                                                <label class="block text-xs font-semibold mb-1">Nome do Assunto *</label>
-                                                <input type="text" name="nome" required class="input-minimal w-full px-3 py-1.5 text-xs">
-                                            </div>
-                                            <button type="submit" class="px-5 py-2 rounded bg-slate-900 text-white text-xs font-semibold">Cadastrar Assunto</button>
-                                        </form>
-                                    </div>
-                                <?php endif; ?>
-
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Pessoas e identidade</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Base de usuários</h2></div><a href="index.php?tab=usuarios" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver usuários &rarr;</a></div>
+                                    <div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4"><div class="rounded-md bg-slate-50 p-2.5 dark:bg-[#2c2e33]"><span class="block text-[10px] font-semibold text-slate-400">AD</span><span class="mt-1 block font-mono text-lg font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardUsers['active_directory'] ?></span></div><div class="rounded-md bg-slate-50 p-2.5 dark:bg-[#2c2e33]"><span class="block text-[10px] font-semibold text-slate-400">Local</span><span class="mt-1 block font-mono text-lg font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardUsers['local_auth'] ?></span></div><div class="rounded-md bg-slate-50 p-2.5 dark:bg-[#2c2e33]"><span class="block text-[10px] font-semibold text-slate-400">Login <?= (int)$globalDashboard['period_days'] ?>d</span><span class="mt-1 block font-mono text-lg font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardUsers['logins_in_period'] ?></span></div><div class="rounded-md bg-slate-50 p-2.5 dark:bg-[#2c2e33]"><span class="block text-[10px] font-semibold text-slate-400">Nunca acessaram</span><span class="mt-1 block font-mono text-lg font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardUsers['never_logged'] ?></span></div></div>
+                                    <div class="mt-4 border-t border-slate-100 pt-3 dark:border-[#454956]"><div class="flex items-center justify-between"><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Últimas autenticações</p><span class="text-[10px] text-slate-400"><?= (int)$dashboardUsers['logins_in_period'] ?> no período</span></div><div class="mt-1 divide-y divide-slate-100 dark:divide-[#454956]"><?php if (empty($globalDashboard['logins'])): ?><p class="py-4 text-center text-xs text-slate-400">Ainda não há acessos registrados.</p><?php endif; ?><?php foreach (array_slice($globalDashboard['logins'], 0, 4) as $loginEvent): ?><div class="flex items-center justify-between gap-3 py-2"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($loginEvent['name']) ?></span><span class="block truncate text-[10px] text-slate-400">@<?= htmlspecialchars($loginEvent['username']) ?> · <?= $loginEvent['auth_source'] === 'ad' ? 'AD' : 'Local' ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($loginEvent['last_login_at'])) ?></time></div><?php endforeach; ?></div></div>
+                                </section>
                             </div>
-                        </div>
-                    </div>
-                <?php endif; ?>
 
-                <!-- ABA 1: VISÃO GERAL -->
-                <?php if ($activeTab === 'visao_geral'): ?>
+                            <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-7">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Acervo e estrutura</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Distribuição por categoria</h2></div><a href="index.php?tab=editar_estrutura" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Abrir árvore &rarr;</a></div>
+                                    <?php if (empty($globalDashboard['categories'])): ?>
+                                        <p class="py-10 text-center text-xs text-slate-400">Ainda não há categorias cadastradas.</p>
+                                    <?php else: ?>
+                                        <div class="mt-4 space-y-3">
+                                            <?php foreach (array_slice($globalDashboard['categories'], 0, 6) as $categoryReport): ?>
+                                                <?php $categoryWidth = max(3, round(((int)$categoryReport['documents_total'] / $categoryMaxDocuments) * 100)); ?>
+                                                <a href="index.php?tab=documentos&amp;filter_cat=<?= urlencode($categoryReport['name']) ?>" class="group block text-decoration-none"><div class="mb-1.5 flex items-center justify-between gap-4 text-xs"><span class="truncate font-semibold text-slate-700 group-hover:underline dark:text-slate-200"><?= htmlspecialchars($categoryReport['name']) ?></span><span class="shrink-0 font-mono text-slate-500"><?= (int)$categoryReport['documents_total'] ?> doc<?= (int)$categoryReport['documents_total'] === 1 ? '' : 's' ?></span></div><div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-[#2c2e33]"><div class="h-full rounded-full bg-slate-700 transition group-hover:bg-emerald-500 dark:bg-slate-300" style="width: <?= $categoryWidth ?>%"></div></div></a>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                    <div class="mt-5 grid grid-cols-2 gap-3 border-t border-slate-100 pt-4 text-xs dark:border-[#454956] sm:grid-cols-4"><div><span class="block text-[10px] text-slate-400">Categorias ativas</span><span class="font-mono font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardStructure['categories_active'] ?>/<?= (int)$dashboardStructure['categories_total'] ?></span></div><div><span class="block text-[10px] text-slate-400">Subcategorias</span><span class="font-mono font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardStructure['subcategories_total'] ?></span></div><div><span class="block text-[10px] text-slate-400">Assuntos</span><span class="font-mono font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardStructure['subjects_total'] ?></span></div><div><span class="block text-[10px] text-slate-400">Criados no período</span><span class="font-mono font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardContent['created_in_period'] ?></span></div></div>
+                                </section>
+
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Governança de acesso</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Equipes e permissões</h2></div><a href="index.php?tab=grupos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Gerir equipes &rarr;</a></div>
+                                    <div class="mt-4 grid grid-cols-2 gap-2"><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Equipes ativas</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['teams_active'] ?>/<?= (int)$dashboardAccess['teams_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Vínculos</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['memberships_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Regras configuradas</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['permission_rules_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Auditorias <?= (int)$globalDashboard['period_days'] ?>d</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)($dashboardAccess['permission_audit_in_period'] ?? 0) ?></span></div></div>
+                                    <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4 text-[10px] font-semibold dark:border-[#454956]"><span class="rounded bg-violet-500/10 px-2 py-1 text-violet-700 dark:text-violet-300"><?= (int)$dashboardAccess['admin_rules'] ?> ADMIN</span><span class="rounded bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300"><?= (int)$dashboardAccess['edit_rules'] ?> EDIT</span><span class="rounded bg-blue-500/10 px-2 py-1 text-blue-700 dark:text-blue-300"><?= (int)$dashboardAccess['view_rules'] ?> VIEW</span><span class="rounded bg-slate-100 px-2 py-1 text-slate-600 dark:bg-[#2c2e33] dark:text-slate-300"><?= (int)($dashboardAccess['permission_audit_total'] ?? 0) ?> eventos registrados</span></div>
+                                </section>
+                            </div>
+
+                            <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-7">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Auditoria de segurança</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Alterações de permissões</h2></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:bg-[#2c2e33]"><?= (int)($dashboardAccess['permission_audit_total'] ?? 0) ?> evento<?= (int)($dashboardAccess['permission_audit_total'] ?? 0) === 1 ? '' : 's' ?></span></div>
+                                    <?php if (!$globalDashboard['permission_audit_available']): ?>
+                                        <div class="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">A migração de auditoria de permissões ainda não foi aplicada.</div>
+                                    <?php elseif (empty($globalDashboard['permission_audit'])): ?>
+                                        <p class="mt-6 text-center text-xs text-slate-400">Nenhuma alteração de permissão foi registrada ainda.</p>
+                                    <?php else: ?>
+                                        <div class="mt-4 divide-y divide-slate-100 dark:divide-[#454956]">
+                                            <?php foreach ($globalDashboard['permission_audit'] as $auditEvent): ?>
+                                                <?php $auditActionLabel = ['PERMISSION_CREATED' => 'Permissão concedida', 'PERMISSION_CHANGED' => 'Permissão alterada', 'PERMISSION_REMOVED' => 'Permissão removida'][$auditEvent['action']] ?? 'Permissão atualizada'; $auditPermission = $auditEvent['new_permission'] ?: $auditEvent['old_permission'] ?: '—'; $auditDotClass = $auditEvent['action'] === 'PERMISSION_REMOVED' ? 'bg-rose-500' : ($auditEvent['action'] === 'PERMISSION_CHANGED' ? 'bg-amber-500' : 'bg-emerald-500'); ?>
+                                                <div class="flex items-start justify-between gap-4 py-3"><div class="flex min-w-0 gap-2.5"><span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full <?= $auditDotClass ?>"></span><div class="min-w-0"><span class="block text-xs font-semibold text-slate-700 dark:text-slate-200"><?= $auditActionLabel ?> <span class="font-mono text-[10px] text-slate-400"><?= strtoupper(htmlspecialchars($auditPermission)) ?></span></span><span class="mt-0.5 block text-[10px] text-slate-400">Por <?= htmlspecialchars($auditEvent['actor_name'] ?? 'Sistema') ?> · <?= htmlspecialchars($auditEvent['principal_name']) ?> em <?= htmlspecialchars($auditEvent['resource_name']) ?></span></div></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($auditEvent['created_at'])) ?></time></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </section>
+
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Atividade do acervo</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Documentos alterados</h2></div><a href="index.php?tab=documentos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver todos &rarr;</a></div>
+                                    <div class="mt-4 divide-y divide-slate-100 dark:divide-[#454956]"><?php if (empty($globalDashboard['documents'])): ?><p class="py-6 text-center text-xs text-slate-400">Ainda não há documentos para exibir.</p><?php endif; ?><?php foreach ($globalDashboard['documents'] as $documentEvent): ?><a href="index.php?tab=detalhes_documento&amp;id=<?= (int)$documentEvent['id'] ?>" class="block rounded-md px-2 py-3 text-decoration-none transition hover:bg-slate-50 dark:hover:bg-[#2c2e33]"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($documentEvent['title']) ?></span><span class="mt-0.5 block truncate text-[10px] text-slate-400"><?= htmlspecialchars($documentEvent['category_name']) ?> &rsaquo; <?= htmlspecialchars($documentEvent['subject_name']) ?> · <?= htmlspecialchars($documentEvent['author_name'] ?? 'Sem autor') ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($documentEvent['updated_at'])) ?></time></div></a><?php endforeach; ?></div>
+                                </section>
+                            </div>
+
+                            <section aria-labelledby="usage-audit-title" class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Auditoria de utilização</p>
+                                        <h2 id="usage-audit-title" class="mt-1 text-base font-bold text-slate-900 dark:text-slate-100">Como <?= htmlspecialchars($appName) ?> está sendo usado</h2>
+                                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Dados reais de acesso, consulta e download nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?>.</p>
+                                    </div>
+                                    <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300"><span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Atualizado por eventos reais</span>
+                                </div>
+
+                                <?php if (!$globalDashboard['usage_audit_available']): ?>
+                                    <div class="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">A migração de auditoria de uso ainda não foi aplicada.</div>
+                                <?php else: ?>
+                                    <div class="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+                                        <div class="rounded-lg border border-emerald-500/15 bg-emerald-500/5 p-3"><span class="block text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Pessoas usando</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['unique_users'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500">no período</span></div>
+                                        <div class="rounded-lg border border-sky-500/15 bg-sky-500/5 p-3"><span class="block text-[10px] font-semibold text-sky-700 dark:text-sky-300">Ativos agora</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['online_now'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500">últimos 15 min</span></div>
+                                        <div class="rounded-lg border border-violet-500/15 bg-violet-500/5 p-3"><span class="block text-[10px] font-semibold text-violet-700 dark:text-violet-300">Consultas</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['document_views'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500"><?= (int)($dashboardUsage['documents_consulted'] ?? 0) ?> documentos</span></div>
+                                        <div class="rounded-lg border border-blue-500/15 bg-blue-500/5 p-3"><span class="block text-[10px] font-semibold text-blue-700 dark:text-blue-300">Downloads</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['downloads'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500">arquivos baixados</span></div>
+                                        <div class="rounded-lg border border-amber-500/15 bg-amber-500/5 p-3"><span class="block text-[10px] font-semibold text-amber-700 dark:text-amber-300">Buscas</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['searches'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500">sem guardar termos</span></div>
+                                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-[#454956] dark:bg-[#2c2e33]"><span class="block text-[10px] font-semibold text-slate-500">Eventos totais</span><strong class="mt-1 block font-mono text-2xl text-slate-900 dark:text-slate-100"><?= (int)($dashboardUsage['total_events'] ?? 0) ?></strong><span class="mt-1 block text-[10px] text-slate-500"><?= (int)($dashboardUsage['admin_events'] ?? 0) ?> administrativos</span></div>
+                                    </div>
+                                <?php endif; ?>
+                            </section>
+
+                            <?php if ($globalDashboard['usage_audit_available']): ?>
+                                <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-7">
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Uso por período</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Acessos e interações diárias</h2></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:bg-[#2c2e33]"><?= (int)($dashboardUsage['total_events'] ?? 0) ?> eventos</span></div>
+                                        <div class="mt-5 flex h-36 items-end gap-1 border-b border-slate-100 pb-1 dark:border-[#454956]">
+                                            <?php foreach ($globalDashboard['usage_by_day'] as $dailyUsage): ?>
+                                                <?php $usageHeight = max(3, round(((int)$dailyUsage['events_total'] / $usageDailyMax) * 100)); ?>
+                                                <div class="group relative flex h-full flex-1 items-end" title="<?= date('d/m/Y', strtotime($dailyUsage['activity_day'])) ?>: <?= (int)$dailyUsage['events_total'] ?> eventos · <?= (int)$dailyUsage['document_views'] ?> consultas · <?= (int)$dailyUsage['downloads'] ?> downloads"><div class="w-full rounded-t-sm bg-slate-300 transition group-hover:bg-violet-500 dark:bg-slate-600" style="height: <?= $usageHeight ?>%"></div></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <div class="mt-3 flex items-center justify-between text-[10px] text-slate-400"><span><?= date('d/m', strtotime($globalDashboard['usage_by_day'][0]['activity_day'] ?? 'today')) ?></span><span>Consultas, downloads e ações administrativas</span><span>Hoje</span></div>
+                                    </section>
+
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Publicações</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Conteúdos publicados por dia</h2></div><span class="text-[10px] text-slate-400">status publicado</span></div>
+                                        <div class="mt-5 flex h-36 items-end gap-1 border-b border-slate-100 pb-1 dark:border-[#454956]">
+                                            <?php foreach ($globalDashboard['publications_by_day'] as $dailyPublication): ?>
+                                                <?php $publicationHeight = max(3, round(((int)$dailyPublication['publications_total'] / $publicationDailyMax) * 100)); ?>
+                                                <div class="group relative flex h-full flex-1 items-end" title="<?= date('d/m/Y', strtotime($dailyPublication['activity_day'])) ?>: <?= (int)$dailyPublication['publications_total'] ?> publicação(ões)"><div class="w-full rounded-t-sm bg-emerald-200 transition group-hover:bg-emerald-500 dark:bg-emerald-800" style="height: <?= $publicationHeight ?>%"></div></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <div class="mt-3 flex items-center justify-between text-[10px] text-slate-400"><span><?= date('d/m', strtotime($globalDashboard['publications_by_day'][0]['activity_day'] ?? 'today')) ?></span><span><?= (int)$dashboardContent['published'] ?> publicados no acervo</span><span>Hoje</span></div>
+                                    </section>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-6">
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Pessoas mais ativas</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Quem está usando o sistema</h2></div><a href="index.php?tab=usuarios" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver usuários &rarr;</a></div>
+                                        <?php if (empty($globalDashboard['usage_by_person'])): ?>
+                                            <p class="py-8 text-center text-xs text-slate-400">Os acessos aparecerão aqui a partir de agora.</p>
+                                        <?php else: ?>
+                                            <div class="mt-4 divide-y divide-slate-100 dark:divide-[#454956]">
+                                                <?php foreach ($globalDashboard['usage_by_person'] as $personUsage): ?>
+                                                    <div class="flex items-center justify-between gap-3 py-3"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($personUsage['name']) ?></span><span class="block truncate text-[10px] text-slate-400">@<?= htmlspecialchars($personUsage['username']) ?> · <?= (int)$personUsage['documents_used'] ?> documento(s) usado(s)</span></div><div class="shrink-0 text-right"><strong class="block font-mono text-sm text-slate-800 dark:text-slate-100"><?= (int)$personUsage['events_total'] ?></strong><span class="block text-[10px] text-slate-400"><?= (int)$personUsage['document_views'] ?> consultas · <?= (int)$personUsage['downloads'] ?> downloads</span></div></div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </section>
+
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-6">
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documentos mais consultados</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">O que as pessoas usam</h2></div><a href="index.php?tab=documentos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver acervo &rarr;</a></div>
+                                        <?php if (empty($globalDashboard['usage_by_document'])): ?>
+                                            <p class="py-8 text-center text-xs text-slate-400">As consultas e downloads serão consolidados aqui.</p>
+                                        <?php else: ?>
+                                            <div class="mt-4 divide-y divide-slate-100 dark:divide-[#454956]">
+                                                <?php foreach ($globalDashboard['usage_by_document'] as $documentUsage): ?>
+                                                    <a href="index.php?tab=detalhes_documento&amp;id=<?= (int)$documentUsage['id'] ?>" class="flex items-center justify-between gap-3 rounded-md py-3 text-decoration-none transition hover:bg-slate-50 dark:hover:bg-[#2c2e33]"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($documentUsage['title']) ?></span><span class="block truncate text-[10px] text-slate-400"><?= htmlspecialchars($documentUsage['category_name']) ?> &rsaquo; <?= htmlspecialchars($documentUsage['subcategory_name']) ?> · <?= (int)$documentUsage['users_total'] ?> pessoa(s)</span></div><div class="shrink-0 text-right text-[10px] text-slate-500"><strong class="block font-mono text-sm text-slate-800 dark:text-slate-100"><?= (int)$documentUsage['views'] ?></strong><span><?= (int)$documentUsage['downloads'] ?> downloads<?= (int)$documentUsage['external_opens'] ? ' · ' . (int)$documentUsage['external_opens'] . ' links' : '' ?></span></div></a>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </section>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-4">
+                                        <div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Navegação</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Áreas mais acessadas</h2></div>
+                                        <?php if (empty($globalDashboard['usage_by_navigation'])): ?>
+                                            <p class="py-8 text-center text-xs text-slate-400">Ainda não há navegação registrada.</p>
+                                        <?php else: ?>
+                                            <div class="mt-4 space-y-3"><?php foreach ($globalDashboard['usage_by_navigation'] as $navigationUsage): ?><div><div class="flex items-center justify-between gap-3 text-xs"><span class="truncate font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($navigationUsage['resource_name']) ?></span><span class="shrink-0 font-mono text-slate-500"><?= (int)$navigationUsage['accesses'] ?></span></div><span class="mt-0.5 block text-[10px] text-slate-400"><?= strtolower((string)$navigationUsage['resource_type']) ?> · <?= (int)$navigationUsage['users_total'] ?> pessoa(s)</span></div><?php endforeach; ?></div>
+                                        <?php endif; ?>
+                                    </section>
+
+                                    <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-8">
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Acessos recentes</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Quem acessou o quê</h2></div><span class="text-[10px] text-slate-400">últimos <?= (int)$globalDashboard['period_days'] ?> dias</span></div>
+                                        <?php $usageEventLabels = ['login' => 'Entrou no sistema', 'portal_view' => 'Abriu o portal', 'search' => 'Pesquisou no acervo', 'category_view' => 'Abriu categoria', 'subcategory_view' => 'Abriu subcategoria', 'subject_view' => 'Abriu assunto', 'document_view' => 'Consultou documento', 'document_file_view' => 'Visualizou arquivo', 'document_download' => 'Baixou arquivo', 'external_open' => 'Abriu link externo', 'admin_page_view' => 'Acessou o painel', 'admin_action' => 'Executou ação']; ?>
+                                        <?php if (empty($globalDashboard['usage_recent_events'])): ?>
+                                            <p class="py-8 text-center text-xs text-slate-400">Os eventos recentes aparecerão aqui conforme o sistema for utilizado.</p>
+                                        <?php else: ?>
+                                            <div class="mt-4 grid grid-cols-1 gap-x-6 divide-y divide-slate-100 dark:divide-[#454956] lg:grid-cols-2 lg:divide-y-0">
+                                                <?php foreach ($globalDashboard['usage_recent_events'] as $usageEvent): ?>
+                                                    <div class="flex items-start justify-between gap-3 py-2.5"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($usageEvent['user_name'] ?? 'Sistema') ?> <span class="font-normal text-slate-400">· <?= htmlspecialchars($usageEventLabels[$usageEvent['event_type']] ?? $usageEvent['event_type']) ?></span></span><span class="block truncate text-[10px] text-slate-400"><?= htmlspecialchars($usageEvent['resource_name']) ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($usageEvent['created_at'])) ?></time></div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </section>
+                                </div>
+
+                                <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Trilha administrativa</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Ações de gestão, permissões e publicações</h2></div><span class="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500 dark:bg-[#2c2e33]">auditoria consolidada</span></div>
+                                    <?php if (empty($globalDashboard['admin_timeline'])): ?>
+                                        <p class="py-8 text-center text-xs text-slate-400">Nenhuma ação administrativa foi registrada no período.</p>
+                                    <?php else: ?>
+                                        <div class="mt-4 grid grid-cols-1 gap-x-8 divide-y divide-slate-100 dark:divide-[#454956] lg:grid-cols-2 lg:divide-y-0">
+                                            <?php foreach ($globalDashboard['admin_timeline'] as $timelineEvent): ?>
+                                                <?php $timelineSource = ['usage' => 'Gestão', 'permission' => 'Permissão', 'workflow' => 'Publicação'][$timelineEvent['source']] ?? 'Sistema'; ?>
+                                                <div class="flex items-start justify-between gap-3 py-3"><div class="min-w-0"><span class="block text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars(ucwords(str_replace('_', ' ', strtolower((string)$timelineEvent['action'])))) ?> <span class="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300"><?= htmlspecialchars($timelineSource) ?></span></span><span class="mt-0.5 block truncate text-[10px] text-slate-400">Por <?= htmlspecialchars($timelineEvent['actor_name'] ?? 'Sistema') ?> · <?= htmlspecialchars($timelineEvent['resource_name']) ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($timelineEvent['created_at'])) ?></time></div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </section>
+                            <?php endif; ?>
+                        </div>
+                    <?php else: ?>
                     <div class="space-y-6">
                         <div>
                             <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Visão Geral da Gestão de Documentos</h1>
-                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Resumo quantitativo e acesso rápido às operações recentes do acervo municipal.</p>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1"><?= $isGlobalAdminCurrent ? 'Resumo global e operações recentes de todo o acervo municipal.' : 'Resumo exclusivo das categorias em que você possui acesso de edição ou administração.' ?></p>
                         </div>
 
-                        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
                             <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs">
                                 <span class="text-xs font-semibold text-slate-500 dark:text-slate-400 block">Total de Documentos</span>
                                 <span class="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1 block font-mono"><?= $totalDocs ?></span>
@@ -2130,6 +2990,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs">
                                 <span class="text-xs font-semibold text-amber-600 dark:text-amber-400 block">Rascunhos</span>
                                 <span class="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1 block font-mono"><?= $totalRascunhos ?></span>
+                            </div>
+                            <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs">
+                                <span class="text-xs font-semibold text-blue-600 dark:text-blue-300 block">Em revisão</span>
+                                <span class="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1 block font-mono"><?= $totalEmRevisao ?></span>
                             </div>
                             <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs">
                                 <span class="text-xs font-semibold text-slate-400 block">Inativos</span>
@@ -2162,7 +3026,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <div class="py-2.5 flex items-center justify-between">
                                         <div>
                                             <span class="font-bold text-xs text-slate-900 dark:text-slate-100 block"><?= htmlspecialchars($uDoc['titulo'] ?? 'Documento') ?></span>
-                                            <span class="text-[11px] text-slate-400 block"><?= htmlspecialchars($uDoc['categoria'] ?? 'Geral') ?> &rsaquo; <?= htmlspecialchars($uDoc['subcategoria'] ?? 'Geral') ?> &rsaquo; <?= htmlspecialchars($uDoc['assunto'] ?? 'Geral') ?> • Atualizado em <?= isset($uDoc['criado_em']) ? date('d/m/Y H:i', strtotime($uDoc['criado_em'])) : 'Recente' ?></span>
+                                            <span class="text-[11px] text-slate-400 block"><?= htmlspecialchars($uDoc['categoria'] ?? 'Geral') ?> &rsaquo; <?= htmlspecialchars($uDoc['subcategoria'] ?? 'Geral') ?> &rsaquo; <?= htmlspecialchars($uDoc['assunto'] ?? 'Geral') ?> • Atualizado em <?= isset($uDoc['atualizado_em']) ? date('d/m/Y H:i', strtotime($uDoc['atualizado_em'])) : 'Recente' ?></span>
                                         </div>
                                         <a href="index.php?tab=detalhes_documento&id=<?= $uDoc['id'] ?>" class="text-xs font-semibold text-slate-600 dark:text-slate-300 hover:underline">Ver Detalhes &rarr;</a>
                                     </div>
@@ -2170,17 +3034,19 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         </div>
                     </div>
+                    <?php endif; ?>
                 <?php endif; ?>
 
                 <!-- ABA 2: PÁGINA DOCUMENTOS (BUSCA, FILTROS, AÇÕES EM LOTE, TABELA E ⋯) -->
                 <?php if ($activeTab === 'documentos'): ?>
                     <form method="POST" action="index.php?tab=documentos" id="batch-form" class="space-y-5">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                         <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                             <div>
                                 <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Documentos</h1>
                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie todos os conteúdos cadastrados no sistema.</p>
                             </div>
-                            
+
                             <div class="flex items-center gap-2">
                                 <a href="index.php?tab=novo_documento" class="px-4 py-2 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition shadow-xs text-decoration-none flex items-center gap-1.5">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -2235,8 +3101,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Tipo</label>
                                     <select name="filter_tipo" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todos</option>
-                                        <option value="arquivo" <?= $filterTipo === 'arquivo' ? 'selected' : '' ?>>Arquivo</option>
-                                        <option value="texto" <?= $filterTipo === 'texto' ? 'selected' : '' ?>>Texto</option>
+                                        <option value="file" <?= $filterTipo === 'file' ? 'selected' : '' ?>>Arquivo</option>
+                                        <option value="text" <?= $filterTipo === 'text' ? 'selected' : '' ?>>Texto</option>
+                                        <option value="code" <?= $filterTipo === 'code' ? 'selected' : '' ?>>Código</option>
                                         <option value="link" <?= $filterTipo === 'link' ? 'selected' : '' ?>>Link</option>
                                     </select>
                                 </div>
@@ -2245,9 +3112,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Status</label>
                                     <select name="filter_status" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todos</option>
-                                        <option value="publicado" <?= $filterStatus === 'publicado' ? 'selected' : '' ?>>Publicado</option>
-                                        <option value="rascunho" <?= $filterStatus === 'rascunho' ? 'selected' : '' ?>>Rascunho</option>
-                                        <option value="inativo" <?= $filterStatus === 'inativo' ? 'selected' : '' ?>>Inativo</option>
+                                        <option value="published" <?= $filterStatus === 'published' ? 'selected' : '' ?>>Publicado</option>
+                                        <option value="draft" <?= $filterStatus === 'draft' ? 'selected' : '' ?>>Rascunho</option>
+                                        <option value="review" <?= $filterStatus === 'review' ? 'selected' : '' ?>>Em revisão</option>
+                                        <option value="inactive" <?= $filterStatus === 'inactive' ? 'selected' : '' ?>>Inativo</option>
                                     </select>
                                 </div>
                             </div>
@@ -2257,8 +3125,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <div class="flex items-center justify-between p-3 rounded-md bg-slate-100 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
                             <div class="flex items-center gap-2">
                                 <span class="font-bold text-slate-700 dark:text-slate-300">Ações em Lote:</span>
-                                <button type="submit" name="batch_action" value="publish" onclick="return confirm('Publicar os documentos selecionados?')" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90">
-                                    Publicar Selecionados
+                                <button type="submit" name="batch_action" value="submit_review" onclick="return confirm('Enviar os documentos selecionados para revisão?')" class="px-3 py-1 rounded bg-blue-600 text-white font-semibold hover:opacity-90">
+                                    Enviar para revisão
+                                </button>
+                                <button type="submit" name="batch_action" value="publish" onclick="return confirm('Aprovar e publicar os documentos selecionados? Somente itens em revisão serão aceitos.')" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90">
+                                    Aprovar e publicar
                                 </button>
                                 <button type="submit" name="batch_action" value="draft" onclick="return confirm('Mover selecionados para rascunho?')" class="px-3 py-1 rounded bg-amber-600 text-white font-semibold hover:opacity-90">
                                     Mover para Rascunho
@@ -2300,7 +3171,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         </thead>
                                         <tbody class="divide-y divide-slate-100 dark:divide-[#454956]/60">
                                             <?php foreach ($documentosPaginados as $doc): ?>
-                                                <?php $st = strtolower($doc['status'] ?: 'publicado'); ?>
+                                                <?php $st = strtolower($doc['status'] ?: 'published'); ?>
                                                 <tr class="hover:bg-slate-50/70 dark:hover:bg-[#3e424e]/50 transition">
                                                     <td class="p-3">
                                                         <input type="checkbox" name="selected_docs[]" value="<?= $doc['id'] ?>" class="batch-checkbox">
@@ -2321,12 +3192,18 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                         <?= htmlspecialchars($doc['layout_width'] ?? 'full') ?>
                                                     </td>
                                                     <td class="p-3">
-                                                        <?php if ($st === 'publicado'): ?>
+                                                        <?php if ($st === 'published'): ?>
                                                             <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20">Publicado</span>
-                                                        <?php elseif ($st === 'rascunho'): ?>
+                                                        <?php elseif ($st === 'draft'): ?>
                                                             <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">Rascunho</span>
+                                                        <?php elseif ($st === 'review'): ?>
+                                                            <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20">Em revisão</span>
                                                         <?php else: ?>
                                                             <span class="text-[10px] font-semibold px-2 py-0.5 rounded bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20">Inativo</span>
+                                                        <?php endif; ?>
+                                                        <?php if (in_array($st, ['draft', 'review'], true) && !empty($doc['approval_expires_at'])): ?>
+                                                            <?php $docExpiryDays = (int)ceil((strtotime($doc['approval_expires_at']) - time()) / 86400); ?>
+                                                            <span class="mt-1 block text-[10px] <?= $docExpiryDays <= 7 ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-slate-400' ?>"><?= $docExpiryDays <= 7 ? 'Expira em ' . max(0, $docExpiryDays) . ' dia(s)' : 'Expira em ' . date('d/m/Y', strtotime($doc['approval_expires_at'])) ?></span>
                                                         <?php endif; ?>
                                                     </td>
                                                     <td class="p-3 text-right relative">
@@ -2337,7 +3214,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                         <div id="action-menu-<?= $doc['id'] ?>" class="hidden absolute right-3 top-10 w-48 bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-md shadow-md py-1 z-50 text-left text-xs font-medium">
                                                             <a href="index.php?tab=detalhes_documento&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Visualizar Detalhes</a>
                                                             <a href="index.php?tab=novo_documento&action=edit_doc&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Editar Metadados</a>
-                                                            <?php if ($doc['tipo_conteudo'] === 'arquivo'): ?>
+                                                            <?php if ($doc['tipo_conteudo'] === 'file'): ?>
                                                                 <a href="index.php?tab=substituir_arquivo&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Substituir arquivo</a>
                                                             <?php endif; ?>
                                                             <div class="my-1 border-t border-slate-100 dark:border-[#454956]"></div>
@@ -2368,7 +3245,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4 pb-2 border-b border-slate-100 dark:border-[#454956]">
                                 <?= $editCat ? 'Editar Categoria' : 'Nova Categoria' ?>
                             </h2>
-                            <form method="POST" action="index.php?tab=categorias" class="space-y-3">
+                            <form method="POST" action="index.php?tab=categorias" enctype="multipart/form-data" class="space-y-3">
                                 <input type="hidden" name="save_category" value="1">
                                 <?php if ($editCat): ?>
                                     <input type="hidden" name="id" value="<?= $editCat['id'] ?>">
@@ -2381,6 +3258,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Descrição</label>
                                     <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-1.5 text-xs"><?= htmlspecialchars($editCat['descricao'] ?? '') ?></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Imagem da categoria</label>
+                                    <?php if (!empty($editCat['image_path'])): ?>
+                                        <div class="mb-2 flex items-center gap-2">
+                                            <img src="../category_image.php?id=<?= (int)$editCat['id'] ?>&amp;v=<?= urlencode((string)$editCat['image_path']) ?>" alt="Imagem atual da categoria" class="h-9 w-9 rounded object-cover border border-slate-200 dark:border-[#454956]">
+                                            <label class="inline-flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400"><input type="checkbox" name="remove_category_image" value="1"> Remover imagem atual</label>
+                                        </div>
+                                    <?php endif; ?>
+                                    <input type="file" name="category_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                    <p class="mt-1 text-[10px] text-slate-400">JPG, PNG ou WEBP, até 3 MB. Substitui o ícone no portal.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Status</label>
@@ -2436,7 +3324,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4 pb-2 border-b border-slate-100 dark:border-[#454956]">
                                 <?= $editSub ? 'Editar Subcategoria' : 'Nova Subcategoria' ?>
                             </h2>
-                            <form method="POST" action="index.php?tab=subcategorias" class="space-y-3">
+                            <form method="POST" action="index.php?tab=subcategorias" enctype="multipart/form-data" class="space-y-3">
                                 <input type="hidden" name="save_subcategory" value="1">
                                 <?php if ($editSub): ?>
                                     <input type="hidden" name="id" value="<?= $editSub['id'] ?>">
@@ -2444,9 +3332,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Categoria Pai *</label>
-                                    <select name="categoria_nome" required class="input-minimal w-full px-3 py-1.5 text-xs">
-                                        <?php foreach ($rawCategorias as $c): ?>
-                                            <option value="<?= htmlspecialchars($c) ?>" <?= ($editSub['categoria_nome'] ?? '') === $c ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                                    <select name="category_id" required class="input-minimal w-full px-3 py-1.5 text-xs">
+                                        <?php foreach ($listCategorias as $c): ?>
+                                            <option value="<?= (int)$c['id'] ?>" <?= (int)($editSub['category_id'] ?? 0) === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['nome']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -2457,6 +3345,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Descrição</label>
                                     <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-1.5 text-xs"><?= htmlspecialchars($editSub['descricao'] ?? '') ?></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Imagem da subcategoria</label>
+                                    <?php if (!empty($editSub['image_path'])): ?>
+                                        <div class="mb-2 flex items-center gap-2">
+                                            <img src="../subcategory_image.php?id=<?= (int)$editSub['id'] ?>&amp;v=<?= urlencode((string)$editSub['image_path']) ?>" alt="Imagem atual da subcategoria" class="h-9 w-9 rounded object-cover border border-slate-200 dark:border-[#454956]">
+                                            <label class="inline-flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400"><input type="checkbox" name="remove_subcategory_image" value="1"> Remover imagem atual</label>
+                                        </div>
+                                    <?php endif; ?>
+                                    <input type="file" name="subcategory_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                    <p class="mt-1 text-[10px] text-slate-400">Opcional · JPG, PNG ou WEBP, até 3 MB.</p>
                                 </div>
                                 <div class="grid grid-cols-2 gap-2">
                                     <div>
@@ -2523,9 +3422,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Subcategoria Pai *</label>
-                                    <select name="subcategoria_nome" required class="input-minimal w-full px-3 py-1.5 text-xs">
+                                    <select name="subcategory_id" required class="input-minimal w-full px-3 py-1.5 text-xs">
                                         <?php foreach ($listSubcategorias as $sub): ?>
-                                            <option value="<?= htmlspecialchars($sub['nome']) ?>" <?= ($editAss['subcategoria_nome'] ?? '') === $sub['nome'] ? 'selected' : '' ?>><?= htmlspecialchars($sub['nome']) ?></option>
+                                            <option value="<?= (int)$sub['id'] ?>" <?= (int)($editAss['subcategory_id'] ?? 0) === (int)$sub['id'] ? 'selected' : '' ?>><?= htmlspecialchars($sub['categoria_nome']) ?> › <?= htmlspecialchars($sub['nome']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -2632,213 +3531,13 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     <?php endif; ?>
 
                 <!-- ABA 7: GESTÃO DE GRUPOS DE ACESSO -->
-                <?php if ($activeTab === 'grupos'): ?>
-                    <?php
-                        $allGroups = $pdo->query("
-                            SELECT g.id, g.name AS nome, g.description AS descricao, g.active,
-                                   COUNT(ug.user_id) AS total_membros
-                            FROM groups g
-                            LEFT JOIN user_groups ug ON g.id = ug.group_id
-                            GROUP BY g.id, g.name, g.description, g.active
-                            ORDER BY g.name ASC
-                        ")->fetchAll();
-                    ?>
-                    <div class="space-y-6">
-                        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-[#454956]">
-                            <div>
-                                <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Grupos e Equipes de Acesso</h1>
-                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie os grupos de usuários e atribua permissões centralizadas por equipe.</p>
-                            </div>
-                        </div>
-
-                        <div class="bg-white dark:bg-[#353842] p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xs">
-                            <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4">Equipes Cadastradas</h2>
-                            <?php if (empty($allGroups)): ?>
-                                <p class="text-xs text-slate-400 italic p-4 text-center">Nenhuma equipe ou grupo cadastrado.</p>
-                            <?php else: ?>
-                                <div class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                    <?php foreach ($allGroups as $grp): ?>
-                                        <div class="py-3 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-[#2c2e33]/50 px-2 rounded-md transition">
-                                            <div class="flex items-center gap-3">
-                                                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold flex items-center justify-center shadow-xs">
-                                                    👥
-                                                </div>
-                                                <div>
-                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block text-sm"><?= htmlspecialchars($grp['nome']) ?></span>
-                                                    <span class="text-[11px] text-slate-400 block"><?= htmlspecialchars($grp['descricao'] ?: 'Sem descrição') ?> • <?= (int)$grp['total_membros'] ?> membro(s)</span>
-                                                </div>
-                                            </div>
-                                            <div class="flex items-center gap-2">
-                                                <a href="index.php?tab=editar_grupo&id=<?= $grp['id'] ?>" class="px-3 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition">
-                                                    Gerenciar Equipe &rarr;
-                                                </a>
-                                            </div>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
-
-                <!-- ABA 8: EDITAR GRUPO DE ACESSO -->
-                <?php if ($activeTab === 'editar_grupo'): ?>
-                    <?php
-                        $groupId = (int)($_GET['id'] ?? 0);
-                        $stmtG = $pdo->prepare("SELECT id, name AS nome, description AS descricao, active FROM groups WHERE id = ?");
-                        $stmtG->execute([$groupId]);
-                        $groupData = $stmtG->fetch();
-
-                        $groupTab = $_GET['group_tab'] ?? 'info';
-                    ?>
-                    <?php if (!$groupData): ?>
-                        <div class="p-6 bg-white dark:bg-[#353842] rounded-md border text-center text-xs text-slate-400">
-                            Equipe não encontrada. <a href="index.php?tab=grupos" class="text-blue-600 hover:underline">Voltar para Grupos</a>
-                        </div>
-                    <?php else: ?>
-                        <div class="space-y-6">
-                            <div class="pb-3 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
-                                <div class="flex items-center gap-3">
-                                    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white font-bold flex items-center justify-center text-lg shadow-md">
-                                        👥
-                                    </div>
-                                    <div>
-                                        <span class="text-[10px] font-bold uppercase text-slate-400 block">Editando Equipe</span>
-                                        <h1 class="text-lg font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($groupData['nome']) ?></h1>
-                                    </div>
-                                </div>
-                                <a href="index.php?tab=grupos" class="text-xs text-slate-500 hover:underline">&larr; Voltar para Grupos</a>
-                            </div>
-
-                            <!-- SUB-ABAS DE EDIÇÃO DO GRUPO -->
-                            <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956] pb-2 text-xs font-semibold">
-                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=info" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'info' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
-                                    Informações da Equipe
-                                </a>
-                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'users' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
-                                    Integrantes / Membros
-                                </a>
-                                <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" class="px-3 py-1.5 rounded-lg transition <?= $groupTab === 'permissions' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
-                                    🔐 Permissões da Equipe
-                                </a>
-                            </div>
-
-                            <?php if ($groupTab === 'info'): ?>
-                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
-                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>" class="space-y-4">
-                                        <input type="hidden" name="save_group" value="1">
-                                        <div>
-                                            <label class="block text-xs font-semibold mb-1">Nome da Equipe *</label>
-                                            <input type="text" name="nome" required value="<?= htmlspecialchars($groupData['nome']) ?>" class="input-minimal w-full px-3 py-2 text-xs">
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-semibold mb-1">Descrição</label>
-                                            <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($groupData['descricao']) ?></textarea>
-                                        </div>
-                                        <div class="flex justify-end">
-                                            <button type="submit" class="px-5 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Salvar Alterações</button>
-                                        </div>
-                                    </form>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($groupTab === 'users'): ?>
-                                <?php
-                                    $members = $pdo->prepare("
-                                        SELECT u.id, u.name, u.email, u.role
-                                        FROM users u
-                                        JOIN user_groups ug ON u.id = ug.user_id
-                                        WHERE ug.group_id = ?
-                                        ORDER BY u.name ASC
-                                    ");
-                                    $members->execute([$groupId]);
-                                    $membersList = $members->fetchAll();
-                                ?>
-                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
-                                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">Integrantes Atuais (<?= count($membersList) ?>)</h3>
-                                    <?php if (empty($membersList)): ?>
-                                        <p class="text-xs text-slate-400 italic">Nenhum membro nesta equipe.</p>
-                                    <?php else: ?>
-                                        <div class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                            <?php foreach ($membersList as $m): ?>
-                                                <div class="py-2.5 flex items-center justify-between text-xs">
-                                                    <div class="flex items-center gap-2">
-                                                        <span class="text-base">👤</span>
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block"><?= htmlspecialchars($m['name']) ?></span>
-                                                            <span class="text-[10px] text-slate-400"><?= htmlspecialchars($m['email']) ?></span>
-                                                        </div>
-                                                    </div>
-                                                    <span class="text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-600 font-mono"><?= ucfirst($m['role']) ?></span>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endif; ?>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($groupTab === 'permissions'): ?>
-                                <?php
-                                    $groupPerms = $pdo->prepare("
-                                        SELECT p.id, p.permission_level,
-                                               c.name AS cat_name, sc.name AS subcat_name, s.name AS subj_name,
-                                               CASE 
-                                                   WHEN p.subject_id IS NOT NULL THEN 'Assunto: ' || s.name
-                                                   WHEN p.subcategory_id IS NOT NULL THEN 'Subcategoria: ' || sc.name
-                                                   WHEN p.category_id IS NOT NULL THEN 'Categoria: ' || c.name
-                                               END AS resource_name
-                                        FROM permissions p
-                                        LEFT JOIN categories c ON p.category_id = c.id
-                                        LEFT JOIN subcategories sc ON p.subcategory_id = sc.id
-                                        LEFT JOIN subjects s ON p.subject_id = s.id
-                                        WHERE p.group_id = ?
-                                        ORDER BY p.id DESC
-                                    ");
-                                    $groupPerms->execute([$groupId]);
-                                    $groupPermsList = $groupPerms->fetchAll();
-                                ?>
-                                <div class="bg-white dark:bg-[#353842] p-6 rounded-xl border border-slate-200 dark:border-[#454956] space-y-4">
-                                    <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
-                                        <div>
-                                            <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Permissões Concedidas à Equipe</h3>
-                                            <p class="text-xs text-slate-400 mt-0.5">Recursos em que este grupo possui acesso direto.</p>
-                                        </div>
-                                        <a href="index.php?tab=editar_estrutura" class="px-3 py-1.5 rounded bg-blue-600 text-white font-semibold text-xs hover:bg-blue-700 transition">
-                                            + Gerenciar na Árvore de Estrutura
-                                        </a>
-                                    </div>
-
-                                    <?php if (empty($groupPermsList)): ?>
-                                        <p class="text-xs text-slate-400 italic p-4 text-center">Nenhuma permissão específica atrelada diretamente a esta equipe ainda. Para conceder acesso a esta equipe, acesse a aba <a href="index.php?tab=editar_estrutura" class="text-blue-600 hover:underline font-bold">Editor da Árvore</a>, selecione o recurso desejado e adicione esta equipe.</p>
-                                    <?php else: ?>
-                                        <div class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                            <?php foreach ($groupPermsList as $gp): ?>
-                                                <div class="py-3 flex items-center justify-between text-xs">
-                                                    <div class="flex items-center gap-2">
-                                                        <span class="text-base">📁</span>
-                                                        <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($gp['resource_name']) ?></span>
-                                                    </div>
-                                                    <span class="px-2.5 py-1 rounded-full bg-blue-100 dark:bg-blue-950/50 text-blue-800 dark:text-blue-300 font-bold uppercase text-[10px]">
-                                                        <?= strtoupper($gp['permission_level']) ?>
-                                                    </span>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endif; ?>
-                                </div>
-                            <?php endif; ?>
-
-                        </div>
-                    <?php endif; ?>
-                <?php endif; ?>
-
-                <!-- NOVO CONTEÚDO (FORMULÁRIO DINÂMICO COM SELETOR DE TIPO) -->
                 <?php if ($activeTab === 'novo_documento'): ?>
                     <?php
                         // Determine o tipo inicial: edição de documento ou tipo vindo da URL
                         $isEditMode = ($editDoc !== null);
                         $initialType = $isEditMode ? 'documento' : 'documento';
                         $isAdmin = $permService->isGlobalAdmin((int)($loggedUser['id'] ?? 0));
+                        $canApproveEditedDocument = $isEditMode && $workflowService->canApprove((int)($loggedUser['id'] ?? 0), (int)$editDoc['id']);
                     ?>
                     <div class="max-w-3xl mx-auto">
 
@@ -2901,8 +3600,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Preencha as informações do documento e selecione a hierarquia dependente.</p>
                             </div>
 
-                            <form method="POST" action="index.php?tab=novo_documento" enctype="multipart/form-data" class="space-y-6">
+                            <form id="document-form" method="POST" action="index.php?tab=novo_documento" enctype="multipart/form-data" class="space-y-6">
                                 <input type="hidden" name="save_doc" value="1">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                <input type="hidden" id="batch-upload-flag" name="batch_upload" value="">
                                 <?php if ($editDoc): ?>
                                     <input type="hidden" name="id" value="<?= $editDoc['id'] ?>">
                                 <?php endif; ?>
@@ -2912,11 +3613,31 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Informações Principais</h3>
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Título *</label>
-                                        <input type="text" name="titulo" required value="<?= htmlspecialchars($editDoc['titulo'] ?? '') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex: Requerimento Padrão de Férias 2026">
+                                        <input type="text" id="document-title" name="titulo" required value="<?= htmlspecialchars($editDoc['titulo'] ?? '') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex: Requerimento Padrão de Férias 2026">
                                     </div>
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
-                                        <textarea name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Resumo do documento..."><?= htmlspecialchars($editDoc['descricao'] ?? '') ?></textarea>
+                                        <textarea id="document-description" name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Resumo do documento..."><?= htmlspecialchars($editDoc['descricao'] ?? '') ?></textarea>
+                                    </div>
+                                    <div class="rounded-md border border-slate-200 bg-slate-50/70 p-3 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <label for="document-tag-input" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Tags</label>
+                                                <p class="mt-0.5 text-[10px] text-slate-400">Digite uma tag e pressione Enter. Você pode usar uma existente ou criar uma nova.</p>
+                                            </div>
+                                            <span id="document-tag-count" class="shrink-0 text-[10px] font-semibold text-slate-400">0/12</span>
+                                        </div>
+                                        <div id="document-tag-selected" class="mt-2 flex flex-wrap gap-1.5"></div>
+                                        <div class="mt-2 flex gap-2">
+                                            <input id="document-tag-input" type="text" maxlength="80" autocomplete="off" list="document-tag-options" class="input-minimal min-w-0 flex-1 px-3 py-2 text-xs" placeholder="Ex.: Nutanix, host, backup">
+                                            <button id="document-tag-add" type="button" class="rounded border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-200 dark:hover:bg-[#3e424e]">Adicionar</button>
+                                        </div>
+                                        <datalist id="document-tag-options"></datalist>
+                                        <div id="document-tag-suggestions" class="mt-2 hidden border-t border-slate-200 pt-2 dark:border-[#454956]">
+                                            <p class="mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Sugestões</p>
+                                            <div id="document-tag-suggestion-list" class="flex flex-wrap gap-1.5"></div>
+                                        </div>
+                                        <p id="document-tag-feedback" class="mt-1 hidden text-[10px] text-amber-600 dark:text-amber-300"></p>
                                     </div>
                                 </div>
 
@@ -2929,7 +3650,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             <select id="select-cat" name="categoria" required onchange="onCategoryChange()" class="input-minimal w-full px-2.5 py-1.5 text-xs">
                                                 <option value="">-- Selecione ▾ --</option>
                                                 <?php foreach ($catsParaDocumento as $catDoc): ?>
-                                                    <option value="<?= htmlspecialchars($catDoc['nome']) ?>" <?= ($editDoc['categoria'] ?? ($_GET['cat'] ?? '')) === $catDoc['nome'] ? 'selected' : '' ?>>
+                                                    <?php $selectedCategoryValue = (string)($editDoc['categoria_id'] ?? ($_GET['cat_id'] ?? $_GET['cat'] ?? '')); ?>
+                                                    <option value="<?= (int)$catDoc['id'] ?>" <?= ($selectedCategoryValue === (string)$catDoc['id'] || $selectedCategoryValue === (string)$catDoc['nome']) ? 'selected' : '' ?>>
                                                         <?= htmlspecialchars($catDoc['nome']) ?>
                                                     </option>
                                                 <?php endforeach; ?>
@@ -2952,17 +3674,28 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                                 <!-- Conteúdo -->
                                 <div class="space-y-3">
+                                    <?php $selectedVideoSource = (($editDoc['tipo_conteudo'] ?? '') === 'video' && !empty($editDoc['link_externo'])) ? 'url' : 'upload'; ?>
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Conteúdo</h3>
-                                    <div class="inline-flex items-center bg-slate-100 dark:bg-[#2c2e33] rounded-md p-1 border border-slate-200 dark:border-[#454956] gap-1">
+                                    <div class="inline-flex flex-wrap items-center bg-slate-100 dark:bg-[#2c2e33] rounded-md p-1 border border-slate-200 dark:border-[#454956] gap-1">
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="arquivo" <?= ($editDoc['tipo_conteudo'] ?? 'arquivo') === 'arquivo' ? 'checked' : '' ?> onchange="toggleFormContent('arquivo')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="file" <?= ($editDoc['tipo_conteudo'] ?? 'file') === 'file' ? 'checked' : '' ?> onchange="toggleFormContent('file')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                             Arquivo
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="texto" <?= ($editDoc['tipo_conteudo'] ?? '') === 'texto' ? 'checked' : '' ?> onchange="toggleFormContent('texto')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="text" <?= ($editDoc['tipo_conteudo'] ?? '') === 'text' ? 'checked' : '' ?> onchange="toggleFormContent('text')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                                             Texto
+                                        </label>
+                                        <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
+                                            <input type="radio" name="tipo_conteudo" value="code" <?= ($editDoc['tipo_conteudo'] ?? '') === 'code' ? 'checked' : '' ?> onchange="toggleFormContent('code')" class="sr-only">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l-3 3 3 3m8-6l3 3-3 3m-3-8l-2 10"/></svg>
+                                            Código
+                                        </label>
+                                        <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
+                                            <input type="radio" name="tipo_conteudo" value="video" <?= ($editDoc['tipo_conteudo'] ?? '') === 'video' ? 'checked' : '' ?> onchange="toggleFormContent('video')" class="sr-only">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                            Vídeo
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
                                             <input type="radio" name="tipo_conteudo" value="link" <?= ($editDoc['tipo_conteudo'] ?? '') === 'link' ? 'checked' : '' ?> onchange="toggleFormContent('link')" class="sr-only">
@@ -2971,16 +3704,106 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         </label>
                                     </div>
 
-                                    <div id="box-arquivo" class="p-6 rounded-md border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-[#2c2e33] text-center">
-                                        <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste o arquivo aqui ou clique para selecionar</p>
-                                        <p class="text-[11px] text-slate-400 mt-1 mb-3">Suportados: PDF, PNG, JPG, WEBP, GIF, TXT, DOCX (Máx: 15MB)</p>
-                                        <input type="file" id="file-input" name="arquivo_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,.doc,.docx" class="hidden" onchange="updateFilePreview(this)">
-                                        <button type="button" onclick="document.getElementById('file-input').click()" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Selecionar arquivo</button>
-                                        <div id="file-preview-name" class="mt-2 text-xs text-slate-500"></div>
+                                    <?php if (!$isEditMode): ?>
+                                        <div id="box-file" class="space-y-3">
+                                            <div id="batch-dropzone" tabindex="0" role="button" aria-controls="file-input" class="cursor-pointer rounded-md border-2 border-dashed border-slate-300 bg-slate-50/70 p-6 text-center outline-none transition hover:border-slate-500 hover:bg-slate-100/70 focus:border-slate-500 focus:ring-2 focus:ring-slate-400/40 dark:border-slate-600 dark:bg-[#2c2e33] dark:hover:border-slate-400 dark:hover:bg-[#353842]">
+                                                <div class="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-white dark:text-slate-900">
+                                                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 16V4m0 0L8 8m4-4 4 4M4 16.5V19a2 2 0 002 2h12a2 2 0 002-2v-2.5"/></svg>
+                                                </div>
+                                                <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste arquivos aqui ou clique para selecionar</p>
+                                                <p class="mt-1 text-[11px] text-slate-400">Até 20 arquivos por vez · arquivos gerais até 25 MB · vídeos até 250 MB</p>
+                                                <input type="file" id="file-input" name="arquivo_file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden">
+                                                <button type="button" id="batch-select-files" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar arquivos</button>
+                                            </div>
+                                            <div id="batch-upload-error" class="hidden rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300" role="alert"></div>
+                                            <div id="batch-file-queue" class="hidden overflow-hidden rounded-md border border-slate-200 bg-white dark:border-[#454956] dark:bg-[#2c2e33]">
+                                                <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2 dark:border-[#454956]"><span id="batch-file-count" class="text-xs font-bold text-slate-700 dark:text-slate-200">0 arquivos</span><button type="button" id="batch-clear-files" class="text-[11px] font-semibold text-slate-500 hover:text-red-600 dark:text-slate-300">Limpar fila</button></div>
+                                                <div id="batch-file-list" class="max-h-64 divide-y divide-slate-100 overflow-y-auto dark:divide-[#454956]"></div>
+                                            </div>
+                                            <div id="batch-upload-progress-wrap" class="hidden" aria-live="polite"><div class="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-300"><span id="batch-upload-status">Preparando envio…</span><span id="batch-upload-percent">0%</span></div><div class="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-[#454956]"><div id="batch-upload-progress" class="h-full w-0 rounded-full bg-emerald-500 transition-[width] duration-150"></div></div></div>
+                                        </div>
+                                    <?php else: ?>
+                                        <div id="box-file" class="p-6 rounded-md border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-[#2c2e33] text-center">
+                                            <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste o arquivo aqui ou clique para selecionar</p>
+                                            <p class="text-[11px] text-slate-400 mt-1 mb-3">PDF, imagens, textos, DOC/DOCX, áudio e vídeo (Máx: 25MB)</p>
+                                            <input type="file" id="file-input" name="arquivo_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateFilePreview(this)">
+                                            <button type="button" onclick="document.getElementById('file-input').click()" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Selecionar arquivo</button>
+                                            <div id="file-preview-name" class="mt-2 text-xs text-slate-500"></div>
+                                        </div>
+                                    <?php endif; ?>
+
+                                    <div id="box-text" class="hidden p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
+                                        <textarea id="text-content-input" name="conteudo_html" rows="7" class="input-minimal w-full px-3 py-2 text-xs font-mono" placeholder="Conteúdo do artigo..."><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'text' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
                                     </div>
 
-                                    <div id="box-texto" class="hidden p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
-                                        <textarea name="conteudo_html" rows="7" class="input-minimal w-full px-3 py-2 text-xs font-mono" placeholder="Conteúdo do artigo..."><?= htmlspecialchars($editDoc['conteudo_html'] ?? '') ?></textarea>
+                                    <div id="box-code" class="hidden space-y-3 p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
+                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_13rem] gap-3 items-end">
+                                            <div>
+                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Trecho de código *</label>
+                                                <p class="text-[11px] text-slate-400">Cole o conteúdo sem alterar a indentação. O botão de copiar aparecerá automaticamente no portal.</p>
+                                            </div>
+                                            <div>
+                                                <label for="code-language" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Linguagem</label>
+                                                <select id="code-language" name="linguagem_codigo" class="input-minimal w-full px-3 py-2 text-xs" onchange="updateCodePreview()">
+                                                    <?php
+                                                    $codeLanguageOptions = [
+                                                        'auto' => 'Automática (padrão)', 'plaintext' => 'Texto simples',
+                                                        'javascript' => 'JavaScript', 'typescript' => 'TypeScript', 'xml' => 'HTML / XML',
+                                                        'css' => 'CSS', 'php' => 'PHP', 'python' => 'Python', 'sql' => 'SQL',
+                                                        'bash' => 'Shell / Bash', 'json' => 'JSON', 'java' => 'Java', 'csharp' => 'C#',
+                                                        'cpp' => 'C / C++', 'go' => 'Go', 'yaml' => 'YAML', 'markdown' => 'Markdown'
+                                                    ];
+                                                    $selectedCodeLanguage = $editDoc['linguagem_codigo'] ?? 'auto';
+                                                    foreach ($codeLanguageOptions as $languageValue => $languageLabel):
+                                                    ?>
+                                                        <option value="<?= $languageValue ?>" <?= $selectedCodeLanguage === $languageValue ? 'selected' : '' ?>><?= htmlspecialchars($languageLabel) ?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <textarea id="code-source-input" name="codigo_fonte" rows="11" spellcheck="false" class="input-minimal w-full px-3 py-2 text-xs font-mono leading-relaxed" placeholder="Cole seu código aqui..." oninput="updateCodePreview()"><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'code' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
+
+                                        <div>
+                                            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Pré-visualização</p>
+                                            <div id="code-preview" class="code-snippet code-snippet--preview" data-code-snippet data-code-language="<?= htmlspecialchars($selectedCodeLanguage) ?>">
+                                                <div class="code-snippet__header">
+                                                    <span class="code-snippet__language" data-code-language-label>Detectando...</span>
+                                                    <button type="button" class="code-snippet__copy" data-copy-code aria-label="Copiar código">
+                                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 8h10a2 2 0 012 2v10a2 2 0 01-2 2H8a2 2 0 01-2-2V10a2 2 0 012-2zM16 8V4a2 2 0 00-2-2H4a2 2 0 00-2 2v10a2 2 0 002 2h2"/></svg>
+                                                        <span data-copy-label>Copiar</span>
+                                                    </button>
+                                                </div>
+                                                <pre><code data-code-source><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'code' ? ($editDoc['conteudo_html'] ?? '') : '// A pré-visualização aparecerá aqui.') ?></code></pre>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div id="box-video" class="hidden space-y-4 rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <div>
+                                            <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Origem do vídeo *</p>
+                                            <p class="mt-1 text-[11px] text-slate-400">Envie um arquivo local ou use um link do YouTube, Vimeo ou de um arquivo de vídeo externo.</p>
+                                        </div>
+                                        <div class="inline-flex rounded-md border border-slate-200 bg-white p-1 dark:border-[#454956] dark:bg-[#353842]">
+                                            <label class="flex cursor-pointer items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold text-slate-700 has-[:checked]:bg-slate-100 dark:text-slate-200 dark:has-[:checked]:bg-[#454956]">
+                                                <input type="radio" name="video_source" value="upload" <?= $selectedVideoSource === 'upload' ? 'checked' : '' ?> onchange="toggleVideoSource()" class="sr-only">Arquivo local
+                                            </label>
+                                            <label class="flex cursor-pointer items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold text-slate-700 has-[:checked]:bg-slate-100 dark:text-slate-200 dark:has-[:checked]:bg-[#454956]">
+                                                <input type="radio" name="video_source" value="url" <?= $selectedVideoSource === 'url' ? 'checked' : '' ?> onchange="toggleVideoSource()" class="sr-only">Link externo
+                                            </label>
+                                        </div>
+                                        <div id="video-upload-fields" class="rounded-md border-2 border-dashed border-slate-300 bg-white p-5 text-center dark:border-slate-600 dark:bg-[#353842]">
+                                            <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Selecione um vídeo do computador</p>
+                                            <p class="mt-1 text-[11px] text-slate-400">MP4, WEBM, OGV, M4V ou MOV (máximo de 250MB)</p>
+                                            <input type="file" id="video-file-input" name="video_file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateVideoFilePreview(this)">
+                                            <button type="button" onclick="document.getElementById('video-file-input').click()" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar vídeo</button>
+                                            <div id="video-file-preview-name" class="mt-2 text-xs text-slate-500"></div>
+                                        </div>
+                                        <div id="video-url-fields" class="hidden">
+                                            <label for="video-url" class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">URL do vídeo *</label>
+                                            <input type="url" id="video-url" name="video_url" value="<?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'video' ? ($editDoc['link_externo'] ?? '') : '') ?>" class="input-minimal w-full px-3 py-2 text-xs font-mono" placeholder="https://www.youtube.com/watch?v=..." oninput="updateVideoUrlPreview()">
+                                            <p class="mt-1.5 text-[11px] text-slate-400">Links do YouTube e Vimeo são incorporados. URLs diretas (.mp4, .webm etc.) usam o player nativo.</p>
+                                        </div>
+                                        <div id="video-url-preview" class="hidden overflow-hidden rounded-md border border-slate-200 bg-black dark:border-[#454956]"></div>
                                     </div>
 
                                     <div id="box-link" class="hidden p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
@@ -2994,12 +3817,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Publicação</h3>
                                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                         <div>
-                                            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status *</label>
-                                            <select name="status" class="input-minimal w-full px-3 py-2 text-xs">
-                                                <option value="rascunho" <?= ($editDoc['status'] ?? 'rascunho') === 'rascunho' ? 'selected' : '' ?>>Rascunho (Padrão)</option>
-                                                <option value="publicado" <?= ($editDoc['status'] ?? '') === 'publicado' ? 'selected' : '' ?>>Publicado</option>
-                                                <option value="inativo" <?= ($editDoc['status'] ?? '') === 'inativo' ? 'selected' : '' ?>>Inativo</option>
-                                            </select>
+                                            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Etapa atual</label>
+                                            <div class="input-minimal w-full px-3 py-2 text-xs font-semibold">
+                                                <?= htmlspecialchars(DocumentWorkflowService::label($editDoc['status'] ?? 'draft')) ?>
+                                            </div>
+                                            <p class="mt-1 text-[10px] text-slate-400">Salve como rascunho e envie para revisão quando estiver pronto.</p>
                                         </div>
                                         <div>
                                             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Largura no Portal</label>
@@ -3011,11 +3833,25 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             </select>
                                         </div>
                                     </div>
+                                    <div>
+                                        <label for="workflow-note" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Observação para a revisão</label>
+                                        <textarea id="workflow-note" name="workflow_note" rows="2" maxlength="2000" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Opcional: explique o que foi alterado ou deixe uma orientação ao aprovador."></textarea>
+                                    </div>
+                                    <div id="document-hierarchy-helper" class="hidden rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[11px] text-amber-800 dark:text-amber-200">
+                                        <div class="flex flex-wrap items-center justify-between gap-2">
+                                            <span id="document-hierarchy-helper-text"></span>
+                                            <button id="document-hierarchy-helper-action" type="button" class="rounded bg-amber-600 px-3 py-1.5 font-semibold text-white transition hover:bg-amber-500"></button>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <div class="pt-4 border-t border-slate-100 dark:border-[#454956] flex justify-end gap-2">
                                     <a href="index.php?tab=documentos" class="px-4 py-2 rounded border border-slate-200 dark:border-[#454956] text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2c2e33] transition">Cancelar</a>
-                                    <button type="submit" class="px-6 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition"><?= $isEditMode ? 'Salvar Alterações' : 'Criar Documento' ?></button>
+                                    <button type="submit" name="workflow_action" value="save_draft" class="px-5 py-2 rounded border border-slate-300 dark:border-[#454956] bg-white dark:bg-[#2c2e33] text-slate-700 dark:text-slate-200 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-[#3e424e] transition">Salvar como rascunho</button>
+                                    <button type="submit" name="workflow_action" value="submit_review" class="px-5 py-2 rounded bg-blue-600 text-white text-xs font-semibold hover:bg-blue-500 transition shadow-xs">Enviar para revisão</button>
+                                    <?php if ($canApproveEditedDocument && ($editDoc['status'] ?? '') === 'review'): ?>
+                                        <button type="submit" name="workflow_action" value="approve_publish" class="px-5 py-2 rounded bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-500 transition shadow-xs">Aprovar e publicar</button>
+                                    <?php endif; ?>
                                 </div>
                             </form>
                         </div>
@@ -3032,7 +3868,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Crie um novo agrupamento de primeiro nível na hierarquia documental.</p>
                             </div>
 
-                            <form method="POST" action="index.php?tab=novo_documento" class="space-y-5">
+                            <form method="POST" action="index.php?tab=novo_documento" enctype="multipart/form-data" class="space-y-5">
                                 <input type="hidden" name="save_category" value="1">
                                 <input type="hidden" name="redirect_tab" value="novo_documento">
 
@@ -3043,6 +3879,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
                                     <textarea name="descricao" rows="3" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Descrição opcional da categoria..."></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Imagem da categoria</label>
+                                    <input type="file" name="category_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                    <p class="mt-1 text-[10px] text-slate-400">Opcional · JPG, PNG ou WEBP, até 3 MB.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
@@ -3069,16 +3910,16 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Selecione a Categoria pai e defina o nome da Subcategoria.</p>
                             </div>
 
-                            <form method="POST" action="index.php?tab=novo_documento" class="space-y-5">
+                            <form method="POST" action="index.php?tab=novo_documento" enctype="multipart/form-data" class="space-y-5">
                                 <input type="hidden" name="save_subcategory" value="1">
                                 <input type="hidden" name="redirect_tab" value="novo_documento">
 
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoria Pai *</label>
-                                    <select id="nc-sub-cat" name="categoria_nome" required class="input-minimal w-full px-3 py-2 text-xs">
+                                    <select id="nc-sub-cat" name="category_id" required class="input-minimal w-full px-3 py-2 text-xs">
                                         <option value="">-- Selecione uma Categoria --</option>
                                         <?php foreach ($catsParaSubcategoria as $catSub): ?>
-                                            <option value="<?= htmlspecialchars($catSub['nome']) ?>"><?= htmlspecialchars($catSub['nome']) ?></option>
+                                            <option value="<?= (int)$catSub['id'] ?>"><?= htmlspecialchars($catSub['nome']) ?></option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -3089,6 +3930,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
                                     <textarea name="descricao" rows="3" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Descrição opcional..."></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Imagem da subcategoria</label>
+                                    <input type="file" name="subcategory_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                    <p class="mt-1 text-[10px] text-slate-400">Opcional · JPG, PNG ou WEBP, até 3 MB.</p>
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
@@ -3129,7 +3975,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Subcategoria *</label>
-                                    <select id="nc-ass-subcat" name="subcategoria_nome" required class="input-minimal w-full px-3 py-2 text-xs">
+                                    <select id="nc-ass-subcat" name="subcategory_id" required class="input-minimal w-full px-3 py-2 text-xs">
                                         <option value="">-- Selecione a Categoria primeiro --</option>
                                     </select>
                                 </div>
@@ -3189,6 +4035,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <div>
                                     <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($docDetails['titulo']) ?></h1>
                                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-1"><?= htmlspecialchars($docDetails['descricao']) ?></p>
+                                    <span class="mt-2 inline-flex rounded-full border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300"><?= htmlspecialchars(DocumentWorkflowService::label($docDetails['status'])) ?></span>
                                 </div>
                                 <div class="flex items-center gap-2">
                                     <a href="../ver_conteudo.php?id=<?= $docDetails['id'] ?>" target="_blank" class="px-3 py-1.5 rounded border text-xs font-semibold flex items-center gap-1.5">
@@ -3202,8 +4049,67 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 </div>
                             </div>
                         </div>
+                        <section class="bg-white dark:bg-[#353842] p-6 rounded-md border border-slate-200 dark:border-[#454956] shadow-xs">
+                            <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Fluxo editorial</p>
+                                    <h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Histórico e aprovação</h2>
+                                </div>
+                                <?php if (($docDetails['status'] ?? '') === 'review' && $workflowService->canReview($currentAdminUserId, (int)$docDetails['id'])): ?>
+                                    <div class="w-full max-w-lg space-y-3">
+                                        <?php if (empty($docDetails['reviewed_at'])): ?>
+                                            <form method="POST" action="index.php?tab=detalhes_documento&id=<?= (int)$docDetails['id'] ?>" class="space-y-2">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="document_id" value="<?= (int)$docDetails['id'] ?>">
+                                                <textarea name="workflow_note" rows="2" maxlength="2000" required class="input-minimal w-full px-3 py-2 text-xs" placeholder="Parecer da revisão (obrigatório)"></textarea>
+                                                <button type="submit" name="workflow_quick_action" value="review_document" class="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500">Concluir revisão</button>
+                                            </form>
+                                        <?php else: ?>
+                                            <div class="rounded-md border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
+                                                Revisado por <strong><?= htmlspecialchars($docDetails['revisor_nome'] ?: 'Administrador') ?></strong> em <?= date('d/m/Y H:i', strtotime($docDetails['reviewed_at'])) ?>.
+                                            </div>
+                                            <form method="POST" action="index.php?tab=detalhes_documento&id=<?= (int)$docDetails['id'] ?>" class="flex justify-end">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="document_id" value="<?= (int)$docDetails['id'] ?>">
+                                                <button type="submit" name="workflow_quick_action" value="approve_publish" class="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500">Aprovar e publicar</button>
+                                            </form>
+                                        <?php endif; ?>
+                                        <form method="POST" action="index.php?tab=detalhes_documento&id=<?= (int)$docDetails['id'] ?>" class="border-t border-slate-100 pt-3 dark:border-[#454956]">
+                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                            <input type="hidden" name="document_id" value="<?= (int)$docDetails['id'] ?>">
+                                            <textarea name="workflow_note" rows="2" maxlength="2000" required class="input-minimal w-full px-3 py-2 text-xs" placeholder="Motivo da recusa (obrigatório)"></textarea>
+                                            <button type="submit" name="workflow_quick_action" value="request_changes" class="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300">Recusar e devolver para ajustes</button>
+                                        </form>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="mt-5 grid gap-3 border-y border-slate-100 py-4 text-xs dark:border-[#454956] sm:grid-cols-2 lg:grid-cols-4">
+                                <div><span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Autor</span><span class="mt-1 block font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($docDetails['autor_nome'] ?: 'Não informado') ?></span></div>
+                                <div><span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Revisor</span><span class="mt-1 block font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($docDetails['revisor_nome'] ?: 'Aguardando revisão') ?></span></div>
+                                <div><span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Aprovador</span><span class="mt-1 block font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($docDetails['aprovador_nome'] ?: 'Aguardando aprovação') ?></span></div>
+                                <div><span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Prazo de aprovação</span><span class="mt-1 block font-semibold text-slate-700 dark:text-slate-200"><?php if (!empty($docDetails['approval_expires_at'])): $remainingDays = max(0, (int)ceil((strtotime($docDetails['approval_expires_at']) - time()) / 86400)); ?><?= $remainingDays <= 7 ? 'Expira em ' : 'Até ' ?><?= date('d/m/Y', strtotime($docDetails['approval_expires_at'])) ?><?php if ($remainingDays <= 7): ?> <em class="font-normal text-amber-600 dark:text-amber-300">(<?= $remainingDays ?> dia(s))</em><?php endif; ?><?php else: ?>Sem prazo<?php endif; ?></span></div>
+                            </div>
+                            <?php if (!empty($docDetails['rejection_reason'])): ?>
+                                <div class="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100"><strong>Recusado por <?= htmlspecialchars($docDetails['recusador_nome'] ?: 'Administrador') ?>:</strong> <?= nl2br(htmlspecialchars($docDetails['rejection_reason'])) ?></div>
+                            <?php endif; ?>
+
+                            <ol class="mt-5 space-y-3 border-l border-slate-200 pl-4 dark:border-[#454956]">
+                                <?php if (empty($workflowHistory)): ?>
+                                    <li class="text-xs text-slate-400">Ainda não há movimentações registradas neste documento.</li>
+                                <?php endif; ?>
+                                <?php foreach ($workflowHistory as $historyItem): ?>
+                                    <li class="relative text-xs">
+                                        <span class="absolute -left-[1.34rem] top-1 h-2 w-2 rounded-full bg-slate-400 ring-4 ring-white dark:ring-[#353842]"></span>
+                                        <p class="font-semibold text-slate-800 dark:text-slate-200"><?= htmlspecialchars($historyItem['actor_name'] ?: 'Sistema') ?> <span class="font-normal text-slate-500 dark:text-slate-400"><?= htmlspecialchars(DocumentWorkflowService::actionLabel((string)($historyItem['action'] ?? ''))) ?><?php if (($historyItem['action'] ?? '') !== 'reviewed'): ?> · <?= htmlspecialchars(DocumentWorkflowService::label($historyItem['previous_status'] ?? '')) ?> → <?= htmlspecialchars(DocumentWorkflowService::label($historyItem['new_status'])) ?><?php endif; ?></span></p>
+                                        <?php if (!empty($historyItem['note'])): ?><p class="mt-1 text-slate-500 dark:text-slate-400"><?= nl2br(htmlspecialchars($historyItem['note'])) ?></p><?php endif; ?>
+                                        <time class="mt-1 block text-[10px] text-slate-400"><?= date('d/m/Y H:i', strtotime($historyItem['created_at'])) ?></time>
+                                    </li>
+                                <?php endforeach; ?>
+                            </ol>
+                        </section>
                         <div class="bg-white dark:bg-[#353842] p-6 rounded-md border border-slate-200 dark:border-[#454956] shadow-xs">
-                            <?php if ($docDetails['tipo_conteudo'] === 'arquivo' && strpos($docDetails['tipo_mime'] ?? '', 'pdf') !== false): ?>
+                            <?php if ($docDetails['tipo_conteudo'] === 'file' && strpos($docDetails['tipo_mime'] ?? '', 'pdf') !== false): ?>
                                 <iframe src="../download.php?id=<?= $docDetails['id'] ?>&inline=1" class="w-full h-[650px] rounded-md border border-slate-200 dark:border-[#454956]"></iframe>
                             <?php else: ?>
                                 <div class="p-6 text-center bg-slate-50 dark:bg-[#2c2e33] rounded-md border text-xs">Visualização disponível no portal público.</div>
@@ -3213,26 +4119,79 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 <?php endif; ?>
 
                 <?php if ($activeTab === 'configuracoes'): ?>
-                    <div class="bg-white dark:bg-[#353842] p-5 rounded-md border border-slate-200 dark:border-[#454956] shadow-xs max-w-xl">
-                        <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-2">Configurações Gerais do Sistema</h2>
-                        <div class="space-y-3 text-xs">
+                    <?php require __DIR__ . '/partials/system-settings.php'; ?>
+                <?php endif; ?>
+
+                <?php if ($activeTab === 'tags' && $isGlobalAdminCurrent): ?>
+                    <section class="space-y-5">
+                        <div class="flex flex-wrap items-end justify-between gap-3">
                             <div>
-                                <label class="block font-semibold mb-1">Nome do Portal</label>
-                                <input type="text" value="Portal de Documentos da Prefeitura" class="input-minimal w-full px-3 py-1.5 text-xs">
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Catálogo transversal</p>
+                                <h1 class="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">Tags e correlações</h1>
+                                <p class="mt-1 max-w-2xl text-xs text-slate-500 dark:text-slate-400">Autores podem criar tags no conteúdo. Aqui você padroniza nomes, tipos e sinônimos. Tags nunca dão acesso a documentos.</p>
                             </div>
+                            <span class="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300"><?= count($tagCatalogDetails) ?> no catálogo</span>
                         </div>
-                    </div>
+
+                        <form method="POST" action="index.php?tab=tags" class="grid gap-3 rounded-md border border-slate-200 bg-white p-4 shadow-xs dark:border-[#454956] dark:bg-[#353842] sm:grid-cols-[minmax(0,1fr)_11rem_auto]">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                            <input type="text" name="tag_name" maxlength="80" required class="input-minimal px-3 py-2 text-xs" placeholder="Criar uma tag no catálogo">
+                            <select name="tag_type" class="input-minimal px-3 py-2 text-xs">
+                                <?php foreach (TagService::TYPES as $tagTypeValue => $tagTypeLabel): ?><option value="<?= htmlspecialchars($tagTypeValue) ?>"><?= htmlspecialchars($tagTypeLabel) ?></option><?php endforeach; ?>
+                            </select>
+                            <button type="submit" name="tag_admin_action" value="create" class="rounded bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 dark:bg-white dark:text-slate-900">Criar tag</button>
+                        </form>
+
+                        <div class="overflow-hidden rounded-md border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                            <?php if (empty($tagCatalogDetails)): ?>
+                                <div class="p-8 text-center text-xs text-slate-400">Ainda não há tags. Elas também podem ser criadas diretamente no formulário de conteúdo.</div>
+                            <?php else: ?>
+                                <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                    <?php foreach ($tagCatalogDetails as $tag): ?>
+                                        <div class="p-4">
+                                            <div class="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+                                                <form method="POST" action="index.php?tab=tags" class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                    <input type="hidden" name="tag_id" value="<?= (int)$tag['id'] ?>">
+                                                    <input type="text" name="tag_name" maxlength="80" value="<?= htmlspecialchars($tag['name']) ?>" class="input-minimal w-40 px-2.5 py-1.5 text-xs font-semibold">
+                                                    <select name="tag_type" class="input-minimal px-2.5 py-1.5 text-xs">
+                                                        <?php foreach (TagService::TYPES as $tagTypeValue => $tagTypeLabel): ?><option value="<?= htmlspecialchars($tagTypeValue) ?>" <?= $tag['type'] === $tagTypeValue ? 'selected' : '' ?>><?= htmlspecialchars($tagTypeLabel) ?></option><?php endforeach; ?>
+                                                    </select>
+                                                    <button type="submit" name="tag_admin_action" value="update" class="rounded border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-[#454956] dark:text-slate-200 dark:hover:bg-[#2c2e33]">Salvar</button>
+                                                    <span class="text-[10px] text-slate-400"><?= (int)$tag['document_count'] ?> documento(s) · criada por <?= htmlspecialchars($tag['created_by_name'] ?: 'Sistema') ?></span>
+                                                </form>
+                                                <form method="POST" action="index.php?tab=tags">
+                                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                    <input type="hidden" name="tag_id" value="<?= (int)$tag['id'] ?>">
+                                                    <input type="hidden" name="active" value="<?= $tag['active'] ? '0' : '1' ?>">
+                                                    <button type="submit" name="tag_admin_action" value="toggle" class="rounded px-2.5 py-1.5 text-[11px] font-semibold <?= $tag['active'] ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-slate-100 text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300' ?>"><?= $tag['active'] ? 'Ativa — desativar' : 'Inativa — reativar' ?></button>
+                                                </form>
+                                            </div>
+                                            <form method="POST" action="index.php?tab=tags" class="mt-2 flex flex-wrap items-center gap-2">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="tag_id" value="<?= (int)$tag['id'] ?>">
+                                                <span class="text-[10px] font-semibold text-slate-400">Sinônimos:</span>
+                                                <?php foreach ($tag['aliases'] as $alias): ?><span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300"><?= htmlspecialchars($alias) ?></span><?php endforeach; ?>
+                                                <input type="text" name="tag_alias" maxlength="80" class="input-minimal w-36 px-2 py-1 text-[11px]" placeholder="Adicionar sinônimo">
+                                                <button type="submit" name="tag_admin_action" value="add_alias" class="text-[11px] font-semibold text-slate-600 hover:underline dark:text-slate-300">Adicionar</button>
+                                            </form>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </section>
                 <?php endif; ?>
 
                 <!-- TAB: EDITAR ESTRUTURA E PERMISSÕES DO RECURSO (CATEGORIA / SUBCATEGORIA / ASSUNTO) -->
                 <?php if ($activeTab === 'editar_estrutura'): ?>
                     <?php
-                        require_once __DIR__ . '/../services/PermissionService.php';
-                        $permService = new PermissionService($pdo);
-
                         $resTypeInput = strtolower(trim($_GET['type'] ?? 'categoria'));
                         $resId = (int)($_GET['id'] ?? 0);
-                        $resTab = trim($_GET['res_tab'] ?? 'permissions');
+                        $resTab = trim($_GET['res_tab'] ?? 'info');
+                        if (!in_array($resTab, ['info', 'content', 'permissions'], true)) {
+                            $resTab = 'info';
+                        }
 
                         $resType = 'category';
                         if ($resTypeInput === 'subcategoria' || $resTypeInput === 'subcategory') {
@@ -3245,16 +4204,23 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         $resData = null;
                         $resTypeNameLabel = 'Categoria';
                         $parentBreadcrumbs = [];
+                        $canAccessResource = $resId > 0
+                            && $permService->canEdit($currentAdminUserId, $resType, $resId);
+                        $canManageResourcePermissions = $canAccessResource
+                            && $permService->canAdmin($currentAdminUserId, $resType, $resId);
+                        if ($resTab === 'permissions' && !$canManageResourcePermissions) {
+                            $resTab = 'info';
+                        }
 
-                        if ($resType === 'category') {
+                        if ($canAccessResource && $resType === 'category') {
                             $resTypeNameLabel = 'Categoria';
-                            $stmtR = $pdo->prepare("SELECT id, name, description, active FROM categories WHERE id = ?");
+                            $stmtR = $pdo->prepare("SELECT id, name, description, image_path, active FROM categories WHERE id = ?");
                             $stmtR->execute([$resId]);
                             $resData = $stmtR->fetch(PDO::FETCH_ASSOC);
-                        } elseif ($resType === 'subcategory') {
+                        } elseif ($canAccessResource && $resType === 'subcategory') {
                             $resTypeNameLabel = 'Subcategoria';
                             $stmtR = $pdo->prepare("
-                                SELECT sc.id, sc.category_id, sc.name, sc.description, sc.active, c.name AS category_name
+                                SELECT sc.id, sc.category_id, sc.name, sc.description, sc.image_path, sc.active, c.name AS category_name
                                 FROM subcategories sc
                                 JOIN categories c ON sc.category_id = c.id
                                 WHERE sc.id = ?
@@ -3268,7 +4234,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     'name' => $resData['category_name']
                                 ];
                             }
-                        } elseif ($resType === 'subject') {
+                        } elseif ($canAccessResource && $resType === 'subject') {
                             $resTypeNameLabel = 'Assunto';
                             $stmtR = $pdo->prepare("
                                 SELECT s.id, s.subcategory_id, s.name, s.description, s.active, 
@@ -3294,8 +4260,171 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             }
                         }
 
-                        if (!$resData) {
-                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Recurso não encontrado.</div>";
+                        if ($resId <= 0) {
+                            $editableResourceCount = 0;
+                            foreach ($listCategorias as $treeCategory) {
+                                if ($permService->canEdit($currentAdminUserId, 'category', (int)$treeCategory['id'])) {
+                                    $editableResourceCount++;
+                                }
+                            }
+                            foreach ($listSubcategorias as $treeSubcategory) {
+                                if ($permService->canEdit($currentAdminUserId, 'subcategory', (int)$treeSubcategory['id'])) {
+                                    $editableResourceCount++;
+                                }
+                            }
+                            foreach ($listAssuntos as $treeSubject) {
+                                if ($permService->canEdit($currentAdminUserId, 'subject', (int)$treeSubject['id'])) {
+                                    $editableResourceCount++;
+                                }
+                            }
+                    ?>
+                    <div class="space-y-4">
+                        <div class="flex flex-col gap-4 rounded-md border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] md:flex-row md:items-center md:justify-between">
+                            <div>
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Organização do portal</p>
+                                <h1 class="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Editor da Árvore</h1>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                    Selecione uma categoria, subcategoria ou assunto dentro do seu escopo para editar.
+                                </p>
+                            </div>
+                            <span class="inline-flex w-fit items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                                <?= $editableResourceCount ?> recurso<?= $editableResourceCount === 1 ? ' editável' : 's editáveis' ?>
+                            </span>
+                        </div>
+
+                        <div class="rounded-md border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                            <div class="flex flex-col gap-3 border-b border-slate-100 p-4 dark:border-[#454956] sm:flex-row sm:items-center sm:justify-between">
+                                <label class="relative block w-full sm:max-w-sm">
+                                    <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-4.35-4.35m1.35-5.65a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"/></svg>
+                                    <input type="search" oninput="filterTreeNodes(this.value)" placeholder="Buscar na árvore..." class="input-minimal w-full rounded-md py-2 pl-9 pr-3 text-xs">
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" onclick="expandAllTreeNodes()" class="rounded-md border border-slate-200 px-3 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 dark:border-[#454956] dark:text-slate-300 dark:hover:bg-[#2c2e33]">Expandir tudo</button>
+                                    <button type="button" onclick="collapseAllTreeNodes()" class="rounded-md border border-slate-200 px-3 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 dark:border-[#454956] dark:text-slate-300 dark:hover:bg-[#2c2e33]">Recolher</button>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2 p-4" id="administrative-tree">
+                                <?php if (empty($listCategorias)): ?>
+                                    <div class="rounded-md border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500 dark:border-[#454956]">
+                                        Nenhum recurso editável foi encontrado no seu escopo.
+                                    </div>
+                                <?php endif; ?>
+
+                                <?php foreach ($listCategorias as $treeCategory): ?>
+                                    <?php
+                                        $treeCategoryId = (int)$treeCategory['id'];
+                                        $treeCategoryEditable = $permService->canEdit($currentAdminUserId, 'category', $treeCategoryId);
+                                        $treeCategoryAdmin = $treeCategoryEditable && $permService->canAdmin($currentAdminUserId, 'category', $treeCategoryId);
+                                        $treeSubcategories = array_values(array_filter(
+                                            $listSubcategorias,
+                                            static fn($item) => (int)$item['category_id'] === $treeCategoryId
+                                        ));
+                                    ?>
+                                    <div class="tree-node-group overflow-hidden rounded-md border border-slate-200 dark:border-[#454956]">
+                                        <div class="flex items-stretch bg-slate-50 dark:bg-[#2c2e33]">
+                                            <?php if (!empty($treeSubcategories)): ?>
+                                                <button type="button" onclick="toggleTreeNode(this)" class="tree-toggle-btn flex w-10 shrink-0 items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-[#3e424e]" aria-label="Expandir categoria">
+                                                    <svg class="h-3.5 w-3.5 rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+                                                </button>
+                                            <?php else: ?>
+                                                <span class="w-10 shrink-0"></span>
+                                            <?php endif; ?>
+
+                                            <?php if ($treeCategoryEditable): ?>
+                                                <a href="index.php?tab=editar_estrutura&type=categoria&id=<?= $treeCategoryId ?>&res_tab=info" class="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-3 text-decoration-none hover:bg-slate-100 dark:hover:bg-[#3e424e]">
+                                            <?php else: ?>
+                                                <div class="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-3">
+                                            <?php endif; ?>
+                                                <div class="min-w-0">
+                                                    <span class="block truncate text-xs font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($treeCategory['nome']) ?></span>
+                                                    <span class="text-[10px] text-slate-400">Categoria · <?= count($treeSubcategories) ?> subcategoria<?= count($treeSubcategories) === 1 ? '' : 's' ?></span>
+                                                </div>
+                                                <span class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase <?= $treeCategoryAdmin ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ($treeCategoryEditable ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400') ?>">
+                                                    <?= $treeCategoryAdmin ? 'Admin' : ($treeCategoryEditable ? 'Editar' : 'Navegação') ?>
+                                                </span>
+                                            <?php if ($treeCategoryEditable): ?>
+                                                </a>
+                                            <?php else: ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+
+                                        <?php if (!empty($treeSubcategories)): ?>
+                                            <div class="tree-branch border-t border-slate-200 dark:border-[#454956]">
+                                                <?php foreach ($treeSubcategories as $treeSubcategory): ?>
+                                                    <?php
+                                                        $treeSubcategoryId = (int)$treeSubcategory['id'];
+                                                        $treeSubcategoryEditable = $permService->canEdit($currentAdminUserId, 'subcategory', $treeSubcategoryId);
+                                                        $treeSubcategoryAdmin = $treeSubcategoryEditable && $permService->canAdmin($currentAdminUserId, 'subcategory', $treeSubcategoryId);
+                                                        $treeSubjects = array_values(array_filter(
+                                                            $listAssuntos,
+                                                            static fn($item) => (int)$item['subcategory_id'] === $treeSubcategoryId
+                                                        ));
+                                                    ?>
+                                                    <div class="tree-node-group border-b border-slate-100 last:border-b-0 dark:border-[#454956]">
+                                                        <div class="flex items-stretch pl-5">
+                                                            <?php if (!empty($treeSubjects)): ?>
+                                                                <button type="button" onclick="toggleTreeNode(this)" class="tree-toggle-btn flex w-9 shrink-0 items-center justify-center text-slate-400 hover:text-slate-700" aria-label="Expandir subcategoria">
+                                                                    <svg class="h-3 w-3 rotate-90 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+                                                                </button>
+                                                            <?php else: ?>
+                                                                <span class="w-9 shrink-0"></span>
+                                                            <?php endif; ?>
+
+                                                            <?php if ($treeSubcategoryEditable): ?>
+                                                                <a href="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $treeSubcategoryId ?>&res_tab=info" class="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2.5 text-decoration-none hover:bg-slate-50 dark:hover:bg-[#2c2e33]">
+                                                            <?php else: ?>
+                                                                <div class="flex min-w-0 flex-1 items-center justify-between gap-3 px-3 py-2.5">
+                                                            <?php endif; ?>
+                                                                <div class="min-w-0">
+                                                                    <span class="block truncate text-xs font-semibold text-slate-800 dark:text-slate-200"><?= htmlspecialchars($treeSubcategory['nome']) ?></span>
+                                                                    <span class="text-[10px] text-slate-400">Subcategoria · <?= count($treeSubjects) ?> assunto<?= count($treeSubjects) === 1 ? '' : 's' ?></span>
+                                                                </div>
+                                                                <span class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase <?= $treeSubcategoryAdmin ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ($treeSubcategoryEditable ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400') ?>">
+                                                                    <?= $treeSubcategoryAdmin ? 'Admin' : ($treeSubcategoryEditable ? 'Editar' : 'Navegação') ?>
+                                                                </span>
+                                                            <?php if ($treeSubcategoryEditable): ?>
+                                                                </a>
+                                                            <?php else: ?>
+                                                                </div>
+                                                            <?php endif; ?>
+                                                        </div>
+
+                                                        <?php if (!empty($treeSubjects)): ?>
+                                                            <div class="tree-branch border-t border-slate-100 bg-slate-50/60 dark:border-[#454956] dark:bg-[#2c2e33]/40">
+                                                                <?php foreach ($treeSubjects as $treeSubject): ?>
+                                                                    <?php
+                                                                        $treeSubjectId = (int)$treeSubject['id'];
+                                                                        $treeSubjectEditable = $permService->canEdit($currentAdminUserId, 'subject', $treeSubjectId);
+                                                                        $treeSubjectAdmin = $treeSubjectEditable && $permService->canAdmin($currentAdminUserId, 'subject', $treeSubjectId);
+                                                                    ?>
+                                                                    <?php if ($treeSubjectEditable): ?>
+                                                                        <a href="index.php?tab=editar_estrutura&type=assunto&id=<?= $treeSubjectId ?>&res_tab=info" class="tree-node-group ml-14 flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2.5 text-decoration-none last:border-b-0 hover:bg-white dark:border-[#454956] dark:hover:bg-[#353842]">
+                                                                            <div class="min-w-0">
+                                                                                <span class="block truncate text-xs font-medium text-slate-700 dark:text-slate-300"><?= htmlspecialchars($treeSubject['nome']) ?></span>
+                                                                                <span class="text-[10px] text-slate-400">Assunto · <?= (int)$treeSubject['total_docs'] ?> documento<?= (int)$treeSubject['total_docs'] === 1 ? '' : 's' ?></span>
+                                                                            </div>
+                                                                            <span class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase <?= $treeSubjectAdmin ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : 'bg-amber-500/10 text-amber-700 dark:text-amber-400' ?>">
+                                                                                <?= $treeSubjectAdmin ? 'Admin' : 'Editar' ?>
+                                                                            </span>
+                                                                        </a>
+                                                                    <?php endif; ?>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php
+                        } elseif (!$resData) {
+                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Recurso não encontrado ou fora do seu escopo administrativo.</div>";
                         } else {
                     ?>
                     <div class="space-y-4">
@@ -3305,7 +4434,15 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <a href="index.php?tab=categorias" class="hover:underline">Gestão da Estrutura</a>
                                 <?php foreach ($parentBreadcrumbs as $bc): ?>
                                     <span>/</span>
-                                    <a href="index.php?tab=editar_estrutura&type=<?= $bc['type'] ?>&id=<?= $bc['id'] ?>&res_tab=permissions" class="hover:underline"><?= htmlspecialchars($bc['name']) ?></a>
+                                    <?php
+                                        $breadcrumbResourceType = $bc['type'] === 'categoria' ? 'category' : 'subcategory';
+                                        $canOpenBreadcrumb = $permService->canEdit($currentAdminUserId, $breadcrumbResourceType, (int)$bc['id']);
+                                    ?>
+                                    <?php if ($canOpenBreadcrumb): ?>
+                                        <a href="index.php?tab=editar_estrutura&type=<?= $bc['type'] ?>&id=<?= $bc['id'] ?>&res_tab=info" class="hover:underline"><?= htmlspecialchars($bc['name']) ?></a>
+                                    <?php else: ?>
+                                        <span title="Item exibido apenas como caminho de navegação"><?= htmlspecialchars($bc['name']) ?></span>
+                                    <?php endif; ?>
                                 <?php endforeach; ?>
                                 <span>/</span>
                                 <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($resData['name']) ?></span>
@@ -3332,16 +4469,18 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <a href="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=content" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $resTab === 'content' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Conteúdo
                             </a>
-                            <a href="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $resTab === 'permissions' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
-                                Permissões
-                            </a>
+                            <?php if ($canManageResourcePermissions): ?>
+                                <a href="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $resTab === 'permissions' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
+                                    Permissões
+                                </a>
+                            <?php endif; ?>
                         </div>
 
                         <!-- ABA 1: INFORMAÇÕES -->
                         <?php if ($resTab === 'info'): ?>
                             <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] max-w-xl shadow-xs">
                                 <?php if ($resType === 'category'): ?>
-                                    <form method="POST" action="index.php?tab=categorias" class="space-y-4">
+                                    <form method="POST" action="index.php?tab=categorias" enctype="multipart/form-data" class="space-y-4">
                                         <input type="hidden" name="save_category" value="1">
                                         <input type="hidden" name="id" value="<?= $resData['id'] ?>">
                                         <input type="hidden" name="redirect_tab" value="editar_estrutura&type=categoria&id=<?= $resData['id'] ?>&res_tab=info">
@@ -3352,6 +4491,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         <div>
                                             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
                                             <textarea name="descricao" rows="3" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($resData['description']) ?></textarea>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Imagem da categoria</label>
+                                            <?php if (!empty($resData['image_path'])): ?>
+                                                <div class="mb-2 flex items-center gap-2">
+                                                    <img src="../category_image.php?id=<?= (int)$resData['id'] ?>&amp;v=<?= urlencode((string)$resData['image_path']) ?>" alt="Imagem atual da categoria" class="h-10 w-10 rounded object-cover border border-slate-200 dark:border-[#454956]">
+                                                    <label class="inline-flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400"><input type="checkbox" name="remove_category_image" value="1"> Remover imagem atual</label>
+                                                </div>
+                                            <?php endif; ?>
+                                            <input type="file" name="category_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                            <p class="mt-1 text-[10px] text-slate-400">JPG, PNG ou WEBP, até 3 MB.</p>
                                         </div>
                                         <div>
                                             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
@@ -3365,7 +4515,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         </div>
                                     </form>
                                 <?php elseif ($resType === 'subcategory'): ?>
-                                    <form method="POST" action="index.php?tab=subcategorias" class="space-y-4">
+                                    <form method="POST" action="index.php?tab=subcategorias" enctype="multipart/form-data" class="space-y-4">
                                         <input type="hidden" name="save_subcategory" value="1">
                                         <input type="hidden" name="id" value="<?= $resData['id'] ?>">
                                         <input type="hidden" name="redirect_tab" value="editar_estrutura&type=subcategoria&id=<?= $resData['id'] ?>&res_tab=info">
@@ -3380,6 +4530,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                         <div>
                                             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
                                             <textarea name="descricao" rows="3" class="input-minimal w-full px-3 py-2 text-xs"><?= htmlspecialchars($resData['description']) ?></textarea>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Imagem da subcategoria</label>
+                                            <?php if (!empty($resData['image_path'])): ?>
+                                                <div class="mb-2 flex items-center gap-2">
+                                                    <img src="../subcategory_image.php?id=<?= (int)$resData['id'] ?>&amp;v=<?= urlencode((string)$resData['image_path']) ?>" alt="Imagem atual da subcategoria" class="h-10 w-10 rounded object-cover border border-slate-200 dark:border-[#454956]">
+                                                    <label class="inline-flex items-center gap-1.5 text-[10px] text-slate-500 dark:text-slate-400"><input type="checkbox" name="remove_subcategory_image" value="1"> Remover imagem atual</label>
+                                                </div>
+                                            <?php endif; ?>
+                                            <input type="file" name="subcategory_image" accept="image/jpeg,image/png,image/webp" class="block w-full text-[11px] text-slate-500 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-[10px] file:font-semibold dark:file:bg-[#2c2e33] dark:file:text-slate-200">
+                                            <p class="mt-1 text-[10px] text-slate-400">JPG, PNG ou WEBP, até 3 MB.</p>
                                         </div>
                                         <div>
                                             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Status</label>
@@ -3477,420 +4638,28 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         <?php endif; ?>
 
-                        <!-- ABA 3: PERMISSÕES (ESTILO GRAFANA FOLDER PERMISSIONS) -->
                         <?php if ($resTab === 'permissions'): ?>
-                            <?php
-                                $canAdminFolder = $permService->canAdmin((int)($loggedUser['id'] ?? 0), $resType, $resId) || $permService->isGlobalAdmin((int)($loggedUser['id'] ?? 0));
-                                if (!$canAdminFolder):
-                            ?>
-                                <div class="p-6 bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-md text-xs font-semibold">
-                                    Acesso Negado: É necessário privilégio Admin nesta pasta (ou ser Administrador Global) para gerenciar permissões de acesso.
+                            <?php if (!$permService->canAdmin((int)($loggedUser['id'] ?? 0), $resType, $resId)): ?>
+                                <div class="p-5 bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded text-xs font-semibold">
+                                    Acesso negado. É necessário possuir Admin neste recurso para gerenciar suas permissões.
                                 </div>
                             <?php else: ?>
                                 <?php
-                                    $resourcePermissions = $permService->getResourcePermissions($resType, $resId);
-
-                                    // Buscar usuários e grupos para o modal de nova permissão
-                                    $allUsersList = $pdo->query("SELECT id, name, username, email FROM users WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
-                                    $allGroupsList = $pdo->query("SELECT id, name, description FROM groups WHERE active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+                                    $resourceTitleParts = array_column($parentBreadcrumbs, 'name');
+                                    $resourceTitleParts[] = $resData['name'];
+                                    $resourceTitle = implode(' > ', $resourceTitleParts);
+                                    require __DIR__ . '/partials/permissions-panel.php';
                                 ?>
-                                <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
-                                    <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-[#454956]">
-                                    <div>
-                                        <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Gerenciar permissões</h3>
-                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Quem possui acesso a esta área.</p>
-                                    </div>
-                                    <button type="button" onclick="openAddPermModal()" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
-                                        <span>+ Adicionar permissão</span>
-                                    </button>
-                                </div>
-
-                                <!-- TABELA DE PERMISSÕES -->
-                                <?php if (empty($resourcePermissions)): ?>
-                                    <div class="p-8 text-center text-slate-400 text-xs bg-slate-50 dark:bg-[#2c2e33] rounded">
-                                        Nenhuma permissão específica configurada nesta pasta ou herdada de seus ancestrais.
-                                    </div>
-                                <?php else: ?>
-                                    <div class="overflow-x-auto">
-                                        <table class="w-full text-left text-xs border-collapse">
-                                            <thead>
-                                                <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                                                    <th class="py-2.5 px-4">Principal</th>
-                                                    <th class="py-2.5 px-4 text-center w-28">Tipo</th>
-                                                    <th class="py-2.5 px-4 text-center w-36">Permissão</th>
-                                                    <th class="py-2.5 px-4 text-left w-56">Origem</th>
-                                                    <th class="py-2.5 px-4 text-right w-24">Ações</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                                <?php foreach ($resourcePermissions as $rPerm): ?>
-                                                    <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
-                                                        <!-- PRINCIPAL (NOME + DETALHES) -->
-                                                        <td class="py-2.5 px-4">
-                                                            <div class="flex items-center gap-2.5">
-                                                                <div class="w-7 h-7 rounded-full bg-slate-100 dark:bg-[#2c2e33] font-bold text-xs flex items-center justify-center text-slate-700 dark:text-slate-300 shrink-0">
-                                                                    <?= mb_strtoupper(mb_substr($rPerm['principal_name'], 0, 1)) ?>
-                                                                </div>
-                                                                <div>
-                                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block leading-tight">
-                                                                        <?= htmlspecialchars($rPerm['principal_name']) ?>
-                                                                    </span>
-                                                                    <span class="text-[10px] text-slate-400 font-mono block leading-tight">
-                                                                        <?= htmlspecialchars($rPerm['principal_subtext']) ?>
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                        </td>
-
-                                                        <!-- TIPO (USUÁRIO / GRUPO) -->
-                                                        <td class="py-2.5 px-4 text-center">
-                                                            <?php if ($rPerm['principal_type'] === 'group'): ?>
-                                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 uppercase">Grupo</span>
-                                                            <?php else: ?>
-                                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 uppercase">Usuário</span>
-                                                            <?php endif; ?>
-                                                        </td>
-
-                                                        <!-- PERMISSÃO (VIEW / EDIT / ADMIN) -->
-                                                        <td class="py-2.5 px-4 text-center">
-                                                            <?php if ($rPerm['is_direct']): ?>
-                                                                <!-- ALTERAÇÃO DIRETA DO NÍVEL -->
-                                                                <form method="POST" action="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" class="inline">
-                                                                    <input type="hidden" name="resource_permission_action" value="update_level">
-                                                                    <input type="hidden" name="resource_type" value="<?= $resType ?>">
-                                                                    <input type="hidden" name="resource_id" value="<?= $resId ?>">
-                                                                    <input type="hidden" name="permission_id" value="<?= $rPerm['permission_id'] ?>">
-                                                                    <select name="permission_level" onchange="this.form.submit()" class="text-xs font-semibold px-2 py-1 rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 cursor-pointer">
-                                                                        <option value="view" <?= $rPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
-                                                                        <option value="edit" <?= $rPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
-                                                                        <option value="admin" <?= $rPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
-                                                                    </select>
-                                                                </form>
-                                                            <?php else: ?>
-                                                                <!-- LEITURA DE PERMISSÃO HERDADA -->
-                                                                <?php
-                                                                    $lvlClass = 'bg-slate-100 text-slate-700';
-                                                                    if ($rPerm['permission_level'] === 'view') $lvlClass = 'bg-blue-500/15 text-blue-700 border-blue-500/30';
-                                                                    if ($rPerm['permission_level'] === 'edit') $lvlClass = 'bg-amber-500/15 text-amber-700 border-amber-500/30';
-                                                                    if ($rPerm['permission_level'] === 'admin') $lvlClass = 'bg-red-500/15 text-red-700 border-red-500/30';
-                                                                ?>
-                                                                <span class="px-2.5 py-0.5 text-[10px] font-bold rounded border uppercase <?= $lvlClass ?>">
-                                                                    <?= strtoupper($rPerm['permission_level']) ?>
-                                                                </span>
-                                                            <?php endif; ?>
-                                                        </td>
-
-                                                        <!-- ORIGEM (DIRETA OU HERDADA DE PASTOR PAI COM "VER ORIGEM") -->
-                                                        <td class="py-2.5 px-4 text-left">
-                                                            <?php if ($rPerm['is_direct']): ?>
-                                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 uppercase">
-                                                                    Direta
-                                                                </span>
-                                                            <?php else: ?>
-                                                                <div class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                                                                    <span><?= htmlspecialchars($rPerm['origin_label']) ?></span>
-                                                                    <?php if (!empty($rPerm['ancestor_info'])): ?>
-                                                                        <a href="index.php?tab=editar_estrutura&type=<?= $rPerm['ancestor_info']['type'] ?>&id=<?= $rPerm['ancestor_info']['id'] ?>&res_tab=permissions" class="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline">
-                                                                            Ver origem
-                                                                        </a>
-                                                                    <?php endif; ?>
-                                                                </div>
-                                                            <?php endif; ?>
-                                                        </td>
-
-                                                        <!-- AÇÕES (EXCLUIR REGRA DIRETA) -->
-                                                        <td class="py-2.5 px-4 text-right">
-                                                            <?php if ($rPerm['is_direct']): ?>
-                                                                <form method="POST" action="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" onsubmit="return confirm('Deseja remover a permissão direta de <?= htmlspecialchars(addslashes($rPerm['principal_name'])) ?> nesta pasta?');" class="inline">
-                                                                    <input type="hidden" name="resource_permission_action" value="delete_permission">
-                                                                    <input type="hidden" name="resource_type" value="<?= $resType ?>">
-                                                                    <input type="hidden" name="resource_id" value="<?= $resId ?>">
-                                                                    <input type="hidden" name="permission_id" value="<?= $rPerm['permission_id'] ?>">
-                                                                    <button type="submit" class="px-2 py-1 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 text-[11px] font-semibold" title="Remover Permissão Direta">
-                                                                        Remover
-                                                                    </button>
-                                                                </form>
-                                                            <?php else: ?>
-                                                                <span class="text-slate-300 dark:text-slate-600 text-xs">—</span>
-                                                            <?php endif; ?>
-                                                        </td>
-                                                    </tr>
-                                                <?php endforeach; ?>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                <?php endif; ?>
-
-                                <!-- MODAL DE INCLUSÃO DE NOVA PERMISSÃO (REFINADO E ACESSÍVEL) -->
-                                <div id="modal-add-perm" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-add-perm-title">
-                                    <div id="modal-add-perm-card" class="bg-white dark:bg-[#353842] max-w-md w-full p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xl space-y-4 text-xs">
-                                        
-                                        <!-- CABEÇALHO DO MODAL -->
-                                        <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-[#454956]">
-                                            <h3 id="modal-add-perm-title" class="text-sm font-bold text-slate-900 dark:text-slate-100">Conceder acesso para</h3>
-                                            <button type="button" onclick="closeAddPermModal()" class="text-slate-400 hover:text-slate-600 focus:outline-hidden text-sm p-1 rounded" aria-label="Fechar modal">✕</button>
-                                        </div>
-
-                                        <form method="POST" action="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=permissions" id="form-add-perm" class="space-y-4">
-                                            <input type="hidden" name="resource_permission_action" value="add_permission">
-                                            <input type="hidden" name="resource_type" value="<?= $resType ?>">
-                                            <input type="hidden" name="resource_id" value="<?= $resId ?>">
-                                            <input type="hidden" name="principal_id" id="input-selected-principal-id" value="">
-
-                                            <!-- SELETOR DE TIPO: SEGMENTED BUTTONS [ Usuário | Grupo ] -->
-                                            <div>
-                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Tipo de acesso</label>
-                                                <div class="grid grid-cols-2 gap-1 p-1 bg-slate-100 dark:bg-[#2c2e33] rounded-md border border-slate-200 dark:border-[#454956]">
-                                                    <button type="button" id="btn-type-user" onclick="selectPrincipalType('user')" class="py-1.5 font-bold rounded text-center transition">
-                                                        Usuário
-                                                    </button>
-                                                    <button type="button" id="btn-type-group" onclick="selectPrincipalType('group')" class="py-1.5 font-bold rounded text-center transition">
-                                                        Grupo
-                                                    </button>
-                                                </div>
-                                                <input type="hidden" name="principal_type" id="input-principal-type" value="group">
-                                            </div>
-
-                                            <!-- CAMPO DE PESQUISA EM TEMPO REAL NO POSTGRESQL -->
-                                            <div>
-                                                <label for="perm-search-input" class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Pesquisar</label>
-                                                <div class="relative">
-                                                    <input type="text" id="perm-search-input" placeholder="Buscar por nome, username, email..." oninput="onSearchInput()" class="input-minimal w-full pl-8 pr-3 py-2 rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100">
-                                                    <svg class="w-4 h-4 text-slate-400 absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                                                </div>
-                                            </div>
-
-                                            <!-- LISTA DE RESULTADOS DA PESQUISA COM RADIO BUTTONS -->
-                                            <div>
-                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Resultados</label>
-                                                <div id="perm-search-results" class="max-h-40 overflow-y-auto divide-y divide-slate-100 dark:divide-[#454956] border border-slate-200 dark:border-[#454956] rounded bg-slate-50/50 dark:bg-[#2c2e33]/50 p-1">
-                                                    <div class="p-3 text-center text-slate-400 text-[11px]">Buscando no PostgreSQL...</div>
-                                                </div>
-                                            </div>
-
-                                            <!-- ALERTA DE PERMISSÃO DIRETA JÁ EXISTENTE -->
-                                            <div id="box-existing-perm-warning" class="hidden p-2.5 bg-amber-500/10 border border-amber-500/30 rounded text-amber-700 dark:text-amber-300 text-[11px]">
-                                                <div class="flex items-start gap-1.5">
-                                                    <svg class="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                                    <div>
-                                                        <strong class="block font-bold">Permissão direta já existente:</strong>
-                                                        Este principal já possui permissão <span id="text-existing-level" class="font-bold uppercase"></span> nesta pasta. Ao salvar, a permissão existente será alterada para o novo nível selecionado.
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <!-- SELEÇÃO DE NÍVEIS DE PERMISSÃO COM DESCRIÇÕES EXPLICATIVAS EXIGIDAS -->
-                                            <div>
-                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Permissão</label>
-                                                <div class="space-y-2">
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="view" checked class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">View</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar conteúdo.</span>
-                                                        </div>
-                                                    </label>
-
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="edit" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Edit</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar e editar conteúdo.</span>
-                                                        </div>
-                                                    </label>
-
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="admin" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Admin</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode gerenciar conteúdo e permissões desta área.</span>
-                                                        </div>
-                                                    </label>
-                                                </div>
-                                            </div>
-
-                                            <!-- AVISO DE HERANÇA SOLICITADO -->
-                                            <div class="p-2 bg-blue-500/10 border border-blue-500/20 rounded text-blue-700 dark:text-blue-300 text-[11px] flex items-center gap-1.5">
-                                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                                <span>Esta permissão será herdada pelos itens abaixo desta área.</span>
-                                            </div>
-
-                                            <!-- BOTÕES: [Cancelar] [Adicionar permissão] -->
-                                            <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
-                                                <button type="button" onclick="closeAddPermModal()" class="px-4 py-2 rounded font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
-                                                    Cancelar
-                                                </button>
-                                                <button type="submit" id="btn-submit-add-perm" disabled class="px-4 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
-                                                    Adicionar permissão
-                                                </button>
-                                            </div>
-                                        </form>
-
-                                        <script>
-                                            let currentPrincipalType = 'group';
-                                            let searchDebounceTimer = null;
-                                            let lastFocusedElement = null;
-
-                                            function openAddPermModal() {
-                                                lastFocusedElement = document.activeElement;
-                                                const modal = document.getElementById('modal-add-perm');
-                                                modal.classList.remove('hidden');
-                                                selectPrincipalType('group');
-                                                document.getElementById('perm-search-input').focus();
-
-                                                // Adicionar listener de tecla ESC e Focus Trap
-                                                document.addEventListener('keydown', handleModalKeyDown);
-                                            }
-
-                                            function closeAddPermModal() {
-                                                const modal = document.getElementById('modal-add-perm');
-                                                modal.classList.add('hidden');
-                                                document.removeEventListener('keydown', handleModalKeyDown);
-                                                if (lastFocusedElement) {
-                                                    lastFocusedElement.focus();
-                                                }
-                                            }
-
-                                            function handleModalKeyDown(e) {
-                                                if (e.key === 'Escape') {
-                                                    closeAddPermModal();
-                                                    return;
-                                                }
-                                                if (e.key === 'Tab') {
-                                                    const modalCard = document.getElementById('modal-add-perm-card');
-                                                    const focusables = modalCard.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])');
-                                                    if (focusables.length === 0) return;
-                                                    const first = focusables[0];
-                                                    const last = focusables[focusables.length - 1];
-
-                                                    if (e.shiftKey) {
-                                                        if (document.activeElement === first) {
-                                                            last.focus();
-                                                            e.preventDefault();
-                                                        }
-                                                    } else {
-                                                        if (document.activeElement === last) {
-                                                            first.focus();
-                                                            e.preventDefault();
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            function selectPrincipalType(type) {
-                                                currentPrincipalType = type;
-                                                document.getElementById('input-principal-type').value = type;
-
-                                                const btnUser = document.getElementById('btn-type-user');
-                                                const btnGroup = document.getElementById('btn-type-group');
-
-                                                if (type === 'user') {
-                                                    btnUser.className = 'py-1.5 font-bold rounded text-center bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs';
-                                                    btnGroup.className = 'py-1.5 font-bold rounded text-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200';
-                                                    document.getElementById('perm-search-input').placeholder = 'Buscar por nome, username, email...';
-                                                } else {
-                                                    btnGroup.className = 'py-1.5 font-bold rounded text-center bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs';
-                                                    btnUser.className = 'py-1.5 font-bold rounded text-center text-slate-500 hover:text-slate-800 dark:hover:text-slate-200';
-                                                    document.getElementById('perm-search-input').placeholder = 'Buscar por nome do grupo...';
-                                                }
-
-                                                // Resetar seleção e alerta
-                                                document.getElementById('input-selected-principal-id').value = '';
-                                                document.getElementById('btn-submit-add-perm').disabled = true;
-                                                document.getElementById('box-existing-perm-warning').classList.add('hidden');
-
-                                                fetchPrincipals();
-                                            }
-
-                                            function onSearchInput() {
-                                                clearTimeout(searchDebounceTimer);
-                                                searchDebounceTimer = setTimeout(() => {
-                                                    fetchPrincipals();
-                                                }, 250);
-                                            }
-
-                                            function fetchPrincipals() {
-                                                const q = encodeURIComponent(document.getElementById('perm-search-input').value.trim());
-                                                const resType = '<?= $resType ?>';
-                                                const resId = '<?= $resId ?>';
-                                                const container = document.getElementById('perm-search-results');
-
-                                                container.innerHTML = '<div class="p-3 text-center text-slate-400 text-[11px]">Buscando no PostgreSQL...</div>';
-
-                                                fetch(`api/search_principals.php?type=${currentPrincipalType}&q=${q}&resource_type=${resType}&resource_id=${resId}`)
-                                                    .then(res => res.json())
-                                                    .then(res => {
-                                                        if (!res.success) {
-                                                            container.innerHTML = `<div class="p-3 text-center text-red-500 text-[11px]">${res.error || 'Erro ao carregar'}</div>`;
-                                                            return;
-                                                        }
-
-                                                        if (res.data.length === 0) {
-                                                            container.innerHTML = '<div class="p-3 text-center text-slate-400 text-[11px]">Nenhum principal encontrado.</div>';
-                                                            return;
-                                                        }
-
-                                                        let html = '';
-                                                        res.data.forEach(item => {
-                                                            const icon = item.type === 'group' 
-                                                                ? `<svg class="w-4 h-4 text-slate-400 inline shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>`
-                                                                : `<svg class="w-4 h-4 text-slate-400 inline shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>`;
-                                                            const existingAttr = item.existing_level ? `data-existing="${item.existing_level}"` : '';
-                                                            html += `
-                                                                <label class="flex items-center justify-between p-2 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer transition">
-                                                                    <div class="flex items-center gap-2">
-                                                                        <input type="radio" name="principal_radio" value="${item.id}" ${existingAttr} onchange="onSelectPrincipal(${item.id}, '${item.existing_level || ''}')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                        <div>
-                                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">${icon} ${escapeHtml(item.name)}</span>
-                                                                            <span class="text-[10px] text-slate-400 block">${escapeHtml(item.subtext)}</span>
-                                                                        </div>
-                                                                    </div>
-                                                                    ${item.existing_level ? `<span class="px-1.5 py-0.5 text-[9px] font-bold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 uppercase">Já possui: ${item.existing_level}</span>` : ''}
-                                                                </label>
-                                                            `;
-                                                        });
-
-                                                        container.innerHTML = html;
-                                                    })
-                                                    .catch(err => {
-                                                        container.innerHTML = '<div class="p-3 text-center text-red-500 text-[11px]">Erro ao conectar à API.</div>';
-                                                    });
-                                            }
-
-                                            function onSelectPrincipal(id, existingLevel) {
-                                                document.getElementById('input-selected-principal-id').value = id;
-                                                document.getElementById('btn-submit-add-perm').disabled = false;
-
-                                                const warningBox = document.getElementById('box-existing-perm-warning');
-                                                const levelSpan = document.getElementById('text-existing-level');
-
-                                                if (existingLevel) {
-                                                    levelSpan.textContent = existingLevel;
-                                                    warningBox.classList.remove('hidden');
-                                                } else {
-                                                    warningBox.classList.add('hidden');
-                                                }
-                                            }
-
-                                            function escapeHtml(str) {
-                                                return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-                                            }
-                                        </script>
-                                    </div>
-                                </div>
-                            </div>
                             <?php endif; ?>
                         <?php endif; ?>
-
                     </div>
                     <?php } ?>
                 <?php endif; ?>
 
-                <!-- TAB: LISTAGEM DE GRUPOS DE ACESSO -->
                 <?php if ($activeTab === 'grupos'): ?>
                     <?php
-                        if (($loggedUser['role'] ?? '') !== 'admin') {
-                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Apenas administradores podem gerenciar grupos de acesso.</div>";
+                        if (!$isGlobalAdminCurrent) {
+                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Apenas administradores podem gerenciar equipes.</div>";
                         } else {
                             $stmtGroups = $pdo->query("
                                 SELECT g.id, g.name AS nome, g.description AS descricao, g.active AS ativo, g.created_at, g.updated_at,
@@ -3911,20 +4680,20 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <nav class="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-0.5">
                                     <span>Gestão de Acesso</span>
                                     <span>/</span>
-                                    <span class="font-bold text-slate-900 dark:text-slate-100">Grupos</span>
+                                    <span class="font-bold text-slate-900 dark:text-slate-100">Equipes</span>
                                 </nav>
-                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100">Grupos de Acesso</h1>
-                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie os grupos de permissão e associados da organização.</p>
+                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100">Equipes</h1>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie equipes, status e seus membros.</p>
                             </div>
                             <button type="button" onclick="document.getElementById('modal-novo-grupo').classList.remove('hidden')" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
-                                <span>+ Novo Grupo</span>
+                                <span>+ Nova Equipe</span>
                             </button>
                         </div>
 
                         <!-- TABELA DENSA DE GRUPOS (ESTILO GRAFANA / COMPACTA) -->
                         <?php if (empty($groupsList)): ?>
                             <div class="p-8 text-center bg-white dark:bg-[#353842] rounded border border-slate-200 dark:border-[#454956]">
-                                <p class="text-xs text-slate-400">Nenhum grupo de acesso cadastrado até o momento.</p>
+                                <p class="text-xs text-slate-400">Nenhuma equipe cadastrada até o momento.</p>
                             </div>
                         <?php else: ?>
                             <div class="bg-white dark:bg-[#353842] rounded border border-slate-200 dark:border-[#454956] shadow-xs overflow-hidden">
@@ -3932,9 +4701,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <table class="w-full text-left text-xs border-collapse">
                                         <thead>
                                             <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                                                <th class="py-2.5 px-4">Grupo</th>
+                                                <th class="py-2.5 px-4">Equipe</th>
                                                 <th class="py-2.5 px-4 text-center w-28">Usuários</th>
-                                                <th class="py-2.5 px-4 text-center w-28">Permissões</th>
+                                                <th class="py-2.5 px-4 text-center w-28">Acessos</th>
                                                 <th class="py-2.5 px-4 text-center w-24">Status</th>
                                                 <th class="py-2.5 px-4 text-right w-28">Ações</th>
                                             </tr>
@@ -3961,7 +4730,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                         </a>
                                                     </td>
                                                     <td class="py-2.5 px-4 text-center">
-                                                        <a href="index.php?tab=editar_grupo&id=<?= $grp['id'] ?>&group_tab=permissions" class="inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 hover:bg-slate-200">
+                                                        <a href="index.php?tab=editar_grupo&id=<?= $grp['id'] ?>&group_tab=access" class="inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 hover:bg-slate-200">
                                                             <span><?= (int)$grp['total_permissoes'] ?></span>
                                                         </a>
                                                     </td>
@@ -3979,15 +4748,17 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                             </a>
                                                             <form method="POST" action="index.php?tab=grupos" class="inline">
                                                                 <input type="hidden" name="group_action" value="toggle_status">
+                                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                                 <input type="hidden" name="group_id" value="<?= $grp['id'] ?>">
                                                                 <button type="submit" class="px-2 py-1 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 hover:bg-slate-200 text-[11px] font-semibold" title="Alternar Status">
                                                                     <?= $grp['ativo'] ? 'Desativar' : 'Ativar' ?>
                                                                 </button>
                                                             </form>
-                                                            <form method="POST" action="index.php?tab=grupos" onsubmit="return confirm('Tem certeza que deseja excluir o grupo <?= htmlspecialchars(addslashes($grp['nome'])) ?>?');" class="inline">
+                                                            <form method="POST" action="index.php?tab=grupos" onsubmit="return confirm('Tem certeza que deseja excluir a equipe <?= htmlspecialchars(addslashes($grp['nome'])) ?>?');" class="inline">
                                                                 <input type="hidden" name="group_action" value="delete_group">
+                                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                                 <input type="hidden" name="group_id" value="<?= $grp['id'] ?>">
-                                                                <button type="submit" class="px-2 py-1 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 text-[11px] font-semibold" title="Excluir Grupo">
+                                                                <button type="submit" class="px-2 py-1 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 text-[11px] font-semibold" title="Excluir Equipe">
                                                                     Excluir
                                                                 </button>
                                                             </form>
@@ -4005,26 +4776,27 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <div id="modal-novo-grupo" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4">
                             <div class="bg-white dark:bg-[#353842] max-w-md w-full p-5 rounded border border-slate-200 dark:border-[#454956] shadow-lg">
                                 <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-100 dark:border-[#454956]">
-                                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Criar Novo Grupo de Acesso</h3>
+                                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Criar nova equipe</h3>
                                     <button type="button" onclick="document.getElementById('modal-novo-grupo').classList.add('hidden')" class="text-slate-400 hover:text-slate-600">✕</button>
                                 </div>
                                 <form method="POST" action="index.php?tab=grupos" class="space-y-4">
                                     <input type="hidden" name="group_action" value="create_group">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome do Grupo *</label>
+                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome da equipe *</label>
                                         <input type="text" name="name" required placeholder="Ex: Recursos Humanos, Tecnologia" class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100">
                                     </div>
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
-                                        <textarea name="description" rows="2" placeholder="Finalidade ou setor atendido pelo grupo..." class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100"></textarea>
+                                        <textarea name="description" rows="2" placeholder="Finalidade ou setor atendido pela equipe..." class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100"></textarea>
                                     </div>
                                     <div class="flex items-center gap-2">
                                         <input type="checkbox" name="active" value="1" id="active_new" checked class="rounded border-slate-300">
-                                        <label for="active_new" class="text-xs font-medium text-slate-700 dark:text-slate-300">Grupo Ativo</label>
+                                        <label for="active_new" class="text-xs font-medium text-slate-700 dark:text-slate-300">Equipe ativa</label>
                                     </div>
                                     <div class="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
                                         <button type="button" onclick="document.getElementById('modal-novo-grupo').classList.add('hidden')" class="px-3 py-1.5 rounded text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">Cancelar</button>
-                                        <button type="submit" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90">Salvar Grupo</button>
+                                        <button type="submit" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90">Salvar equipe</button>
                                     </div>
                                 </form>
                             </div>
@@ -4038,7 +4810,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     <?php
                         $groupId = (int)($_GET['id'] ?? 0);
                         $groupTab = trim($_GET['group_tab'] ?? 'info');
-                        if (!in_array($groupTab, ['info', 'users', 'permissions'])) {
+                        if ($groupTab === 'permissions') {
+                            $groupTab = 'access'; // compatibilidade com links antigos
+                        }
+                        if (!in_array($groupTab, ['info', 'users', 'access'], true)) {
                             $groupTab = 'info';
                         }
 
@@ -4047,7 +4822,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         $grpData = $stmtSelG->fetch(PDO::FETCH_ASSOC);
 
                         if (!$grpData) {
-                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Grupo não encontrado.</div>";
+                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Equipe não encontrada.</div>";
                         } else {
                     ?>
                     <div class="space-y-4">
@@ -4056,7 +4831,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <nav class="flex items-center gap-1.5 text-xs text-slate-400 font-medium mb-1">
                                 <a href="index.php?tab=grupos" class="hover:underline">Gestão de Acesso</a>
                                 <span>/</span>
-                                <a href="index.php?tab=grupos" class="hover:underline">Grupos</a>
+                                <a href="index.php?tab=grupos" class="hover:underline">Equipes</a>
                                 <span>/</span>
                                 <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($grpData['name']) ?></span>
                             </nav>
@@ -4072,7 +4847,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         </div>
 
-                        <!-- ABAS SOLICITADAS: [ Informações ] [ Membros ] [ Permissões ] -->
+                        <!-- Identidade da equipe: informações, membros e diagnóstico de acessos -->
                         <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956]">
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=info" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'info' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Informações
@@ -4080,8 +4855,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'users' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Membros
                             </a>
-                            <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'permissions' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
-                                Permissões
+                            <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=access" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'access' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
+                                Acessos
                             </a>
                         </div>
 
@@ -4090,9 +4865,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] max-w-xl shadow-xs">
                                 <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=info" class="space-y-4">
                                     <input type="hidden" name="group_action" value="edit_group">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                     <input type="hidden" name="group_id" value="<?= $groupId ?>">
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome do Grupo *</label>
+                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome da equipe *</label>
                                         <input type="text" name="name" required value="<?= htmlspecialchars($grpData['name']) ?>" class="input-minimal w-full px-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100">
                                     </div>
                                     <div>
@@ -4101,7 +4877,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     </div>
                                     <div class="flex items-center gap-2">
                                         <input type="checkbox" name="active" value="1" id="active_edit" <?= $grpData['active'] ? 'checked' : '' ?> class="rounded border-slate-300">
-                                        <label for="active_edit" class="text-xs font-medium text-slate-700 dark:text-slate-300">Grupo Ativo</label>
+                                        <label for="active_edit" class="text-xs font-medium text-slate-700 dark:text-slate-300">Equipe ativa</label>
                                     </div>
                                     <div class="pt-3 border-t border-slate-100 dark:border-[#454956] flex justify-end">
                                         <button type="submit" class="px-4 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90">
@@ -4128,7 +4904,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 $stmtAvailable = $pdo->prepare("
                                     SELECT u.id, u.name, u.username, u.email, u.role
                                     FROM users u
-                                    WHERE u.id NOT IN (SELECT user_id FROM user_groups WHERE group_id = ?)
+                                    WHERE u.active = TRUE
+                                      AND u.id NOT IN (SELECT user_id FROM user_groups WHERE group_id = ?)
                                     ORDER BY u.name ASC
                                 ");
                                 $stmtAvailable->execute([$groupId]);
@@ -4136,7 +4913,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             ?>
                             <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                                 
-                                <!-- COLUNA ESQUERDA: MEMBROS DO GRUPO -->
+                                <!-- COLUNA ESQUERDA: MEMBROS DA EQUIPE -->
                                 <div class="lg:col-span-7 bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
                                     <div class="flex items-center justify-between">
                                         <h3 class="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
@@ -4145,7 +4922,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     </div>
 
                                     <?php if (empty($groupUsers)): ?>
-                                        <p class="text-xs text-slate-400 text-center py-6">Nenhum usuário associado a este grupo ainda.</p>
+                                        <p class="text-xs text-slate-400 text-center py-6">Nenhum usuário associado a esta equipe ainda.</p>
                                     <?php else: ?>
                                         <div class="divide-y divide-slate-100 dark:divide-[#454956]">
                                             <?php foreach ($groupUsers as $uMember): ?>
@@ -4159,8 +4936,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                             <p class="text-[10px] text-slate-400 font-mono truncate leading-tight">@<?= htmlspecialchars($uMember['username']) ?> • <?= htmlspecialchars($uMember['email']) ?></p>
                                                         </div>
                                                     </div>
-                                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" onsubmit="return confirm('Remover <?= htmlspecialchars($uMember['name']) ?> deste grupo? (O usuário não será excluído do sistema)');">
+                                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" onsubmit="return confirm('Remover <?= htmlspecialchars($uMember['name']) ?> desta equipe? O usuário não será excluído do sistema.');">
                                                         <input type="hidden" name="group_action" value="remove_user">
+                                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                         <input type="hidden" name="group_id" value="<?= $groupId ?>">
                                                         <input type="hidden" name="user_id" value="<?= $uMember['id'] ?>">
                                                         <button type="submit" class="text-xs text-red-600 dark:text-red-400 hover:underline font-semibold">Remover</button>
@@ -4174,43 +4952,79 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <!-- COLUNA DIREITA: PESQUISAR E ADICIONAR MEMBRO -->
                                 <div class="lg:col-span-5 bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
                                     <h3 class="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                                        Adicionar Membro ao Grupo
+                                        Adicionar membro à equipe
                                     </h3>
 
                                     <?php if (empty($availableUsers)): ?>
-                                        <p class="text-xs text-slate-400">Todos os usuários cadastrados já pertencem a este grupo.</p>
+                                        <p class="text-xs text-slate-400">Todos os usuários cadastrados já pertencem a esta equipe.</p>
                                     <?php else: ?>
                                         <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" class="space-y-3">
                                             <input type="hidden" name="group_action" value="add_user">
+                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                             <input type="hidden" name="group_id" value="<?= $groupId ?>">
+                                            <input type="hidden" name="user_id" id="team-member-user-id" value="">
 
                                             <div>
-                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Pesquisar Usuário</label>
-                                                <input type="text" id="user-search-filter" oninput="filterUserOptions(this.value)" placeholder="Digite nome, username ou e-mail..." class="input-minimal w-full px-3 py-1.5 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 mb-2">
-                                                
-                                                <select name="user_id" id="user-select-list" required size="5" class="w-full text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 p-1">
+                                                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Pesquisar usuário</label>
+                                                <div class="relative mb-2">
+                                                    <span class="absolute left-3 top-2 text-slate-400" aria-hidden="true">⌕</span>
+                                                    <input type="search" id="team-member-search" oninput="filterTeamMemberOptions(this.value)" placeholder="Nome, usuário ou e-mail..." class="input-minimal w-full pl-8 pr-3 py-2 text-xs rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100">
+                                                </div>
+
+                                                <div id="team-member-results" class="max-h-64 overflow-y-auto border-y border-slate-200 dark:border-[#454956] divide-y divide-slate-100 dark:divide-[#454956]" role="listbox" aria-label="Usuários disponíveis">
                                                     <?php foreach ($availableUsers as $availU): ?>
-                                                        <option value="<?= $availU['id'] ?>" data-search="<?= mb_strtolower($availU['name'] . ' ' . $availU['username'] . ' ' . $availU['email']) ?>">
-                                                            <?= htmlspecialchars($availU['name']) ?> (@<?= htmlspecialchars($availU['username']) ?>)
-                                                        </option>
+                                                        <button
+                                                            type="button"
+                                                            role="option"
+                                                            aria-selected="false"
+                                                            data-team-member-option
+                                                            data-user-id="<?= (int)$availU['id'] ?>"
+                                                            data-search="<?= htmlspecialchars(mb_strtolower($availU['name'] . ' ' . $availU['username'] . ' ' . $availU['email']), ENT_QUOTES) ?>"
+                                                            onclick="selectTeamMember(this)"
+                                                            class="w-full flex items-center justify-between gap-3 px-2 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-[#2c2e33] transition"
+                                                        >
+                                                            <span class="flex items-center gap-2.5 min-w-0">
+                                                                <span class="w-7 h-7 rounded-full bg-slate-100 dark:bg-[#2c2e33] flex items-center justify-center text-xs font-bold shrink-0"><?= htmlspecialchars(mb_strtoupper(mb_substr($availU['name'], 0, 1))) ?></span>
+                                                                <span class="min-w-0">
+                                                                    <strong class="block text-xs truncate"><?= htmlspecialchars($availU['name']) ?></strong>
+                                                                    <small class="block text-[10px] text-slate-400 truncate">@<?= htmlspecialchars($availU['username']) ?> · <?= htmlspecialchars($availU['email']) ?></small>
+                                                                </span>
+                                                            </span>
+                                                            <span data-team-member-check class="text-emerald-600 opacity-0 font-bold" aria-hidden="true">✓</span>
+                                                        </button>
                                                     <?php endforeach; ?>
-                                                </select>
+                                                </div>
+                                                <p id="team-member-empty" class="hidden text-xs text-slate-400 text-center py-4">Nenhum usuário encontrado.</p>
                                             </div>
 
-                                            <button type="submit" class="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold py-2 rounded hover:opacity-90 transition">
-                                                Adicionar ao Grupo &rarr;
+                                            <button type="submit" id="team-member-submit" disabled class="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold py-2 rounded hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                                                Adicionar à equipe
                                             </button>
                                         </form>
 
                                         <script>
-                                            function filterUserOptions(query) {
+                                            function filterTeamMemberOptions(query) {
                                                 const q = query.toLowerCase().trim();
-                                                const select = document.getElementById('user-select-list');
-                                                if (!select) return;
-                                                Array.from(select.options).forEach(opt => {
-                                                    const text = opt.getAttribute('data-search') || '';
-                                                    opt.style.display = (!q || text.includes(q)) ? '' : 'none';
+                                                const options = document.querySelectorAll('[data-team-member-option]');
+                                                let visibleCount = 0;
+                                                options.forEach(option => {
+                                                    const matches = !q || (option.dataset.search || '').includes(q);
+                                                    option.classList.toggle('hidden', !matches);
+                                                    if (matches) visibleCount += 1;
                                                 });
+                                                document.getElementById('team-member-empty').classList.toggle('hidden', visibleCount > 0);
+                                            }
+
+                                            function selectTeamMember(selected) {
+                                                document.querySelectorAll('[data-team-member-option]').forEach(option => {
+                                                    const active = option === selected;
+                                                    option.setAttribute('aria-selected', active ? 'true' : 'false');
+                                                    option.classList.toggle('bg-emerald-50', active);
+                                                    option.classList.toggle('dark:bg-emerald-950/20', active);
+                                                    option.querySelector('[data-team-member-check]').classList.toggle('opacity-0', !active);
+                                                });
+                                                document.getElementById('team-member-user-id').value = selected.dataset.userId;
+                                                document.getElementById('team-member-submit').disabled = false;
                                             }
                                         </script>
                                     <?php endif; ?>
@@ -4219,287 +5033,50 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         <?php endif; ?>
 
-                        <!-- CONTEÚDO DA ABA 3: PERMISSÕES (VISÃO DO GRUPO) -->
-                        <?php if ($groupTab === 'permissions'): ?>
-                            <?php
-                                $showInherited = isset($_GET['show_inherited']) && $_GET['show_inherited'] == '1';
-                                $groupPermissions = $permService->getGroupPermissions($groupId, $showInherited);
-                                $resourceTree = $permService->getResourceTree();
-                            ?>
-                            <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-4">
-                                <!-- CABEÇALHO DA TABELA E CONTROLES -->
-                                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-[#454956]">
-                                    <div>
-                                        <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Recursos acessíveis por este grupo</h3>
-                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Áreas e pastas com permissões concedidas a <strong><?= htmlspecialchars($grpData['name']) ?></strong>.</p>
-                                    </div>
-                                    <div class="flex items-center gap-3">
-                                        <!-- TOGGLE / CHECKBOX: MOSTRAR ACESSOS HERDADOS -->
-                                        <label class="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 cursor-pointer bg-slate-100 dark:bg-[#2c2e33] px-2.5 py-1.5 rounded border border-slate-200 dark:border-[#454956]">
-                                            <input type="checkbox" onchange="window.location.href='index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions&show_inherited=' + (this.checked ? '1' : '0')" <?= $showInherited ? 'checked' : '' ?> class="rounded border-slate-300">
-                                            <span>Mostrar acessos herdados</span>
-                                        </label>
-
-                                        <!-- BOTÃO: + ADICIONAR ACESSO -->
-                                        <button type="button" onclick="openAddGroupAccessModal()" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold px-3.5 py-2 rounded hover:bg-slate-800 transition flex items-center gap-1.5 shadow-xs">
-                                            <span>+ Adicionar acesso</span>
-                                        </button>
-                                    </div>
+                        <!-- ABA ACESSOS: diagnóstico das regras diretas da equipe -->
+                        <?php if ($groupTab === 'access'): ?>
+                            <?php $groupPermissions = $permService->getGroupPermissions($groupId, false); ?>
+                            <section class="bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded p-5">
+                                <div class="mb-4">
+                                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Acessos diretos</h3>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                                        Visão diagnóstica. Para alterar uma regra, abra as permissões do recurso.
+                                    </p>
+                                    <?php if (!$grpData['active']): ?>
+                                        <p class="text-[11px] text-amber-700 dark:text-amber-400 mt-2">
+                                            Esta equipe está inativa; as regras abaixo permanecem salvas, mas não concedem acesso enquanto ela estiver inativa.
+                                        </p>
+                                    <?php endif; ?>
                                 </div>
 
-                                <!-- TABELA DE ACESSOS DO GRUPO -->
                                 <?php if (empty($groupPermissions)): ?>
-                                    <div class="p-8 text-center text-slate-400 text-xs bg-slate-50 dark:bg-[#2c2e33] rounded">
-                                        Nenhum acesso configurado diretamente para este grupo<?= $showInherited ? ' ou herdado de pastas pai' : '' ?>.
-                                    </div>
+                                    <p class="text-xs text-slate-400 py-5 text-center">Nenhum acesso direto atribuído a esta equipe.</p>
                                 <?php else: ?>
                                     <div class="overflow-x-auto">
                                         <table class="w-full text-left text-xs border-collapse">
                                             <thead>
-                                                <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                                                    <th class="py-2.5 px-4">Recurso</th>
-                                                    <th class="py-2.5 px-4 text-center w-36">Permissão</th>
-                                                    <th class="py-2.5 px-4 text-left w-56">Origem</th>
-                                                    <th class="py-2.5 px-4 text-right w-24">Ações</th>
+                                                <tr class="border-b border-slate-200 dark:border-[#454956] text-[10px] uppercase tracking-wider text-slate-500">
+                                                    <th class="py-2 pr-4">Recurso</th>
+                                                    <th class="py-2 w-28">Permissão</th>
                                                 </tr>
                                             </thead>
                                             <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
-                                                <?php foreach ($groupPermissions as $gPerm): ?>
-                                                    <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
-                                                        <!-- RECURSO (NOME DO CAMINHO + TIPO) -->
-                                                        <td class="py-2.5 px-4">
-                                                            <div class="flex items-center gap-2">
-                                                                <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-                                                                <div>
-                                                                    <span class="font-bold text-slate-900 dark:text-slate-100 block leading-tight">
-                                                                        <?= htmlspecialchars($gPerm['resource_path']) ?>
-                                                                    </span>
-                                                                    <span class="text-[10px] text-slate-400 font-mono block leading-tight">
-                                                                        <?= htmlspecialchars($gPerm['resource_type_label']) ?>
-                                                                    </span>
-                                                                </div>
-                                                            </div>
+                                                <?php foreach ($groupPermissions as $groupPermission): ?>
+                                                    <tr>
+                                                        <td class="py-3 pr-4">
+                                                            <a class="font-semibold text-slate-900 dark:text-slate-100 hover:underline" href="index.php?tab=editar_estrutura&type=<?= urlencode($groupPermission['resource_type']) ?>&id=<?= (int)$groupPermission['resource_id'] ?>&res_tab=permissions">
+                                                                <?= htmlspecialchars(str_replace(' / ', ' > ', $groupPermission['resource_path'])) ?>
+                                                            </a>
+                                                            <small class="block text-[10px] text-slate-400 mt-0.5"><?= htmlspecialchars($groupPermission['resource_type_label']) ?></small>
                                                         </td>
-
-                                                        <!-- PERMISSÃO (VIEW / EDIT / ADMIN) -->
-                                                        <td class="py-2.5 px-4 text-center">
-                                                            <?php if ($gPerm['is_direct']): ?>
-                                                                <!-- ALTERAÇÃO DIRETA DO NÍVEL DO GRUPO -->
-                                                                <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" class="inline">
-                                                                    <input type="hidden" name="group_permission_action" value="update_group_level">
-                                                                    <input type="hidden" name="group_id" value="<?= $groupId ?>">
-                                                                    <input type="hidden" name="permission_id" value="<?= $gPerm['permission_id'] ?>">
-                                                                    <select name="permission_level" onchange="this.form.submit()" class="text-xs font-semibold px-2 py-1 rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 cursor-pointer">
-                                                                        <option value="view" <?= $gPerm['permission_level'] === 'view' ? 'selected' : '' ?>>View</option>
-                                                                        <option value="edit" <?= $gPerm['permission_level'] === 'edit' ? 'selected' : '' ?>>Edit</option>
-                                                                        <option value="admin" <?= $gPerm['permission_level'] === 'admin' ? 'selected' : '' ?>>Admin</option>
-                                                                    </select>
-                                                                </form>
-                                                            <?php else: ?>
-                                                                <!-- LEITURA DE REGRA HERDADA -->
-                                                                <?php
-                                                                    $lvlClass = 'bg-slate-100 text-slate-700';
-                                                                    if ($gPerm['permission_level'] === 'view') $lvlClass = 'bg-blue-500/15 text-blue-700 border-blue-500/30';
-                                                                    if ($gPerm['permission_level'] === 'edit') $lvlClass = 'bg-amber-500/15 text-amber-700 border-amber-500/30';
-                                                                    if ($gPerm['permission_level'] === 'admin') $lvlClass = 'bg-red-500/15 text-red-700 border-red-500/30';
-                                                                ?>
-                                                                <span class="px-2.5 py-0.5 text-[10px] font-bold rounded border uppercase <?= $lvlClass ?>">
-                                                                    <?= strtoupper($gPerm['permission_level']) ?>
-                                                                </span>
-                                                            <?php endif; ?>
-                                                        </td>
-
-                                                        <!-- ORIGEM (DIRETA OU HERDADA) -->
-                                                        <td class="py-2.5 px-4 text-left">
-                                                            <?php if ($gPerm['is_direct']): ?>
-                                                                <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 uppercase">
-                                                                    Direta
-                                                                </span>
-                                                            <?php else: ?>
-                                                                <div class="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                                                                    <span><?= htmlspecialchars($gPerm['origin_label']) ?></span>
-                                                                    <?php if (!empty($gPerm['ancestor_info'])): ?>
-                                                                        <a href="index.php?tab=editar_estrutura&type=<?= $gPerm['ancestor_info']['type'] ?>&id=<?= $gPerm['ancestor_info']['id'] ?>&res_tab=permissions" class="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline">
-                                                                            (Ver pasta)
-                                                                        </a>
-                                                                    <?php endif; ?>
-                                                                </div>
-                                                            <?php endif; ?>
-                                                        </td>
-
-                                                        <!-- AÇÕES (REMOVER ACESSO DIRETO DO GRUPO) -->
-                                                        <td class="py-2.5 px-4 text-right">
-                                                            <?php if ($gPerm['is_direct']): ?>
-                                                                <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" onsubmit="return confirm('Deseja remover este acesso direto do grupo <?= htmlspecialchars(addslashes($grpData['name'])) ?>?');" class="inline">
-                                                                    <input type="hidden" name="group_permission_action" value="delete_group_permission">
-                                                                    <input type="hidden" name="group_id" value="<?= $groupId ?>">
-                                                                    <input type="hidden" name="permission_id" value="<?= $gPerm['permission_id'] ?>">
-                                                                    <button type="submit" class="px-2 py-1 rounded bg-red-500/10 text-red-600 hover:bg-red-500/20 text-[11px] font-semibold" title="Remover Regra Direta">
-                                                                        Remover
-                                                                    </button>
-                                                                </form>
-                                                            <?php else: ?>
-                                                                <span class="text-slate-300 dark:text-slate-600 text-xs">—</span>
-                                                            <?php endif; ?>
-                                                        </td>
+                                                        <td class="py-3 font-semibold uppercase"><?= htmlspecialchars($groupPermission['permission_level']) ?></td>
                                                     </tr>
                                                 <?php endforeach; ?>
                                             </tbody>
                                         </table>
                                     </div>
                                 <?php endif; ?>
-
-                                <!-- MODAL DE ADICIONAR ACESSO A RECURSO PELA ÁRVORE COMPACTA -->
-                                <div id="modal-add-group-access" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="modal-add-group-access-title">
-                                    <div id="modal-add-group-access-card" class="bg-white dark:bg-[#353842] max-w-lg w-full p-5 rounded-lg border border-slate-200 dark:border-[#454956] shadow-xl space-y-4 text-xs">
-                                        
-                                        <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-[#454956]">
-                                            <h3 id="modal-add-group-access-title" class="text-sm font-bold text-slate-900 dark:text-slate-100">Adicionar acesso ao grupo</h3>
-                                            <button type="button" onclick="closeAddGroupAccessModal()" class="text-slate-400 hover:text-slate-600 focus:outline-hidden text-sm p-1 rounded" aria-label="Fechar modal">✕</button>
-                                        </div>
-
-                                        <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=permissions" id="form-add-group-access" class="space-y-4">
-                                            <input type="hidden" name="group_permission_action" value="add_group_access">
-                                            <input type="hidden" name="group_id" value="<?= $groupId ?>">
-                                            <input type="hidden" name="resource_type" id="input-group-res-type" value="">
-                                            <input type="hidden" name="resource_id" id="input-group-res-id" value="">
-
-                                            <!-- ÁRVORE COMPACTA DE NAVEGAÇÃO -->
-                                            <div>
-                                                <div class="flex items-center justify-between mb-1.5">
-                                                    <label class="font-semibold text-slate-700 dark:text-slate-300">Selecione o Recurso na Árvore *</label>
-                                                    <input type="text" id="tree-search-input" oninput="filterTreeNodes(this.value)" placeholder="Filtrar pastas..." class="input-minimal px-2.5 py-1 text-[11px] rounded border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
-                                                </div>
-
-                                                <div id="tree-container" class="max-h-56 overflow-y-auto border border-slate-200 dark:border-[#454956] rounded bg-slate-50/50 dark:bg-[#2c2e33]/50 p-2 font-mono text-[11px] space-y-1">
-                                                    <?php foreach ($resourceTree as $catItem): ?>
-                                                        <div class="tree-node-cat" data-name="<?= mb_strtolower($catItem['name']) ?>">
-                                                            <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer font-bold text-slate-900 dark:text-slate-100">
-                                                                <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('category', <?= $catItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                <span class="inline-flex items-center gap-1"><svg class="w-3.5 h-3.5 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg><?= htmlspecialchars($catItem['name']) ?></span>
-                                                            </label>
-
-                                                            <div class="pl-4 space-y-0.5 border-l-2 border-slate-200 dark:border-[#454956] ml-2 mt-0.5">
-                                                                <?php foreach ($catItem['subcategories'] as $subItem): ?>
-                                                                    <div class="tree-node-sub" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name']) ?>">
-                                                                        <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-800 dark:text-slate-200">
-                                                                            <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subcategory', <?= $subItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                            <span class="inline-flex items-center gap-1">├── <svg class="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg><?= htmlspecialchars($subItem['name']) ?></span>
-                                                                        </label>
-
-                                                                        <div class="pl-5 space-y-0.5 border-l border-slate-200 dark:border-[#454956] ml-3 mt-0.5">
-                                                                            <?php foreach ($subItem['subjects'] as $subjItem): ?>
-                                                                                <div class="tree-node-subj" data-name="<?= mb_strtolower($catItem['name'] . ' ' . $subItem['name'] . ' ' . $subjItem['name']) ?>">
-                                                                                    <label class="flex items-center gap-1.5 p-1 rounded hover:bg-slate-100 dark:hover:bg-[#2c2e33] cursor-pointer text-slate-600 dark:text-slate-400">
-                                                                                        <input type="radio" name="tree_radio" onchange="selectGroupTreeResource('subject', <?= $subjItem['id'] ?>, '<?= htmlspecialchars(addslashes($catItem['name'] . ' / ' . $subItem['name'] . ' / ' . $subjItem['name'])) ?>')" class="border-slate-300 text-slate-900 focus:ring-0">
-                                                                                        <span class="inline-flex items-center gap-1">└── <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg><?= htmlspecialchars($subjItem['name']) ?></span>
-                                                                                    </label>
-                                                                                </div>
-                                                                            <?php endforeach; ?>
-                                                                        </div>
-                                                                    </div>
-                                                                <?php endforeach; ?>
-                                                            </div>
-                                                        </div>
-                                                    <?php endforeach; ?>
-                                                </div>
-                                            </div>
-
-                                            <!-- RECURSO SELECIONADO -->
-                                            <div id="box-selected-resource-info" class="hidden p-2 bg-slate-100 dark:bg-[#2c2e33] rounded border border-slate-200 dark:border-[#454956]">
-                                                <span class="text-[10px] text-slate-400 uppercase font-bold block">Recurso Selecionado:</span>
-                                                <span id="text-selected-resource-path" class="font-bold text-slate-900 dark:text-slate-100 text-xs"></span>
-                                            </div>
-
-                                            <!-- NÍVEL DE PERMISSÃO -->
-                                            <div>
-                                                <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">Permissão</label>
-                                                <div class="space-y-2">
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="view" checked class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">View</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar conteúdo.</span>
-                                                        </div>
-                                                    </label>
-
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="edit" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Edit</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode visualizar e editar conteúdo.</span>
-                                                        </div>
-                                                    </label>
-
-                                                    <label class="flex items-start gap-2.5 p-2 rounded border border-slate-200 dark:border-[#454956] hover:bg-slate-50 dark:hover:bg-[#2c2e33] cursor-pointer">
-                                                        <input type="radio" name="permission_level" value="admin" class="mt-0.5 border-slate-300 text-slate-900 focus:ring-0">
-                                                        <div>
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block">Admin</span>
-                                                            <span class="text-[11px] text-slate-500 dark:text-slate-400 block">Pode gerenciar conteúdo e permissões desta área.</span>
-                                                        </div>
-                                                    </label>
-                                                </div>
-                                            </div>
-
-                                            <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-[#454956]">
-                                                <button type="button" onclick="closeAddGroupAccessModal()" class="px-4 py-2 rounded font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
-                                                    Cancelar
-                                                </button>
-                                                <button type="submit" id="btn-submit-group-access" disabled class="px-4 py-2 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">
-                                                    Conceder acesso
-                                                </button>
-                                            </div>
-                                        </form>
-
-                                        <script>
-                                            let groupLastFocused = null;
-
-                                            function openAddGroupAccessModal() {
-                                                groupLastFocused = document.activeElement;
-                                                const modal = document.getElementById('modal-add-group-access');
-                                                modal.classList.remove('hidden');
-                                                document.getElementById('tree-search-input').focus();
-                                                document.addEventListener('keydown', handleGroupModalKeyDown);
-                                            }
-
-                                            function closeAddGroupAccessModal() {
-                                                const modal = document.getElementById('modal-add-group-access');
-                                                modal.classList.add('hidden');
-                                                document.removeEventListener('keydown', handleGroupModalKeyDown);
-                                                if (groupLastFocused) groupLastFocused.focus();
-                                            }
-
-                                            function handleGroupModalKeyDown(e) {
-                                                if (e.key === 'Escape') {
-                                                    closeAddGroupAccessModal();
-                                                    return;
-                                                }
-                                            }
-
-                                            function selectGroupTreeResource(type, id, pathName) {
-                                                document.getElementById('input-group-res-type').value = type;
-                                                document.getElementById('input-group-res-id').value = id;
-                                                document.getElementById('text-selected-resource-path').textContent = pathName;
-                                                document.getElementById('box-selected-resource-info').classList.remove('hidden');
-                                                document.getElementById('btn-submit-group-access').disabled = false;
-                                            }
-
-                                            function filterTreeNodes(q) {
-                                                const term = q.toLowerCase().trim();
-                                                const nodes = document.querySelectorAll('#tree-container [data-name]');
-                                                nodes.forEach(node => {
-                                                    if (!term || node.getAttribute('data-name').includes(term)) {
-                                                        node.style.display = '';
-                                                    } else {
-                                                        node.style.display = 'none';
-                                                    }
-                                                });
-                                            }
-                                        </script>
-                                    </div>
-                                </div>
-
-                            </div>
+                            </section>
                         <?php endif; ?>
 
                     </div>
@@ -4509,15 +5086,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 <!-- TAB: LISTAGEM DE USUÁRIOS DO SISTEMA -->
                 <?php if ($activeTab === 'usuarios'): ?>
                     <?php
-                        $stmtUsers = $pdo->query("
-                            SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
-                                   COUNT(DISTINCT ug.group_id) AS total_grupos
-                            FROM users u
-                            LEFT JOIN user_groups ug ON u.id = ug.user_id
-                            GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
-                            ORDER BY u.name ASC
-                        ");
-                        $usersList = $stmtUsers->fetchAll(PDO::FETCH_ASSOC);
+                        $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
+                        $isGlobalAdminCurrent = $permService->isGlobalAdmin($currentAdminUserId);
+                        $usersList = $permService->getUsersForAdministrativeScope($currentAdminUserId);
                     ?>
                     <div class="space-y-4">
                         <div class="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-[#454956]">
@@ -4527,10 +5098,35 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     <span>/</span>
                                     <span class="font-bold text-slate-900 dark:text-slate-100">Usuários</span>
                                 </nav>
-                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100">Usuários do Sistema</h1>
-                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Diagnóstico de permissões e controle de acesso individual.</p>
+                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100"><?= $isGlobalAdminCurrent ? 'Usuários do Sistema' : 'Usuários da sua área' ?></h1>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                    <?= $isGlobalAdminCurrent
+                                        ? 'Diagnóstico de permissões e controle de acesso individual.'
+                                        : 'Somente pessoas com acesso direto ou via equipe no seu ramo autorizado são exibidas.' ?>
+                                </p>
                             </div>
                         </div>
+
+                        <?php if ($isGlobalAdminCurrent): ?>
+                            <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Integração corporativa</p>
+                                        <h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Importar usuário do Active Directory</h2>
+                                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Informe somente o usuário corporativo. <?= htmlspecialchars($appName) ?> confirma que ele existe no AD e traz nome, e-mail e identificação automaticamente.</p>
+                                    </div>
+                                    <span class="w-fit rounded-full bg-sky-500/10 px-2.5 py-1 text-[10px] font-bold text-sky-700 dark:text-sky-300">Somente contas AD</span>
+                                </div>
+
+                                <form method="POST" action="index.php?tab=usuarios" class="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-end dark:border-[#454956]">
+                                    <input type="hidden" name="create_user" value="1">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                    <label class="block sm:w-32"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Domínio *</span><select name="ad_domain" class="input-minimal w-full px-3 py-2 text-xs"><?php foreach ($availableAdDomains as $domain): ?><option value="<?= htmlspecialchars($domain) ?>"><?= htmlspecialchars($domain === 'SAUDE' ? 'SAÚDE' : $domain) ?></option><?php endforeach; ?></select></label>
+                                    <label class="block flex-1"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Usuário AD *</span><input type="text" name="ad_username" required maxlength="100" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex.: ana.silva" autocomplete="off"><span class="mt-1 block text-[10px] text-slate-400">A conta precisa já existir e estar ativa no Active Directory.</span></label>
+                                    <button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900"><svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>Importar do AD</button>
+                                </form>
+                            </section>
+                        <?php endif; ?>
 
                         <div class="bg-white dark:bg-[#353842] rounded border border-slate-200 dark:border-[#454956] shadow-xs overflow-hidden">
                             <div class="overflow-x-auto">
@@ -4540,12 +5136,15 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             <th class="py-2.5 px-4">Usuário</th>
                                             <th class="py-2.5 px-4">E-mail / Username</th>
                                             <th class="py-2.5 px-4 text-center">Perfil</th>
-                                            <th class="py-2.5 px-4 text-center">Grupos Ativos</th>
+                                            <th class="py-2.5 px-4 text-center">Equipes</th>
                                             <th class="py-2.5 px-4 text-center">Status</th>
                                             <th class="py-2.5 px-4 text-right">Ações</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                        <?php if (empty($usersList)): ?>
+                                            <tr><td colspan="6" class="py-8 px-4 text-center text-slate-400">Nenhum usuário vinculado à sua área.</td></tr>
+                                        <?php endif; ?>
                                         <?php foreach ($usersList as $uRow): ?>
                                             <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
                                                 <td class="py-2.5 px-4 font-bold text-slate-900 dark:text-slate-100">
@@ -4589,21 +5188,66 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 <!-- TAB: DIAGNÓSTICO DE ACESSOS EFETIVOS DO USUÁRIO -->
                 <?php if ($activeTab === 'editar_usuario'): ?>
                     <?php
-                        require_once __DIR__ . '/../services/PermissionService.php';
-                        $permService = new PermissionService($pdo);
-
                         $targetUserId = (int)($_GET['id'] ?? 0);
                         $userTab = trim($_GET['user_tab'] ?? 'access');
+                        if (!in_array($userTab, ['info', 'teams', 'access'], true)) {
+                            $userTab = 'access';
+                        }
                         $accessFilter = strtolower(trim($_GET['filter'] ?? 'all'));
                         if (!in_array($accessFilter, ['all', 'direct', 'groups', 'inherited'])) {
                             $accessFilter = 'all';
                         }
 
-                        $diagnosis = $permService->getUserEffectiveAccessDiagnosis($targetUserId, $accessFilter);
+                        $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
+                        $canInspectTargetUser = $permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId);
+                        $diagnosis = $canInspectTargetUser
+                            ? $permService->getUserEffectiveAccessDiagnosis($targetUserId, $accessFilter)
+                            : ['user' => null, 'is_global_admin' => false, 'active_groups' => [], 'resources' => []];
+                        if ($canInspectTargetUser) {
+                            $diagnosis = $permService->filterDiagnosisToAdministrativeScope($currentAdminUserId, $diagnosis);
+                        }
                         $uData = $diagnosis['user'];
+                        $userTeams = [];
+                        $directUserPermissions = [];
+                        if ($uData) {
+                            $userTeams = $permService->getUserTeamsForAdministrativeScope($currentAdminUserId, $targetUserId);
+                            if ($isGlobalAdminCurrent) {
+                                $directPermissionsStmt = $pdo->prepare('
+                                    SELECT
+                                        p.id,
+                                        p.permission_level,
+                                        CASE
+                                            WHEN p.category_id IS NOT NULL THEN \'category\'
+                                            WHEN p.subcategory_id IS NOT NULL THEN \'subcategory\'
+                                            ELSE \'subject\'
+                                        END AS resource_type,
+                                        CASE
+                                            WHEN p.category_id IS NOT NULL THEN p.category_id
+                                            WHEN p.subcategory_id IS NOT NULL THEN p.subcategory_id
+                                            ELSE p.subject_id
+                                        END AS resource_id,
+                                        CASE
+                                            WHEN p.category_id IS NOT NULL THEN c.name
+                                            WHEN p.subcategory_id IS NOT NULL THEN sc_category.name || \' › \' || sc.name
+                                            ELSE subject_category.name || \' › \' || subject_subcategory.name || \' › \' || s.name
+                                        END AS resource_path
+                                    FROM permissions p
+                                    LEFT JOIN categories c ON c.id = p.category_id
+                                    LEFT JOIN subcategories sc ON sc.id = p.subcategory_id
+                                    LEFT JOIN categories sc_category ON sc_category.id = sc.category_id
+                                    LEFT JOIN subjects s ON s.id = p.subject_id
+                                    LEFT JOIN subcategories subject_subcategory ON subject_subcategory.id = s.subcategory_id
+                                    LEFT JOIN categories subject_category ON subject_category.id = subject_subcategory.category_id
+                                    WHERE p.user_id = :user_id
+                                    ORDER BY resource_type ASC, resource_path ASC
+                                ');
+                                $directPermissionsStmt->execute([':user_id' => $targetUserId]);
+                                $directUserPermissions = $directPermissionsStmt->fetchAll(PDO::FETCH_ASSOC);
+                            }
+                        }
 
                         if (!$uData) {
-                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Usuário não encontrado.</div>";
+                            echo "<div class='p-4 bg-red-500/10 text-red-600 rounded-md text-xs font-semibold'>Usuário não encontrado ou fora da sua área autorizada.</div>";
                         } else {
                     ?>
                     <div class="space-y-4">
@@ -4614,7 +5258,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <span>/</span>
                                 <span class="font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($uData['name']) ?></span>
                                 <span>/</span>
-                                <span class="text-slate-500">Acessos Efetivos</span>
+                                <span class="text-slate-500"><?= $userTab === 'info' ? 'Informações' : ($userTab === 'teams' ? 'Equipes' : 'Acessos') ?></span>
                             </nav>
                             <div class="flex items-center justify-between">
                                 <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
@@ -4624,13 +5268,152 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             </div>
                         </div>
 
+                        <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956]">
+                            <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=info" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $userTab === 'info' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500' ?>">Informações</a>
+                            <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=teams" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $userTab === 'teams' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500' ?>">Equipes</a>
+                            <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $userTab === 'access' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500' ?>">Acessos</a>
+                        </div>
+
+                        <?php if ($userTab === 'info'): ?>
+                            <section class="bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded p-5 max-w-2xl">
+                                <h2 class="text-sm font-bold mb-4">Informações do usuário</h2>
+                                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4 text-xs">
+                                    <div><dt class="text-slate-400 mb-1">Nome</dt><dd class="font-semibold"><?= htmlspecialchars($uData['name']) ?></dd></div>
+                                    <div><dt class="text-slate-400 mb-1">Usuário</dt><dd class="font-mono">@<?= htmlspecialchars($uData['username']) ?></dd></div>
+                                    <div><dt class="text-slate-400 mb-1">E-mail</dt><dd><?= htmlspecialchars($uData['email']) ?></dd></div>
+                                    <div><dt class="text-slate-400 mb-1">Perfil</dt><dd class="uppercase font-semibold"><?= htmlspecialchars($uData['role']) ?></dd></div>
+                                    <div><dt class="text-slate-400 mb-1">Status</dt><dd class="font-semibold"><?= $uData['active'] ? 'Ativo' : 'Inativo' ?></dd></div>
+                                </dl>
+                            </section>
+                        <?php endif; ?>
+
+                        <?php if ($userTab === 'teams'): ?>
+                            <section class="bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded p-5">
+                                <h2 class="text-sm font-bold">Equipes do usuário</h2>
+                                <p class="text-xs text-slate-500 mt-1 mb-4">A associação é administrada na aba Membros de cada equipe.</p>
+                                <?php if (empty($userTeams)): ?>
+                                    <p class="text-xs text-slate-400 py-5 text-center">Este usuário não pertence a nenhuma equipe.</p>
+                                <?php else: ?>
+                                    <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                        <?php foreach ($userTeams as $userTeam): ?>
+                                            <div class="py-3 flex items-center justify-between gap-4 text-xs">
+                                                <div>
+                                                    <a href="index.php?tab=editar_grupo&id=<?= (int)$userTeam['id'] ?>&group_tab=users" class="font-semibold text-slate-900 dark:text-slate-100 hover:underline"><?= htmlspecialchars($userTeam['name']) ?></a>
+                                                    <p class="text-[10px] text-slate-400 mt-0.5"><?= htmlspecialchars($userTeam['description'] ?: 'Sem descrição') ?></p>
+                                                </div>
+                                                <span class="text-[10px] font-semibold <?= $userTeam['active'] ? 'text-emerald-600' : 'text-amber-600' ?>"><?= $userTeam['active'] ? 'ATIVA' : 'INATIVA' ?></span>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </section>
+                        <?php endif; ?>
+
+                        <?php if ($userTab === 'access'): ?>
+                        <?php if ($isGlobalAdminCurrent && !$diagnosis['is_global_admin']): ?>
+                            <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Permissão individual</p>
+                                        <h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Liberar acesso direto para <?= htmlspecialchars($uData['name']) ?></h2>
+                                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">A regra vale somente para esta pessoa. Para liberar a mesma área a várias pessoas, use uma equipe.</p>
+                                    </div>
+                                    <span class="w-fit rounded-full bg-sky-500/10 px-2.5 py-1 text-[10px] font-bold text-sky-700 dark:text-sky-300">Acesso direto</span>
+                                </div>
+
+                                <form method="POST" action="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access" class="mt-4 grid grid-cols-1 gap-3 border-t border-slate-100 pt-4 sm:grid-cols-[minmax(0,1fr)_10rem_auto] sm:items-end dark:border-[#454956]">
+                                    <input type="hidden" name="save_direct_user_permission" value="1">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                    <input type="hidden" name="target_user_id" value="<?= $targetUserId ?>">
+                                    <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Área *</span>
+                                        <select name="direct_resource" required class="input-minimal w-full px-3 py-2 text-xs">
+                                            <option value="">Selecione categoria, subcategoria ou assunto</option>
+                                            <?php if (!empty($listCategorias)): ?>
+                                                <optgroup label="Categorias">
+                                                    <?php foreach ($listCategorias as $permissionCategory): ?>
+                                                        <?php if ($permissionCategory['active']): ?>
+                                                            <option value="category:<?= (int)$permissionCategory['id'] ?>">Categoria · <?= htmlspecialchars($permissionCategory['nome']) ?></option>
+                                                        <?php endif; ?>
+                                                    <?php endforeach; ?>
+                                                </optgroup>
+                                            <?php endif; ?>
+                                            <?php if (!empty($listSubcategorias)): ?>
+                                                <optgroup label="Subcategorias">
+                                                    <?php foreach ($listSubcategorias as $permissionSubcategory): ?>
+                                                        <?php if ($permissionSubcategory['active']): ?>
+                                                            <option value="subcategory:<?= (int)$permissionSubcategory['id'] ?>"><?= htmlspecialchars($permissionSubcategory['categoria_nome']) ?> › <?= htmlspecialchars($permissionSubcategory['nome']) ?></option>
+                                                        <?php endif; ?>
+                                                    <?php endforeach; ?>
+                                                </optgroup>
+                                            <?php endif; ?>
+                                            <?php if (!empty($listAssuntos)): ?>
+                                                <optgroup label="Assuntos">
+                                                    <?php foreach ($listAssuntos as $permissionSubject): ?>
+                                                        <?php if ($permissionSubject['active']): ?>
+                                                            <option value="subject:<?= (int)$permissionSubject['id'] ?>"><?= htmlspecialchars($permissionSubject['categoria_nome']) ?> › <?= htmlspecialchars($permissionSubject['subcategoria_nome']) ?> › <?= htmlspecialchars($permissionSubject['nome']) ?></option>
+                                                        <?php endif; ?>
+                                                    <?php endforeach; ?>
+                                                </optgroup>
+                                            <?php endif; ?>
+                                        </select>
+                                    </label>
+                                    <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Nível *</span>
+                                        <select name="permission_level" required class="input-minimal w-full px-3 py-2 text-xs">
+                                            <option value="view">Visualizar</option>
+                                            <option value="edit">Editar</option>
+                                            <option value="admin">Administrar</option>
+                                        </select>
+                                    </label>
+                                    <button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">
+                                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                        Salvar acesso
+                                    </button>
+                                </form>
+
+                                <?php if (!empty($directUserPermissions)): ?>
+                                    <div class="mt-4 overflow-hidden rounded-md border border-slate-200 dark:border-[#454956]">
+                                        <div class="border-b border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-[#454956] dark:bg-[#2c2e33]">Acessos individuais configurados</div>
+                                        <div class="divide-y divide-slate-100 dark:divide-[#454956]">
+                                            <?php foreach ($directUserPermissions as $directPermission): ?>
+                                                <?php
+                                                    $directLevel = strtolower((string)$directPermission['permission_level']);
+                                                    $directLevelClass = $directLevel === 'admin'
+                                                        ? 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30'
+                                                        : ($directLevel === 'edit'
+                                                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                                                            : 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30');
+                                                ?>
+                                                <div class="flex flex-col gap-2 px-3 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
+                                                    <div class="min-w-0">
+                                                        <a href="index.php?tab=editar_estrutura&type=<?= urlencode($directPermission['resource_type']) ?>&id=<?= (int)$directPermission['resource_id'] ?>&res_tab=permissions" class="block truncate font-semibold text-slate-900 hover:underline dark:text-slate-100"><?= htmlspecialchars((string)$directPermission['resource_path']) ?></a>
+                                                        <span class="text-[10px] uppercase tracking-wide text-slate-400"><?= htmlspecialchars((string)$directPermission['resource_type']) ?></span>
+                                                    </div>
+                                                    <div class="flex shrink-0 items-center gap-2">
+                                                        <span class="rounded border px-2 py-0.5 text-[10px] font-bold uppercase <?= $directLevelClass ?>"><?= htmlspecialchars($directLevel) ?></span>
+                                                        <form method="POST" action="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access" onsubmit="return confirm('Remover este acesso individual?');">
+                                                            <input type="hidden" name="remove_direct_user_permission" value="1">
+                                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                            <input type="hidden" name="target_user_id" value="<?= $targetUserId ?>">
+                                                            <input type="hidden" name="permission_id" value="<?= (int)$directPermission['id'] ?>">
+                                                            <button type="submit" class="rounded px-2 py-1 text-[11px] font-semibold text-red-600 transition hover:bg-red-500/10 dark:text-red-300">Remover</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php else: ?>
+                                    <p class="mt-4 text-[11px] text-slate-400">Nenhum acesso individual configurado para este usuário.</p>
+                                <?php endif; ?>
+                            </section>
+                        <?php endif; ?>
                         <!-- CARD RESUMO DO USUÁRIO & GRUPOS ATIVOS -->
                         <div class="bg-white dark:bg-[#353842] p-5 rounded border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-[#454956] text-xs">
                                 <div>
-                                    <span class="font-bold text-slate-900 dark:text-slate-100 block">Grupos Ativos do Usuário:</span>
+                                    <span class="font-bold text-slate-900 dark:text-slate-100 block">Equipes ativas do usuário:</span>
                                     <?php if (empty($diagnosis['active_groups'])): ?>
-                                        <span class="text-slate-400 text-[11px] block mt-0.5">Nenhum grupo ativo associado a este usuário.</span>
+                                        <span class="text-slate-400 text-[11px] block mt-0.5">Nenhuma equipe ativa associada a este usuário.</span>
                                     <?php else: ?>
                                         <div class="flex flex-wrap gap-1.5 mt-1">
                                             <?php foreach ($diagnosis['active_groups'] as $ag): ?>
@@ -4670,7 +5453,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                             Diretos
                                         </a>
                                         <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=groups" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'groups' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
-                                            Via Grupos
+                                            Via Equipes
                                         </a>
                                         <a href="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access&filter=inherited" class="px-3 py-1 rounded font-semibold transition <?= $accessFilter === 'inherited' ? 'bg-white dark:bg-[#353842] text-slate-900 dark:text-white shadow-xs' : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200' ?>">
                                             Herdados
@@ -4700,9 +5483,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                                 <?php foreach ($diagnosis['resources'] as $resDiag): ?>
                                                     <tr class="hover:bg-slate-50/70 dark:hover:bg-[#2c2e33]/50 transition">
                                                         <td class="py-3 px-4">
-                                                            <span class="font-bold text-slate-900 dark:text-slate-100 block text-xs">
+                                                            <a href="index.php?tab=editar_estrutura&type=<?= urlencode($resDiag['resource_type']) ?>&id=<?= (int)$resDiag['resource_id'] ?>&res_tab=permissions" class="font-bold text-slate-900 dark:text-slate-100 block text-xs hover:underline">
                                                                 <?= htmlspecialchars($resDiag['resource_path']) ?>
-                                                            </span>
+                                                            </a>
                                                             <span class="text-[10px] text-slate-400 font-mono block">
                                                                 <?= htmlspecialchars($resDiag['resource_type_label']) ?>
                                                             </span>
@@ -4744,6 +5527,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                 <?php endif; ?>
                             <?php endif; ?>
                         </div>
+                        <?php endif; ?>
                     </div>
                     <?php } ?>
                 <?php endif; ?>
@@ -4834,16 +5618,21 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 }
             }
 
-            // Mapa de subcategorias por categoria (nome → subcategorias autorizadas para documento)
-            const ncDocSubcatsByCatName = <?= json_encode(array_reduce($catsParaDocumento, function($carry, $cat) use ($mapSubcatsParaDocumento) {
-                $carry[$cat['nome']] = $mapSubcatsParaDocumento[$cat['id']] ?? [];
-                return $carry;
-            }, [])) ?>;
-            // Mapa de assuntos por subcategoria (nome → assuntos autorizados para documento)
-            const ncDocAssuntosBySubcatName = <?= json_encode(array_reduce($subcatsParaDocumento, function($carry, $sc) use ($mapAssuntosParaDocumento) {
-                $carry[$sc['nome']] = $mapAssuntosParaDocumento[$sc['id']] ?? [];
-                return $carry;
-            }, [])) ?>;
+            // Mapas por ID evitam colisões quando ramos diferentes usam o mesmo nome.
+            const ncDocSubcatsByCategoryId = <?= json_encode($mapSubcatsParaDocumento) ?>;
+            const ncDocAssuntosBySubcategoryId = <?= json_encode($mapAssuntosParaDocumento) ?>;
+
+            function setDocumentHierarchyHelper(message = '', actionLabel = '', action = null) {
+                const helper = document.getElementById('document-hierarchy-helper');
+                const text = document.getElementById('document-hierarchy-helper-text');
+                const button = document.getElementById('document-hierarchy-helper-action');
+                if (!helper || !text || !button) return;
+                const visible = Boolean(message && actionLabel && action);
+                helper.classList.toggle('hidden', !visible);
+                text.textContent = message;
+                button.textContent = actionLabel;
+                button.onclick = visible ? action : null;
+            }
 
             function onCategoryChange() {
                 const cat = document.getElementById('select-cat').value;
@@ -4853,13 +5642,27 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 subSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
                 assSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
 
-                if (cat && ncDocSubcatsByCatName[cat]) {
-                    ncDocSubcatsByCatName[cat].forEach(sc => {
+                const availableSubcategories = cat ? (ncDocSubcatsByCategoryId[cat] || []) : [];
+                availableSubcategories.forEach(sc => {
                         const opt = document.createElement('option');
-                        opt.value = sc.nome;
+                        opt.value = String(sc.id);
                         opt.textContent = sc.nome;
                         subSelect.appendChild(opt);
-                    });
+                });
+
+                if (cat && availableSubcategories.length === 0) {
+                    subSelect.innerHTML = '<option value="">Nenhuma subcategoria ativa</option>';
+                    setDocumentHierarchyHelper(
+                        'Esta categoria ainda não possui uma subcategoria ativa. Crie uma para continuar.',
+                        'Criar subcategoria',
+                        () => {
+                            ncSwitchType('subcategoria');
+                            const target = document.getElementById('nc-sub-cat');
+                            if (target) target.value = String(cat);
+                        }
+                    );
+                } else {
+                    setDocumentHierarchyHelper();
                 }
             }
 
@@ -4869,24 +5672,161 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
                 assSelect.innerHTML = '<option value="">-- Selecione ▾ --</option>';
 
-                if (sub && ncDocAssuntosBySubcatName[sub]) {
-                    ncDocAssuntosBySubcatName[sub].forEach(s => {
+                const availableSubjects = sub ? (ncDocAssuntosBySubcategoryId[sub] || []) : [];
+                availableSubjects.forEach(s => {
                         const opt = document.createElement('option');
-                        opt.value = s.nome;
+                        opt.value = String(s.id);
                         opt.textContent = s.nome;
                         assSelect.appendChild(opt);
-                    });
+                });
+
+                if (sub && availableSubjects.length === 0) {
+                    assSelect.innerHTML = '<option value="">Nenhum assunto ativo</option>';
+                    const categoryId = document.getElementById('select-cat')?.value || '';
+                    setDocumentHierarchyHelper(
+                        'Esta subcategoria ainda não possui um assunto ativo. Crie um para continuar.',
+                        'Criar assunto',
+                        () => {
+                            ncSwitchType('assunto');
+                            const catTarget = document.getElementById('nc-ass-cat');
+                            const subTarget = document.getElementById('nc-ass-subcat');
+                            if (catTarget) catTarget.value = String(categoryId);
+                            ncLoadSubcatsForAssunto();
+                            if (subTarget) subTarget.value = String(sub);
+                        }
+                    );
+                } else {
+                    setDocumentHierarchyHelper();
                 }
             }
 
             function toggleFormContent(type) {
-                const boxes = ['arquivo', 'texto', 'link'];
+                const boxes = ['file', 'text', 'code', 'video', 'link'];
                 boxes.forEach(b => {
                     const el = document.getElementById('box-' + b);
                     if (el) el.classList.add('hidden');
                 });
                 const target = document.getElementById('box-' + type);
                 if (target) target.classList.remove('hidden');
+                if (type === 'code') updateCodePreview();
+                if (type === 'video') toggleVideoSource();
+            }
+
+            function updateCodePreview() {
+                const sourceInput = document.getElementById('code-source-input');
+                const languageInput = document.getElementById('code-language');
+                const preview = document.getElementById('code-preview');
+                if (!sourceInput || !languageInput || !preview) return;
+
+                const code = preview.querySelector('[data-code-source]');
+                preview.dataset.codeLanguage = languageInput.value || 'auto';
+                if (code) code.textContent = sourceInput.value || '// A pré-visualização aparecerá aqui.';
+                if (window.DocGovCodeSnippets) window.DocGovCodeSnippets.refresh(preview);
+            }
+
+            function toggleVideoSource() {
+                const source = document.querySelector('input[name="video_source"]:checked')?.value || 'upload';
+                const uploadFields = document.getElementById('video-upload-fields');
+                const urlFields = document.getElementById('video-url-fields');
+                if (uploadFields) uploadFields.classList.toggle('hidden', source !== 'upload');
+                if (urlFields) urlFields.classList.toggle('hidden', source !== 'url');
+                if (source === 'url') updateVideoUrlPreview();
+            }
+
+            let localVideoPreviewUrl = null;
+
+            function updateVideoFilePreview(input) {
+                const preview = document.getElementById('video-file-preview-name');
+                const playerPreview = document.getElementById('video-url-preview');
+                const selectedFile = input.files && input.files[0] ? input.files[0] : null;
+                if (preview) preview.textContent = selectedFile ? selectedFile.name : '';
+                if (!playerPreview) return;
+
+                if (localVideoPreviewUrl) {
+                    URL.revokeObjectURL(localVideoPreviewUrl);
+                    localVideoPreviewUrl = null;
+                }
+                playerPreview.replaceChildren();
+                if (!selectedFile) {
+                    playerPreview.classList.add('hidden');
+                    return;
+                }
+
+                localVideoPreviewUrl = URL.createObjectURL(selectedFile);
+                const video = document.createElement('video');
+                video.src = localVideoPreviewUrl;
+                video.controls = true;
+                video.preload = 'metadata';
+                video.className = 'aspect-video w-full';
+                playerPreview.append(video);
+                playerPreview.classList.remove('hidden');
+            }
+
+            function getVideoEmbedUrl(url) {
+                try {
+                    const parsed = new URL(url);
+                    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+                    const pathParts = parsed.pathname.split('/').filter(Boolean);
+                    let youtubeId = '';
+
+                    if (host === 'youtu.be') {
+                        youtubeId = pathParts[0] || '';
+                    } else if (['youtube.com', 'm.youtube.com', 'youtube-nocookie.com'].includes(host)) {
+                        youtubeId = parsed.searchParams.get('v') || '';
+                        if (!youtubeId && ['embed', 'shorts', 'live'].includes(pathParts[0])) {
+                            youtubeId = pathParts[1] || '';
+                        }
+                    }
+                    if (/^[A-Za-z0-9_-]{11}$/.test(youtubeId)) {
+                        return { kind: 'embed', src: 'https://www.youtube-nocookie.com/embed/' + youtubeId, provider: 'YouTube' };
+                    }
+
+                    if (['vimeo.com', 'player.vimeo.com'].includes(host)) {
+                        const vimeoId = [...pathParts].reverse().find(part => /^\d+$/.test(part));
+                        if (vimeoId) return { kind: 'embed', src: 'https://player.vimeo.com/video/' + vimeoId, provider: 'Vimeo' };
+                    }
+
+                    if (/\.(mp4|webm|ogv|ogg|m4v|mov)$/i.test(parsed.pathname)) {
+                        return { kind: 'direct', src: parsed.href, provider: 'Vídeo externo' };
+                    }
+                } catch (_) {
+                    // A validação final também acontece no servidor ao salvar.
+                }
+                return null;
+            }
+
+            function updateVideoUrlPreview() {
+                const input = document.getElementById('video-url');
+                const preview = document.getElementById('video-url-preview');
+                if (!input || !preview) return;
+
+                preview.replaceChildren();
+                const resolved = getVideoEmbedUrl(input.value.trim());
+                if (!resolved) {
+                    preview.classList.add('hidden');
+                    return;
+                }
+
+                preview.classList.remove('hidden');
+                if (resolved.kind === 'embed') {
+                    const frame = document.createElement('iframe');
+                    frame.src = resolved.src;
+                    frame.title = 'Pré-visualização de ' + resolved.provider;
+                    frame.className = 'aspect-video w-full';
+                    frame.loading = 'lazy';
+                    frame.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+                    frame.allowFullscreen = true;
+                    frame.referrerPolicy = 'strict-origin-when-cross-origin';
+                    preview.append(frame);
+                    return;
+                }
+
+                const video = document.createElement('video');
+                video.src = resolved.src;
+                video.controls = true;
+                video.preload = 'metadata';
+                video.className = 'aspect-video w-full';
+                preview.append(video);
             }
 
             // =========================================================================
@@ -4937,7 +5877,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 if (catId && ncSubcatsParaAssunto[catId]) {
                     ncSubcatsParaAssunto[catId].forEach(sc => {
                         const opt = document.createElement('option');
-                        opt.value = sc.nome;
+                        opt.value = String(sc.id);
                         opt.textContent = sc.nome;
                         subEl.appendChild(opt);
                     });
@@ -4950,6 +5890,353 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 if (preview && input.files && input.files[0]) {
                     preview.textContent = input.files[0].name;
                 }
+            }
+
+            // =====================================================================
+            // TAGS — escolha livre para o autor, com sugestões apenas informativas.
+            // =====================================================================
+            const documentTagCatalog = <?= json_encode($tagCatalog, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            const initialDocumentTagIds = <?= json_encode($editDocumentTagIds) ?>;
+
+            function initDocumentTags() {
+                const input = document.getElementById('document-tag-input');
+                const addButton = document.getElementById('document-tag-add');
+                const selected = document.getElementById('document-tag-selected');
+                const datalist = document.getElementById('document-tag-options');
+                const suggestions = document.getElementById('document-tag-suggestions');
+                const suggestionList = document.getElementById('document-tag-suggestion-list');
+                const counter = document.getElementById('document-tag-count');
+                const feedback = document.getElementById('document-tag-feedback');
+                if (!input || !addButton || !selected || !datalist || !suggestions || !suggestionList || !counter || !feedback) return;
+
+                const normalise = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                const catalogByName = new Map();
+                documentTagCatalog.forEach(tag => {
+                    catalogByName.set(normalise(tag.name), tag);
+                    (tag.aliases || []).forEach(alias => catalogByName.set(normalise(alias), tag));
+                    const option = document.createElement('option');
+                    option.value = tag.name;
+                    datalist.appendChild(option);
+                });
+                const state = new Map();
+                const setFeedback = message => {
+                    feedback.textContent = message || '';
+                    feedback.classList.toggle('hidden', !message);
+                };
+                const stateKey = item => item.id ? `id:${item.id}` : `new:${normalise(item.name)}`;
+                const addTag = rawValue => {
+                    const rawName = String(rawValue || '').replace(/\s+/g, ' ').trim();
+                    if (!rawName) return;
+                    const known = catalogByName.get(normalise(rawName));
+                    const item = known ? { id: Number(known.id), name: known.name, type: known.type_label || 'Tag' } : { id: 0, name: rawName, type: 'Nova tag' };
+                    if (!known && (rawName.length < 2 || rawName.length > 80)) {
+                        setFeedback('A nova tag deve ter entre 2 e 80 caracteres.');
+                        return;
+                    }
+                    if (state.has(stateKey(item))) {
+                        setFeedback('Essa tag já foi adicionada.');
+                        return;
+                    }
+                    if (state.size >= 12) {
+                        setFeedback('Use no máximo 12 tags por conteúdo.');
+                        return;
+                    }
+                    state.set(stateKey(item), item);
+                    input.value = '';
+                    setFeedback('');
+                    render();
+                };
+                const render = () => {
+                    selected.replaceChildren();
+                    state.forEach((item, key) => {
+                        const chip = document.createElement('span');
+                        chip.className = 'inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-200';
+                        const label = document.createElement('span');
+                        label.textContent = item.name;
+                        const remove = document.createElement('button');
+                        remove.type = 'button';
+                        remove.className = 'rounded-full text-slate-400 transition hover:text-red-500';
+                        remove.setAttribute('aria-label', `Remover tag ${item.name}`);
+                        remove.textContent = '×';
+                        remove.addEventListener('click', () => { state.delete(key); setFeedback(''); render(); });
+                        chip.append(label, remove);
+                        const hidden = document.createElement('input');
+                        hidden.type = 'hidden';
+                        hidden.name = item.id ? 'tag_ids[]' : 'new_tags[]';
+                        hidden.value = item.id ? String(item.id) : item.name;
+                        selected.append(chip, hidden);
+                    });
+                    counter.textContent = `${state.size}/12`;
+                    refreshSuggestions();
+                };
+                const stopWords = new Set(['para','com','uma','uns','umas','dos','das','que','por','sem','sobre','entre','este','esta','isso','essa','como','mais','menos','tambem','sistema','documento','conteudo','arquivo','informacao','informações','orientacao','orientações','manual','novo','nova','todos','todas','serao','será','sao','são','quando','onde','cada','seus','suas']);
+                const sourceText = () => [
+                    document.getElementById('document-title')?.value,
+                    document.getElementById('document-description')?.value,
+                    document.getElementById('text-content-input')?.value,
+                    document.getElementById('code-source-input')?.value,
+                ].filter(Boolean).join(' ');
+                const refreshSuggestions = () => {
+                    const text = sourceText();
+                    const normalizedText = ` ${normalise(text).replace(/-/g, ' ')} `;
+                    const candidates = [];
+                    documentTagCatalog.forEach(tag => {
+                        const tagKey = normalise(tag.name);
+                        if (tagKey && normalizedText.includes(` ${tagKey.replace(/-/g, ' ')} `) && !state.has(`id:${tag.id}`)) candidates.push({ id: tag.id, name: tag.name, known: true });
+                    });
+                    const words = (text.match(/[\p{L}\p{N}][\p{L}\p{N}-]{3,}/gu) || [])
+                        .map(word => word.replace(/[-_]+/g, ' ').trim())
+                        .filter(word => !stopWords.has(normalise(word)) && normalise(word).length >= 4);
+                    const frequency = new Map();
+                    words.forEach(word => { const key = normalise(word); frequency.set(key, (frequency.get(key) || { name: word, count: 0 })); frequency.get(key).count += 1; });
+                    [...frequency.entries()].sort((a, b) => b[1].count - a[1].count || a[1].name.localeCompare(b[1].name, 'pt-BR')).forEach(([key, value]) => {
+                        if (candidates.length >= 6 || catalogByName.has(key) || state.has(`new:${key}`)) return;
+                        candidates.push({ id: 0, name: value.name, known: false });
+                    });
+                    suggestionList.replaceChildren();
+                    candidates.slice(0, 6).forEach(candidate => {
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = 'rounded-full border border-dashed border-slate-300 px-2 py-1 text-[10px] font-semibold text-slate-500 transition hover:border-slate-500 hover:bg-white hover:text-slate-800 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-[#353842]';
+                        button.textContent = `+ ${candidate.name}`;
+                        button.title = candidate.known ? 'Adicionar tag existente sugerida' : 'Criar e adicionar esta nova tag sugerida';
+                        button.addEventListener('click', () => addTag(candidate.name));
+                        suggestionList.appendChild(button);
+                    });
+                    suggestions.classList.toggle('hidden', candidates.length === 0);
+                };
+                initialDocumentTagIds.forEach(id => {
+                    const tag = documentTagCatalog.find(item => Number(item.id) === Number(id));
+                    if (tag) state.set(`id:${tag.id}`, { id: Number(tag.id), name: tag.name, type: tag.type_label || 'Tag' });
+                });
+                addButton.addEventListener('click', () => addTag(input.value));
+                input.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTag(input.value); } });
+                ['document-title', 'document-description', 'text-content-input', 'code-source-input'].forEach(id => document.getElementById(id)?.addEventListener('input', refreshSuggestions));
+                render();
+            }
+
+            // =====================================================================
+            // ENVIO EM LOTE — fila de arquivos, títulos automáticos e progresso XHR
+            // =====================================================================
+            function initBatchFileUpload() {
+                const dropzone = document.getElementById('batch-dropzone');
+                const input = document.getElementById('file-input');
+                const form = document.getElementById('document-form');
+                const flag = document.getElementById('batch-upload-flag');
+                const queue = document.getElementById('batch-file-queue');
+                const list = document.getElementById('batch-file-list');
+                const count = document.getElementById('batch-file-count');
+                const error = document.getElementById('batch-upload-error');
+                const selectButton = document.getElementById('batch-select-files');
+                const clearButton = document.getElementById('batch-clear-files');
+                const progressWrap = document.getElementById('batch-upload-progress-wrap');
+                const progress = document.getElementById('batch-upload-progress');
+                const percent = document.getElementById('batch-upload-percent');
+                const status = document.getElementById('batch-upload-status');
+                const titleInput = document.getElementById('document-title');
+                if (!dropzone || !input || !form || !flag || !queue || !list || !count) return;
+
+                const maxFiles = 20;
+                const videoExtensions = new Set(['mp4', 'webm', 'ogv', 'm4v', 'mov']);
+                const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif']);
+                const audioExtensions = new Set(['mp3', 'wav', 'ogg']);
+                let files = [];
+                let uploading = false;
+
+                const extensionOf = file => (file.name.split('.').pop() || '').toLowerCase();
+                const formatSize = bytes => bytes < 1024 * 1024
+                    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+                    : `${(bytes / (1024 * 1024)).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
+                const suggestedTitle = file => {
+                    const base = file.name.replace(/\.[^.]+$/, '').replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim();
+                    return base || 'Documento sem título';
+                };
+                const fileKind = file => {
+                    const extension = extensionOf(file);
+                    if (videoExtensions.has(extension)) return { label: 'Vídeo', className: 'bg-violet-500/10 text-violet-700 dark:text-violet-300' };
+                    if (imageExtensions.has(extension)) return { label: 'Imagem', className: 'bg-sky-500/10 text-sky-700 dark:text-sky-300' };
+                    if (audioExtensions.has(extension)) return { label: 'Áudio', className: 'bg-amber-500/10 text-amber-700 dark:text-amber-300' };
+                    return { label: 'Arquivo', className: 'bg-slate-100 text-slate-600 dark:bg-[#353842] dark:text-slate-300' };
+                };
+                const showError = message => {
+                    if (!error) return;
+                    error.textContent = message || '';
+                    error.classList.toggle('hidden', !message);
+                };
+                const setProgress = (value, message) => {
+                    const safeValue = Math.max(0, Math.min(100, Math.round(value)));
+                    if (progressWrap) progressWrap.classList.remove('hidden');
+                    if (progress) progress.style.width = `${safeValue}%`;
+                    if (percent) percent.textContent = `${safeValue}%`;
+                    if (status && message) status.textContent = message;
+                };
+                const syncInputFiles = () => {
+                    const transfer = new DataTransfer();
+                    files.forEach(item => transfer.items.add(item.file));
+                    input.files = transfer.files;
+                    input.name = files.length > 0 ? 'arquivo_file[]' : 'arquivo_file';
+                    flag.value = files.length > 0 ? '1' : '';
+                };
+                const render = () => {
+                    list.replaceChildren();
+                    queue.classList.toggle('hidden', files.length === 0);
+                    count.textContent = `${files.length} ${files.length === 1 ? 'arquivo selecionado' : 'arquivos selecionados'}`;
+                    files.forEach((item, index) => {
+                        const kind = fileKind(item.file);
+                        const row = document.createElement('div');
+                        row.className = 'flex items-center gap-2.5 px-3 py-2.5';
+
+                        const icon = document.createElement('span');
+                        icon.className = 'flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-100 text-slate-500 dark:bg-[#353842] dark:text-slate-300';
+                        icon.innerHTML = '<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>';
+
+                        const content = document.createElement('div');
+                        content.className = 'min-w-0 flex-1';
+                        const title = document.createElement('input');
+                        title.type = 'text';
+                        title.name = 'batch_titles[]';
+                        title.value = item.title;
+                        title.maxLength = 255;
+                        title.className = 'input-minimal w-full border-0 bg-transparent p-0 text-xs font-semibold text-slate-800 focus:ring-0 dark:text-slate-100';
+                        title.setAttribute('aria-label', `Título de ${item.file.name}`);
+                        title.addEventListener('input', event => { files[index].title = event.target.value; });
+                        const detail = document.createElement('div');
+                        detail.className = 'mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] text-slate-400';
+                        const filename = document.createElement('span');
+                        filename.className = 'truncate';
+                        filename.textContent = item.file.name;
+                        const size = document.createElement('span');
+                        size.className = 'shrink-0';
+                        size.textContent = formatSize(item.file.size);
+                        detail.append(filename, size);
+                        content.append(title, detail);
+
+                        const badge = document.createElement('span');
+                        badge.className = `shrink-0 rounded px-1.5 py-1 text-[10px] font-bold ${kind.className}`;
+                        badge.textContent = kind.label;
+                        const remove = document.createElement('button');
+                        remove.type = 'button';
+                        remove.className = 'shrink-0 rounded p-1 text-slate-400 transition hover:bg-red-500/10 hover:text-red-600 disabled:opacity-50';
+                        remove.setAttribute('aria-label', `Remover ${item.file.name}`);
+                        remove.innerHTML = '<svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 6 12 12M18 6 6 18"/></svg>';
+                        remove.disabled = uploading;
+                        remove.addEventListener('click', () => {
+                            files.splice(index, 1);
+                            syncInputFiles();
+                            render();
+                            if (!files.length && titleInput && titleInput.dataset.batchAutofilled === '1') {
+                                titleInput.value = '';
+                                delete titleInput.dataset.batchAutofilled;
+                            }
+                        });
+                        row.append(icon, content, badge, remove);
+                        list.append(row);
+                    });
+                };
+                const addFiles = newFiles => {
+                    if (uploading || !newFiles.length) return;
+                    const uniqueFiles = newFiles.filter(file => !files.some(item => item.file.name === file.name && item.file.size === file.size && item.file.lastModified === file.lastModified));
+                    if (files.length + uniqueFiles.length > maxFiles) {
+                        showError(`A fila aceita no máximo ${maxFiles} arquivos por vez.`);
+                        return;
+                    }
+                    files.push(...uniqueFiles.map(file => ({ file, title: suggestedTitle(file) })));
+                    showError('');
+                    syncInputFiles();
+                    render();
+                    if (files.length && titleInput && (!titleInput.value.trim() || titleInput.dataset.batchAutofilled === '1')) {
+                        titleInput.value = files[0].title;
+                        titleInput.dataset.batchAutofilled = '1';
+                    }
+                };
+                const setControlsDisabled = disabled => {
+                    uploading = disabled;
+                    if (selectButton) selectButton.disabled = disabled;
+                    if (clearButton) clearButton.disabled = disabled;
+                    form.querySelectorAll('button[type="submit"]').forEach(button => { button.disabled = disabled; });
+                    render();
+                };
+
+                titleInput?.addEventListener('input', () => { delete titleInput.dataset.batchAutofilled; });
+                selectButton?.addEventListener('click', event => { event.stopPropagation(); input.click(); });
+                clearButton?.addEventListener('click', () => {
+                    if (uploading) return;
+                    files = [];
+                    syncInputFiles();
+                    render();
+                    showError('');
+                    if (titleInput && titleInput.dataset.batchAutofilled === '1') {
+                        titleInput.value = '';
+                        delete titleInput.dataset.batchAutofilled;
+                    }
+                });
+                input.addEventListener('change', () => addFiles(Array.from(input.files || [])));
+                dropzone.addEventListener('click', event => { if (!event.target.closest('button')) input.click(); });
+                dropzone.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        input.click();
+                    }
+                });
+                ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
+                    event.preventDefault();
+                    if (!uploading) dropzone.classList.add('border-slate-700', 'bg-slate-100');
+                }));
+                ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, event => {
+                    event.preventDefault();
+                    dropzone.classList.remove('border-slate-700', 'bg-slate-100');
+                }));
+                dropzone.addEventListener('drop', event => addFiles(Array.from(event.dataTransfer?.files || [])));
+
+                form.addEventListener('submit', event => {
+                    if (!flag.value || !files.length) {
+                        const selectedType = form.querySelector('input[name="tipo_conteudo"]:checked')?.value;
+                        if (selectedType === 'file') {
+                            event.preventDefault();
+                            showError('Selecione ao menos um arquivo antes de salvar.');
+                        }
+                        return;
+                    }
+                    if (uploading) {
+                        event.preventDefault();
+                        return;
+                    }
+                    event.preventDefault();
+                    if (!form.reportValidity()) return;
+                    const submitter = event.submitter;
+                    const data = new FormData(form);
+                    if (submitter?.name) data.set(submitter.name, submitter.value);
+                    data.set('batch_upload', '1');
+                    showError('');
+                    setControlsDisabled(true);
+                    setProgress(0, 'Enviando arquivos…');
+
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', form.action, true);
+                    xhr.setRequestHeader('Accept', 'application/json');
+                    xhr.upload.addEventListener('progress', progressEvent => {
+                        if (progressEvent.lengthComputable) {
+                            setProgress((progressEvent.loaded / progressEvent.total) * 100, 'Enviando arquivos…');
+                        }
+                    });
+                    xhr.upload.addEventListener('load', () => setProgress(100, 'Criando documentos…'));
+                    xhr.addEventListener('load', () => {
+                        let payload = null;
+                        try { payload = JSON.parse(xhr.responseText || '{}'); } catch (_) { /* resposta inválida abaixo */ }
+                        if (xhr.status >= 200 && xhr.status < 300 && payload?.success) {
+                            setProgress(100, `${payload.created_count} ${payload.created_count === 1 ? 'documento criado' : 'documentos criados'}!`);
+                            window.setTimeout(() => { window.location.assign(payload.redirect || 'index.php?tab=documentos'); }, 350);
+                            return;
+                        }
+                        setControlsDisabled(false);
+                        showError(payload?.error || 'Não foi possível concluir o envio. Tente novamente.');
+                    });
+                    xhr.addEventListener('error', () => {
+                        setControlsDisabled(false);
+                        showError('A conexão foi interrompida durante o envio. Nenhum documento foi criado.');
+                    });
+                    xhr.send(data);
+                });
             }
 
             if (currentFilterCat) onFilterCategoryChange();
@@ -4970,6 +6257,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             let gridInstance = null;
 
             document.addEventListener('DOMContentLoaded', function() {
+                const selectedContentType = document.querySelector('input[name="tipo_conteudo"]:checked');
+                if (selectedContentType) toggleFormContent(selectedContentType.value);
+                initDocumentTags();
+                initBatchFileUpload();
+
                 const gridEl = document.querySelector('.grid-stack');
                 if (gridEl && typeof GridStack !== 'undefined') {
                     gridInstance = GridStack.init({
@@ -4982,22 +6274,51 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     }, gridEl);
                 }
 
-                // Preenchimento automático para criação de novo documento quando vindo do estado vazio
+                // Continuidade do fluxo Categoria → Subcategoria → Assunto → Documento.
                 const urlParams = new URLSearchParams(window.location.search);
-                const preCat = urlParams.get('cat');
-                const preSub = urlParams.get('subcat');
-                const preAss = urlParams.get('assunto');
+                const setupStep = urlParams.get('setup') || '';
+                const editHierarchy = <?= json_encode([
+                    'category' => $editDoc['categoria_id'] ?? null,
+                    'subcategory' => $editDoc['subcategoria_id'] ?? null,
+                    'subject' => $editDoc['assunto_id'] ?? null,
+                ]) ?>;
+                const preCat = urlParams.get('cat_id') || urlParams.get('cat') || editHierarchy.category;
+                const preSub = urlParams.get('subcat_id') || urlParams.get('subcat') || editHierarchy.subcategory;
+                const preAss = urlParams.get('subject_id') || urlParams.get('assunto') || editHierarchy.subject;
+                const selectMatchingOption = (select, requested) => {
+                    if (!select || requested === null || requested === undefined || requested === '') return '';
+                    const requestedText = String(requested);
+                    const option = Array.from(select.options).find(item => item.value === requestedText || item.textContent.trim() === requestedText);
+                    if (!option) return '';
+                    select.value = option.value;
+                    return option.value;
+                };
 
-                if (preCat && document.getElementById('select-cat')) {
-                    document.getElementById('select-cat').value = preCat;
+                const documentCategory = document.getElementById('select-cat');
+                if (preCat && documentCategory) {
+                    selectMatchingOption(documentCategory, preCat);
                     onCategoryChange();
-                    if (preSub && document.getElementById('select-subcat')) {
-                        document.getElementById('select-subcat').value = preSub;
+                    const documentSubcategory = document.getElementById('select-subcat');
+                    if (preSub && documentSubcategory) {
+                        selectMatchingOption(documentSubcategory, preSub);
                         onSubcategoryChange();
-                        if (preAss && document.getElementById('select-assunto')) {
-                            document.getElementById('select-assunto').value = preAss;
+                        const documentSubject = document.getElementById('select-assunto');
+                        if (preAss && documentSubject) {
+                            selectMatchingOption(documentSubject, preAss);
                         }
                     }
+                }
+
+                if (setupStep === 'subcategory') {
+                    ncSwitchType('subcategoria');
+                    selectMatchingOption(document.getElementById('nc-sub-cat'), preCat);
+                } else if (setupStep === 'subject') {
+                    ncSwitchType('assunto');
+                    selectMatchingOption(document.getElementById('nc-ass-cat'), preCat);
+                    ncLoadSubcatsForAssunto();
+                    selectMatchingOption(document.getElementById('nc-ass-subcat'), preSub);
+                } else if (setupStep === 'document') {
+                    ncSwitchType('documento');
                 }
             });
 
@@ -5111,339 +6432,9 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
             }
 
             // =========================================================================
-            // GRAFANA PERMISSIONS MODAL & API INTEGRATION
-            // =========================================================================
-            let currentGrafanaResType = '';
-            let currentGrafanaResId = 0;
-            let selectedPrincipalId = 0;
-
-            function grafanaOpenAddModal(resType, resId, resTitle) {
-                currentGrafanaResType = resType;
-                currentGrafanaResId = resId;
-                selectedPrincipalId = 0;
-
-                const modal = document.getElementById('grafana-add-modal');
-                const titleEl = document.getElementById('grafana-modal-subtitle');
-                const searchInput = document.getElementById('grafana-search-input');
-                const resultsContainer = document.getElementById('grafana-search-results');
-
-                if (!modal) return;
-
-                if (titleEl) titleEl.textContent = resTitle;
-                if (searchInput) searchInput.value = '';
-                if (resultsContainer) {
-                    resultsContainer.innerHTML = '';
-                    resultsContainer.classList.add('hidden');
-                }
-
-                document.getElementById('grafana-modal-res-type').value = resType;
-                document.getElementById('grafana-modal-res-id').value = resId;
-                document.getElementById('grafana-modal-principal-id').value = '';
-
-                modal.classList.remove('hidden');
-                if (searchInput) searchInput.focus();
-                grafanaSearchPrincipals();
-            }
-
-            function grafanaCloseAddModal() {
-                const modal = document.getElementById('grafana-add-modal');
-                if (modal) modal.classList.add('hidden');
-            }
-
-            function grafanaOnPrincipalTypeChange() {
-                selectedPrincipalId = 0;
-                document.getElementById('grafana-modal-principal-id').value = '';
-
-                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
-                const pType = principalTypeEl ? principalTypeEl.value : 'user';
-
-                const tabUser = document.getElementById('btn-tab-user');
-                const tabGroup = document.getElementById('btn-tab-group');
-
-                if (tabUser && tabGroup) {
-                    if (pType === 'user') {
-                        tabUser.className = 'segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2';
-                        tabGroup.className = 'segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400';
-                    } else {
-                        tabGroup.className = 'segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2';
-                        tabUser.className = 'segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400';
-                    }
-                }
-
-                grafanaSearchPrincipals();
-            }
-
-            function grafanaSearchPrincipals() {
-                const query = document.getElementById('grafana-search-input').value.trim();
-                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
-                const principalType = principalTypeEl ? principalTypeEl.value : 'group';
-                const resultsContainer = document.getElementById('grafana-search-results');
-
-                if (!resultsContainer) return;
-
-                fetch(`../api/search_principals.php?q=${encodeURIComponent(query)}&type=${principalType}&resource_type=${currentGrafanaResType}&resource_id=${currentGrafanaResId}`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success && Array.isArray(data.data)) {
-                            resultsContainer.innerHTML = '';
-                            if (data.data.length === 0) {
-                                resultsContainer.innerHTML = '<div class="p-3 text-xs text-slate-400 italic">Nenhum resultado encontrado.</div>';
-                            } else {
-                                data.data.forEach(item => {
-                                    const div = document.createElement('div');
-                                    div.className = `p-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100 dark:hover:bg-[#353842] text-xs transition ${selectedPrincipalId === item.id ? 'bg-blue-50 dark:bg-blue-950/40 border-l-2 border-blue-600 font-bold' : ''}`;
-                                    div.onclick = function() {
-                                        selectedPrincipalId = item.id;
-                                        document.getElementById('grafana-modal-principal-id').value = item.id;
-                                        document.getElementById('grafana-search-input').value = item.name;
-                                        grafanaHighlightSelectedItem(item.id);
-                                    };
-                                    div.setAttribute('data-principal-id', item.id);
-
-                                    const icon = item.type === 'user' ? '👤' : '👥';
-                                    let existingBadge = '';
-                                    if (item.existing_level) {
-                                        existingBadge = `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 font-semibold">Possui ${item.existing_level.toUpperCase()}</span>`;
-                                    }
-
-                                    div.innerHTML = `
-                                        <div class="flex items-center gap-2 min-w-0">
-                                            <span class="text-sm">${icon}</span>
-                                            <div class="truncate">
-                                                <span class="font-bold text-slate-800 dark:text-slate-200 block truncate">${escapeHtml(item.name)}</span>
-                                                <span class="text-[10px] text-slate-400 block truncate">${escapeHtml(item.subtext || '')}</span>
-                                            </div>
-                                        </div>
-                                        <div>${existingBadge}</div>
-                                    `;
-                                    resultsContainer.appendChild(div);
-                                });
-                            }
-                            resultsContainer.classList.remove('hidden');
-                        }
-                    })
-                    .catch(err => {
-                        console.error('Erro ao buscar principais:', err);
-                    });
-            }
-
-            function grafanaHighlightSelectedItem(id) {
-                const items = document.querySelectorAll('#grafana-search-results > div');
-                items.forEach(el => {
-                    if (el.getAttribute('data-principal-id') == id) {
-                        el.classList.add('bg-blue-50', 'dark:bg-blue-950/40', 'border-l-2', 'border-blue-600', 'font-bold');
-                    } else {
-                        el.classList.remove('bg-blue-50', 'dark:bg-blue-950/40', 'border-l-2', 'border-blue-600', 'font-bold');
-                    }
-                });
-            }
-
-            function grafanaSubmitPermission(e) {
-                e.preventDefault();
-
-                const resType = document.getElementById('grafana-modal-res-type').value;
-                const resId = parseInt(document.getElementById('grafana-modal-res-id').value);
-                const principalId = parseInt(document.getElementById('grafana-modal-principal-id').value);
-                const principalTypeEl = document.querySelector('input[name="grafana_principal_type"]:checked');
-                const principalType = principalTypeEl ? principalTypeEl.value : 'group';
-                const level = document.getElementById('grafana-modal-level').value;
-
-                if (!principalId || principalId <= 0) {
-                    alert('Por favor, pesquise e selecione um Usuário ou Equipe na lista.');
-                    return;
-                }
-
-                const payload = {
-                    resource_type: resType,
-                    resource_id: resId,
-                    principal_type: principalType,
-                    principal_id: principalId,
-                    permission_level: level
-                };
-
-                fetch('../api/permissions.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        grafanaCloseAddModal();
-                        window.location.reload();
-                    } else {
-                        alert('Erro ao adicionar permissão: ' + (data.error || 'Falha na requisição.'));
-                    }
-                })
-                .catch(err => {
-                    alert('Erro ao conectar ao servidor: ' + err.message);
-                });
-            }
-
-            function grafanaChangeLevel(permId, newLevel, resType, resId) {
-                if (!permId || !newLevel) return;
-
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = 'index.php?tab=editar_estrutura';
-
-                const actInput = document.createElement('input');
-                actInput.type = 'hidden';
-                actInput.name = 'resource_permission_action';
-                actInput.value = 'update_level';
-                form.appendChild(actInput);
-
-                const resTypeInput = document.createElement('input');
-                resTypeInput.type = 'hidden';
-                resTypeInput.name = 'resource_type';
-                resTypeInput.value = resType;
-                form.appendChild(resTypeInput);
-
-                const resIdInput = document.createElement('input');
-                resIdInput.type = 'hidden';
-                resIdInput.name = 'resource_id';
-                resIdInput.value = resId;
-                form.appendChild(resIdInput);
-
-                const permIdInput = document.createElement('input');
-                permIdInput.type = 'hidden';
-                permIdInput.name = 'permission_id';
-                permIdInput.value = permId;
-                form.appendChild(permIdInput);
-
-                const levelInput = document.createElement('input');
-                levelInput.type = 'hidden';
-                levelInput.name = 'permission_level';
-                levelInput.value = newLevel;
-                form.appendChild(levelInput);
-
-                document.body.appendChild(form);
-                form.submit();
-            }
-
-            function grafanaDeleteRule(permId, resType, resId) {
-                if (!confirm('Deseja realmente remover esta permissão direta?')) {
-                    return;
-                }
-
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = 'index.php?tab=editar_estrutura';
-
-                const actInput = document.createElement('input');
-                actInput.type = 'hidden';
-                actInput.name = 'resource_permission_action';
-                actInput.value = 'delete_permission';
-                form.appendChild(actInput);
-
-                const resTypeInput = document.createElement('input');
-                resTypeInput.type = 'hidden';
-                resTypeInput.name = 'resource_type';
-                resTypeInput.value = resType;
-                form.appendChild(resTypeInput);
-
-                const resIdInput = document.createElement('input');
-                resIdInput.type = 'hidden';
-                resIdInput.name = 'resource_id';
-                resIdInput.value = resId;
-                form.appendChild(resIdInput);
-
-                const permIdInput = document.createElement('input');
-                permIdInput.type = 'hidden';
-                permIdInput.name = 'permission_id';
-                permIdInput.value = permId;
-                form.appendChild(permIdInput);
-
-                document.body.appendChild(form);
-                form.submit();
-            }
-
-            function escapeHtml(str) {
-                if (!str) return '';
-                return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-            }
         </script>
     <?php endif; ?>
 
-    <!-- MODAL ESTILO GRAFANA: ADICIONAR UMA PERMISSÃO (DESIGN PREMIUM) -->
-    <div id="grafana-add-modal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 hidden grafana-modal-backdrop">
-        <div class="grafana-modal-box bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
-            
-            <!-- HEADER DA MODAL -->
-            <div class="p-5 pb-4 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between bg-slate-50/50 dark:bg-[#2c2e33]/50">
-                <div class="flex items-center gap-3">
-                    <div class="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-md">
-                        +
-                    </div>
-                    <div>
-                        <h3 class="text-base font-bold text-slate-900 dark:text-slate-100 tracking-tight">Adicionar permissão</h3>
-                        <p id="grafana-modal-subtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium"></p>
-                    </div>
-                </div>
-                <button type="button" onclick="grafanaCloseAddModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-[#454956] flex items-center justify-center text-sm font-bold transition">✕</button>
-            </div>
-
-            <!-- FORMULÁRIO INTERATIVO -->
-            <form id="grafana-add-form" onsubmit="grafanaSubmitPermission(event)" class="p-6 space-y-5 overflow-y-auto flex-1">
-                <input type="hidden" id="grafana-modal-res-type" value="">
-                <input type="hidden" id="grafana-modal-res-id" value="">
-                <input type="hidden" id="grafana-modal-principal-id" value="">
-
-                <!-- 1. TIPO DE ATRIBUIÇÃO (SEGMENTED CONTROL PILLS) -->
-                <div>
-                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">1. Selecione o Tipo de Atribuição</label>
-                    <div class="p-1 rounded-xl bg-slate-100 dark:bg-[#2c2e33] grid grid-cols-2 gap-1 border border-slate-200 dark:border-[#454956]">
-                        <label class="cursor-pointer">
-                            <input type="radio" name="grafana_principal_type" value="user" checked class="sr-only" onchange="grafanaOnPrincipalTypeChange()">
-                            <div id="btn-tab-user" class="segmented-btn active py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2">
-                                <span>👤 Usuário</span>
-                            </div>
-                        </label>
-                        <label class="cursor-pointer">
-                            <input type="radio" name="grafana_principal_type" value="group" class="sr-only" onchange="grafanaOnPrincipalTypeChange()">
-                            <div id="btn-tab-group" class="segmented-btn py-2 text-center text-xs font-semibold rounded-lg flex items-center justify-center gap-2 text-slate-500 dark:text-slate-400">
-                                <span>👥 Equipe / Grupo</span>
-                            </div>
-                        </label>
-                    </div>
-                </div>
-
-                <!-- 2. PESQUISA AO VIVO COM AUTOCOMPLETE -->
-                <div>
-                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">2. Pesquisar e Selecionar</label>
-                    <div class="relative">
-                        <input type="text" id="grafana-search-input" oninput="grafanaSearchPrincipals()" placeholder="Digite o nome, e-mail ou grupo..." class="input-minimal w-full pl-9 pr-8 py-2.5 text-xs font-medium rounded-xl border border-slate-200 dark:border-[#454956] text-slate-900 dark:text-slate-100 shadow-xs">
-                        <span class="absolute left-3 top-3 text-slate-400">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                        </span>
-                    </div>
-
-                    <div id="grafana-search-results" class="mt-1.5 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-[#454956] border border-slate-200 dark:border-[#454956] rounded-xl hidden bg-white dark:bg-[#2c2e33] shadow-lg">
-                    </div>
-                </div>
-
-                <!-- 3. SELEÇÃO DE NÍVEL DE PERMISSÃO -->
-                <div>
-                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">3. Nível de Permissão</label>
-                    <select id="grafana-modal-level" class="perm-level-select input-minimal w-full px-3 py-2.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-[#454956] text-slate-900 dark:text-slate-100">
-                        <option value="view">Visualizador (View) — Pode apenas visualizar conteúdos</option>
-                        <option value="edit">Editor (Edit) — Pode visualizar, criar e editar conteúdos</option>
-                        <option value="admin">Administrador (Admin) — Gestão total e gerenciamento de permissões</option>
-                    </select>
-                </div>
-
-                <!-- FOOTER DE AÇÕES -->
-                <div class="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-[#454956]">
-                    <button type="button" onclick="grafanaCloseAddModal()" class="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-[#454956] text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2c2e33] transition">
-                        Cancelar
-                    </button>
-                    <button type="submit" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold text-xs transition shadow-md hover:shadow-lg active:scale-[0.98]">
-                        + Adicionar Permissão
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
+    <script src="../assets/permissions.js"></script>
 </body>
 </html>

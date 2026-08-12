@@ -27,6 +27,12 @@ try {
     die("Não foi possível conectar ao banco de dados PostgreSQL. Verifique os serviços e credenciais do servidor.");
 }
 
+// Políticas e identidade globais. O executor de migrações desliga este bloco
+// enquanto a própria tabela de configurações ainda pode não existir.
+if (!defined('DOCGOV_SKIP_APP_RUNTIME') || DOCGOV_SKIP_APP_RUNTIME !== true) {
+    require_once __DIR__ . '/app_runtime.php';
+}
+
 /**
  * Funçao Auxiliar para Gerar Slugs Limpos de URLs Amigáveis
  */

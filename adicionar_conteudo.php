@@ -1,8 +1,7 @@
 <?php
 // adicionar_conteudo.php - Redirecionamento para o Módulo de Gestão Administrativa (admin/index.php)
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config/session.php';
+docgovStartSession();
 
 $cat = trim($_GET['cat'] ?? '');
 $subcat = trim($_GET['subcat'] ?? '');

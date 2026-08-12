@@ -1,8 +1,7 @@
 <?php
 // api/subcategories.php - Endpoint JSON para Subcategorias (PostgreSQL com PermissionService)
-if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
-    session_start();
-}
+require_once __DIR__ . '/../config/session.php';
+docgovStartSession();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
 

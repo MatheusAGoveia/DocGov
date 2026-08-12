@@ -1,10 +1,9 @@
 <?php
 // ver_conteudo.php — Visualizador de Conteúdo em PostgreSQL (Fonte Única & Engine PDF.js Nativa)
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config/session.php';
+docgovStartSession();
 require_once __DIR__ . '/config/db.php';
-require_once __DIR__ . '/config/permissions.php';
+require_once __DIR__ . '/services/VideoEmbedService.php';
 
 $loggedUser = $_SESSION['user'] ?? null;
 $docId = (int)($_GET['id'] ?? 0);
@@ -20,7 +19,7 @@ $stmt = $pdo->prepare("
         d.id, d.subject_id, d.created_by, d.title, d.slug, d.description, 
         d.content_type, d.status, d.published_at, d.original_filename, 
         d.stored_filename, d.file_path, d.mime_type, d.file_extension, 
-        d.file_size, d.text_content, d.external_url, d.created_at, d.updated_at,
+        d.file_size, d.text_content, d.code_language, d.external_url, d.created_at, d.updated_at,
         s.name AS subject_name, s.slug AS subject_slug,
         sc.name AS subcategory_name, sc.slug AS subcategory_slug,
         c.name AS category_name, c.slug AS category_slug,
@@ -61,8 +60,15 @@ if (!$accessService->canAccessDocument($userId, $docId)) {
 $canView = true;
 require_once __DIR__ . '/services/PermissionService.php';
 $_permSvcVC = new PermissionService($pdo);
+require_once __DIR__ . '/services/UsageAuditService.php';
+$usageAuditService = new UsageAuditService($pdo);
+$usageAuditService->log('document_view', $userId, 'DOCUMENT', $docId, [
+    'content_type' => (string)($doc['content_type'] ?? 'file'),
+]);
 $canEdit = $loggedUser && $_permSvcVC->canEditDocument($userId, $docId);
 $canDelete = $loggedUser && $_permSvcVC->isGlobalAdmin($userId);
+require_once __DIR__ . '/services/TagService.php';
+$documentTags = (new TagService($pdo))->getDocumentTags($docId);
 
 $isFavorite = false;
 if ($loggedUser) {
@@ -102,19 +108,63 @@ $fileExt = strtolower($doc['file_extension'] ?? '');
 $contentType = $doc['content_type'] ?? 'file';
 
 $isPdf = ($contentType === 'file') && ($fileExt === 'pdf' || str_contains($mimeType, 'pdf') || str_contains(strtolower($doc['original_filename'] ?? ''), '.pdf'));
+$isImage = ($contentType === 'file') && (str_starts_with($mimeType, 'image/') || in_array($fileExt, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'], true));
+$isTextFile = ($contentType === 'file') && (str_starts_with($mimeType, 'text/') || in_array($fileExt, ['txt', 'log', 'csv', 'md', 'json', 'xml'], true));
+$isDocx = ($contentType === 'file') && ($fileExt === 'docx' || str_contains($mimeType, 'officedocument.wordprocessingml'));
+$isAudio = ($contentType === 'file') && (str_starts_with($mimeType, 'audio/') || in_array($fileExt, ['mp3', 'wav', 'ogg'], true));
+$isVideo = in_array($contentType, ['file', 'video'], true)
+    && !empty($doc['stored_filename'])
+    && (str_starts_with($mimeType, 'video/') || in_array($fileExt, ['mp4', 'webm', 'ogv', 'm4v', 'mov'], true));
+$externalVideo = !empty($doc['external_url']) && in_array($contentType, ['video', 'link'], true)
+    ? VideoEmbedService::resolve((string)$doc['external_url'])
+    : ['kind' => 'invalid'];
+$isExternalVideo = in_array($externalVideo['kind'], ['youtube', 'vimeo', 'direct', 'external'], true);
+$displayTypeLabel = $contentType === 'file' ? ($fileExt ?: 'arquivo') : ($contentType === 'video' ? 'vídeo' : $contentType);
 
 $streamUrl = 'document-file.php?id=' . $docId;
+$downloadUrl = 'download.php?id=' . $docId;
 $userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
 $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$navigationTrail = [
+    ['kind' => 'Portal', 'label' => 'Categorias', 'url' => 'index.php'],
+    [
+        'kind' => 'Categoria',
+        'label' => $doc['category_name'],
+        'url' => 'index.php?cat=' . urlencode($doc['category_slug']),
+    ],
+    [
+        'kind' => 'Subcategoria',
+        'label' => $doc['subcategory_name'],
+        'url' => 'index.php?cat=' . urlencode($doc['category_slug']) . '&subcat=' . urlencode($doc['subcategory_slug']),
+    ],
+    [
+        'kind' => 'Assunto',
+        'label' => $doc['subject_name'],
+        'url' => 'index.php?cat=' . urlencode($doc['category_slug']) . '&subcat=' . urlencode($doc['subcategory_slug']) . '&assunto=' . urlencode($doc['subject_slug']),
+    ],
+    ['kind' => 'Documento', 'label' => $doc['title'], 'url' => null],
+];
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR" class="<?= $userThemeClass ?>">
+<html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($doc['title']) ?> - DocGov</title>
+    <title><?= htmlspecialchars($doc['title']) ?> - <?= htmlspecialchars($appName) ?></title>
     
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="assets/code-snippets.css">
+    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
+    <script defer src="assets/code-snippets.js"></script>
+    <?php if ($isDocx): ?>
+        <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.6/dist/docx-preview.min.js"></script>
+        <style>
+            #docxPreviewContainer .docx-wrapper { background: #e2e8f0; padding: 1.5rem; }
+            #docxPreviewContainer .docx-wrapper > section.docx { margin: 0 auto 1.25rem; box-shadow: 0 4px 18px rgba(15,23,42,.15); }
+            .dark #docxPreviewContainer .docx-wrapper { background: #262626; }
+        </style>
+    <?php endif; ?>
     <script>
       tailwind.config = {
         darkMode: 'class',
@@ -122,11 +172,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
           extend: {
             colors: {
               graphite: {
-                950: '#181a1f',
-                900: '#23252a',
-                800: '#2c2e33',
-                700: '#353842',
-                600: '#454956'
+                950: '#171717',
+                900: '#212121',
+                800: '#2f2f2f',
+                700: '#383838',
+                600: '#424242'
               }
             }
           }
@@ -168,29 +218,33 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
     <?php endif; ?>
 </head>
 <body class="bg-[#f8f9fa] dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 min-h-screen flex flex-col justify-between selection:bg-slate-800 selection:text-white">
+    <?php require __DIR__ . '/partials/maintenance-banner.php'; ?>
 
     <div>
-        <!-- NAVBAR FLUTUANTE COMPACTA (FLOATING NAVBAR) -->
-        <div class="sticky top-4 z-50 w-full max-w-5xl mx-auto px-4 mb-4">
-            <header class="bg-white/85 dark:bg-[#1f2128]/90 backdrop-blur-md border border-slate-200/80 dark:border-slate-800/80 shadow-md shadow-slate-900/5 rounded-2xl px-4 py-2.5 transition-all duration-200">
-                <div class="flex items-center justify-between gap-4">
+        <!-- NAVBAR FIXA, LEVE E DE LARGURA TOTAL -->
+        <div class="fixed inset-x-0 top-0 z-50 border-b border-slate-200/80 bg-white/90 shadow-sm shadow-slate-900/5 backdrop-blur-md dark:border-slate-800/80 dark:bg-[#1f2128]/95">
+            <header class="max-container">
+                <div class="flex min-h-[58px] items-center justify-between gap-4">
                     
                     <div class="flex items-center gap-6">
                         <a href="index.php" class="inline-flex items-center gap-2.5 group text-decoration-none shrink-0">
-                            <div class="w-8 h-8 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs group-hover:scale-105 transition-transform duration-200">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5m0 0h4m-4 0V11m0 0L9 14m3-3l3 3"></path>
-                                </svg>
-                            </div>
-                            <span class="font-extrabold text-sm tracking-tight text-slate-900 dark:text-slate-100">DocGov</span>
+                            <?php if ($appLogoUrl): ?>
+                                <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 rounded-xl border border-slate-200 bg-white object-contain p-0.5 shadow-xs transition-transform duration-200 group-hover:scale-105 dark:border-[#454956] dark:bg-[#353842]">
+                            <?php else: ?>
+                                <div class="w-8 h-8 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs group-hover:scale-105 transition-transform duration-200">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5m0 0h4m-4 0V11m0 0L9 14m3-3l3 3"></path>
+                                    </svg>
+                                </div>
+                            <?php endif; ?>
+                            <span class="font-extrabold text-sm tracking-tight text-slate-900 dark:text-slate-100"><?= htmlspecialchars($appName) ?></span>
                         </a>
 
                         <nav class="hidden md:flex items-center gap-1">
                             <a href="index.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
                                 Início
                             </a>
-                            <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition flex items-center gap-1.5">
-                                <svg class="w-3.5 h-3.5 text-amber-500 fill-amber-500" viewBox="0 0 24 24"><path d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+                            <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition flex items-center">
                                 <span>Favoritos</span>
                             </a>
                         </nav>
@@ -206,37 +260,19 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
         </div>
 
         <!-- CONTAINER DO VISUALIZADOR -->
-        <main class="max-container py-8">
-            
-            <!-- BREADCRUMB DINÂMICO REAL -->
-            <nav class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-6 flex-wrap">
-                <a href="index.php" class="hover:text-slate-900 dark:hover:text-white">Início</a>
-                <span>/</span>
-                <a href="index.php?cat=<?= urlencode($doc['category_slug']) ?>" class="hover:text-slate-900 dark:hover:text-white font-medium text-slate-800 dark:text-slate-200">
-                    <?= htmlspecialchars($doc['category_name']) ?>
-                </a>
-                <span>/</span>
-                <a href="index.php?cat=<?= urlencode($doc['category_slug']) ?>&subcat=<?= urlencode($doc['subcategory_slug']) ?>" class="hover:text-slate-900 dark:hover:text-white font-medium text-slate-800 dark:text-slate-200">
-                    <?= htmlspecialchars($doc['subcategory_name']) ?>
-                </a>
-                <span>/</span>
-                <a href="index.php?cat=<?= urlencode($doc['category_slug']) ?>&subcat=<?= urlencode($doc['subcategory_slug']) ?>&assunto=<?= urlencode($doc['subject_slug']) ?>" class="hover:text-slate-900 dark:hover:text-white font-medium text-slate-800 dark:text-slate-200">
-                    <?= htmlspecialchars($doc['subject_name']) ?>
-                </a>
-                <span>/</span>
-                <span class="font-bold text-slate-900 dark:text-white truncate max-w-xs">
-                    <?= htmlspecialchars($doc['title']) ?>
-                </span>
-            </nav>
+        <main class="max-container pb-10 pt-20 sm:pt-24">
+            <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[10.5rem_minmax(0,1fr)] lg:gap-6">
+                <?php require __DIR__ . '/partials/vertical_navigation.php'; ?>
+                <section class="min-w-0">
 
             <!-- CARD DE CONTEÚDO -->
-            <div class="bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs p-6 md:p-8">
+            <div class="bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs p-4 sm:p-5 md:p-6">
                 
                 <!-- CABEÇALHO DO DOCUMENTO -->
                 <div class="border-b border-slate-100 dark:border-[#454956] pb-6 mb-6">
                     <div class="flex items-center justify-between gap-4 flex-wrap mb-2">
                         <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33]">
-                            <?= strtoupper($isPdf ? 'PDF' : $contentType) ?>
+                            <?= htmlspecialchars(strtoupper($displayTypeLabel)) ?>
                         </span>
                         
                         <?php if ($loggedUser): ?>
@@ -271,6 +307,16 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                             <span>Tamanho: <b><?= viewerFormatSize((int)$doc['file_size']) ?></b></span>
                         <?php endif; ?>
                     </div>
+                    <?php if (!empty($documentTags)): ?>
+                        <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                            <span class="mr-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Tags</span>
+                            <?php foreach ($documentTags as $tag): ?>
+                                <a href="index.php?tag=<?= urlencode($tag['name']) ?>" class="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-semibold text-slate-600 transition hover:border-slate-400 hover:bg-white hover:text-slate-900 dark:border-[#454956] dark:bg-[#2c2e33] dark:text-slate-300 dark:hover:bg-[#353842]">
+                                    <?= htmlspecialchars($tag['name']) ?>
+                                </a>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <!-- EXIBIÇÃO DE CONTEÚDO POR TIPO -->
@@ -475,6 +521,228 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         document.addEventListener('DOMContentLoaded', loadPdfViewer);
                     </script>
 
+                <?php elseif ($isImage): ?>
+                    <div id="imageViewerApp" class="overflow-hidden rounded-lg border border-slate-200 dark:border-[#454956] bg-slate-100 dark:bg-[#202329]">
+                        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-[#454956] bg-white dark:bg-[#2c2e33] px-3 py-2">
+                            <div class="min-w-0">
+                                <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($doc['original_filename'] ?: 'Imagem') ?></p>
+                                <p class="text-[10px] text-slate-400"><?= viewerFormatSize((int)$doc['file_size']) ?> · <?= htmlspecialchars(strtoupper($fileExt ?: 'imagem')) ?></p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-1.5">
+                                <button type="button" onclick="changeImageZoom(-0.15)" class="rounded border border-slate-200 dark:border-[#454956] px-2 py-1 text-xs font-bold hover:bg-slate-100 dark:hover:bg-[#3e424e]" aria-label="Reduzir imagem">−</button>
+                                <span id="imageZoomLabel" class="min-w-12 text-center font-mono text-[10px] text-slate-500 dark:text-slate-300">100%</span>
+                                <button type="button" onclick="changeImageZoom(0.15)" class="rounded border border-slate-200 dark:border-[#454956] px-2 py-1 text-xs font-bold hover:bg-slate-100 dark:hover:bg-[#3e424e]" aria-label="Ampliar imagem">+</button>
+                                <button type="button" onclick="rotateViewerImage()" class="rounded border border-slate-200 dark:border-[#454956] px-2.5 py-1 text-[10px] font-semibold hover:bg-slate-100 dark:hover:bg-[#3e424e]">Girar</button>
+                                <button type="button" onclick="fitViewerImage()" class="rounded border border-slate-200 dark:border-[#454956] px-2.5 py-1 text-[10px] font-semibold hover:bg-slate-100 dark:hover:bg-[#3e424e]">Ajustar</button>
+                                <button type="button" onclick="toggleImageFullscreen()" class="rounded border border-slate-200 dark:border-[#454956] px-2.5 py-1 text-[10px] font-semibold hover:bg-slate-100 dark:hover:bg-[#3e424e]">Tela cheia</button>
+                                <a href="<?= $downloadUrl ?>" class="rounded bg-slate-900 dark:bg-white px-2.5 py-1 text-[10px] font-semibold text-white dark:text-slate-900">Baixar</a>
+                            </div>
+                        </div>
+                        <div id="imageViewerCanvas" class="flex min-h-80 max-h-[75vh] items-center justify-center overflow-auto p-4 sm:p-6">
+                            <img id="protectedImageViewer" src="<?= htmlspecialchars($streamUrl) ?>" alt="<?= htmlspecialchars($doc['title']) ?>" class="block rounded shadow-lg transition-[width,transform] duration-150">
+                            <div id="imageViewerError" class="hidden max-w-md rounded-md border border-red-500/20 bg-red-500/10 p-5 text-center text-xs text-red-600 dark:text-red-400">
+                                Não foi possível carregar esta imagem. Use o botão Baixar para obter o arquivo original.
+                            </div>
+                        </div>
+                    </div>
+                    <script>
+                        let protectedImageBaseWidth = 0;
+                        let protectedImageZoom = 1;
+                        let protectedImageRotation = 0;
+
+                        function initializeImageViewer() {
+                            const image = document.getElementById('protectedImageViewer');
+                            const canvas = document.getElementById('imageViewerCanvas');
+                            if (!image || !canvas) return;
+                            protectedImageBaseWidth = Math.max(1, Math.min(image.naturalWidth || 1, Math.max(280, canvas.clientWidth - 48)));
+                            fitViewerImage();
+                        }
+
+                        function updateImageViewer() {
+                            const image = document.getElementById('protectedImageViewer');
+                            const label = document.getElementById('imageZoomLabel');
+                            if (!image || !protectedImageBaseWidth) return;
+                            image.style.width = Math.round(protectedImageBaseWidth * protectedImageZoom) + 'px';
+                            image.style.maxWidth = 'none';
+                            image.style.transform = 'rotate(' + protectedImageRotation + 'deg)';
+                            if (label) label.textContent = Math.round(protectedImageZoom * 100) + '%';
+                        }
+
+                        function changeImageZoom(delta) {
+                            protectedImageZoom = Math.min(4, Math.max(0.25, protectedImageZoom + delta));
+                            updateImageViewer();
+                        }
+
+                        function rotateViewerImage() {
+                            protectedImageRotation = (protectedImageRotation + 90) % 360;
+                            updateImageViewer();
+                        }
+
+                        function fitViewerImage() {
+                            protectedImageZoom = 1;
+                            protectedImageRotation = 0;
+                            updateImageViewer();
+                        }
+
+                        function toggleImageFullscreen() {
+                            const viewer = document.getElementById('imageViewerApp');
+                            if (!viewer) return;
+                            if (!document.fullscreenElement) viewer.requestFullscreen().catch(() => {});
+                            else document.exitFullscreen();
+                        }
+
+                        function showImageViewerError() {
+                            const image = document.getElementById('protectedImageViewer');
+                            const error = document.getElementById('imageViewerError');
+                            if (image) image.classList.add('hidden');
+                            if (error) error.classList.remove('hidden');
+                        }
+
+                        const protectedViewerImage = document.getElementById('protectedImageViewer');
+                        if (protectedViewerImage) {
+                            protectedViewerImage.addEventListener('error', showImageViewerError);
+                            if (protectedViewerImage.complete && protectedViewerImage.naturalWidth > 0) initializeImageViewer();
+                            else protectedViewerImage.addEventListener('load', initializeImageViewer, { once: true });
+                        }
+                    </script>
+
+                <?php elseif ($isTextFile): ?>
+                    <div class="overflow-hidden rounded-lg border border-slate-200 dark:border-[#454956]">
+                        <div class="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] px-3 py-2">
+                            <div class="min-w-0">
+                                <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($doc['original_filename'] ?: 'Arquivo de texto') ?></p>
+                                <p class="text-[10px] text-slate-400"><?= viewerFormatSize((int)$doc['file_size']) ?> · visualização somente leitura</p>
+                            </div>
+                            <a href="<?= $downloadUrl ?>" class="shrink-0 rounded bg-slate-900 dark:bg-white px-3 py-1.5 text-[10px] font-semibold text-white dark:text-slate-900">Baixar</a>
+                        </div>
+                        <pre id="protectedTextFile" class="min-h-72 max-h-[70vh] overflow-auto bg-[#24272e] p-4 font-mono text-xs leading-6 text-slate-200 whitespace-pre-wrap break-words">Carregando arquivo...</pre>
+                    </div>
+                    <script>
+                        document.addEventListener('DOMContentLoaded', async function () {
+                            const output = document.getElementById('protectedTextFile');
+                            if (!output) return;
+                            try {
+                                const response = await fetch(<?= json_encode($streamUrl) ?>, { credentials: 'same-origin' });
+                                if (!response.ok) throw new Error('HTTP ' + response.status);
+                                const buffer = await response.arrayBuffer();
+                                const limit = 2 * 1024 * 1024;
+                                const visibleBuffer = buffer.byteLength > limit ? buffer.slice(0, limit) : buffer;
+                                let content = new TextDecoder('utf-8').decode(visibleBuffer);
+                                <?php if ($fileExt === 'json'): ?>
+                                try { content = JSON.stringify(JSON.parse(content), null, 2); } catch (error) {}
+                                <?php endif; ?>
+                                if (buffer.byteLength > limit) content += '\n\n[Prévia limitada aos primeiros 2 MB do arquivo.]';
+                                output.textContent = content;
+                            } catch (error) {
+                                output.textContent = 'Não foi possível carregar a prévia deste arquivo.';
+                            }
+                        });
+                    </script>
+
+                <?php elseif ($isDocx): ?>
+                    <div class="overflow-hidden rounded-lg border border-slate-200 dark:border-[#454956]">
+                        <div class="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] px-3 py-2">
+                            <div class="min-w-0">
+                                <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($doc['original_filename'] ?: 'Documento Word') ?></p>
+                                <p class="text-[10px] text-slate-400">Prévia DOCX protegida no navegador</p>
+                            </div>
+                            <a href="<?= $downloadUrl ?>" class="shrink-0 rounded bg-slate-900 dark:bg-white px-3 py-1.5 text-[10px] font-semibold text-white dark:text-slate-900">Baixar original</a>
+                        </div>
+                        <div id="docxPreviewLoading" class="p-8 text-center text-xs text-slate-500 dark:text-slate-400">Carregando documento Word...</div>
+                        <div id="docxPreviewError" class="hidden p-8 text-center text-xs text-red-600 dark:text-red-400">Não foi possível montar a prévia. Baixe o arquivo original para abri-lo no Word.</div>
+                        <div id="docxPreviewContainer" class="max-h-[75vh] overflow-auto"></div>
+                    </div>
+                    <script>
+                        document.addEventListener('DOMContentLoaded', async function () {
+                            const loading = document.getElementById('docxPreviewLoading');
+                            const error = document.getElementById('docxPreviewError');
+                            const container = document.getElementById('docxPreviewContainer');
+                            try {
+                                if (!window.docx || !window.JSZip) throw new Error('Visualizador DOCX indisponível.');
+                                const response = await fetch(<?= json_encode($streamUrl) ?>, { credentials: 'same-origin' });
+                                if (!response.ok) throw new Error('HTTP ' + response.status);
+                                const data = await response.arrayBuffer();
+                                await window.docx.renderAsync(data, container, null, {
+                                    inWrapper: true,
+                                    breakPages: true,
+                                    ignoreLastRenderedPageBreak: false,
+                                    renderHeaders: true,
+                                    renderFooters: true,
+                                    renderFootnotes: true,
+                                    renderAltChunks: false,
+                                    useBase64URL: true,
+                                });
+                                loading.classList.add('hidden');
+                            } catch (previewError) {
+                                loading.classList.add('hidden');
+                                error.classList.remove('hidden');
+                            }
+                        });
+                    </script>
+
+                <?php elseif ($isAudio): ?>
+                    <div class="rounded-lg border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] p-6 text-center">
+                        <p class="mb-4 text-xs font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($doc['original_filename'] ?: 'Arquivo de áudio') ?></p>
+                        <audio controls preload="metadata" class="mx-auto w-full max-w-2xl" src="<?= htmlspecialchars($streamUrl) ?>">Seu navegador não consegue reproduzir este áudio.</audio>
+                        <a href="<?= $downloadUrl ?>" class="mt-4 inline-flex rounded bg-slate-900 dark:bg-white px-3 py-1.5 text-[10px] font-semibold text-white dark:text-slate-900">Baixar áudio</a>
+                    </div>
+
+                <?php elseif ($isVideo): ?>
+                    <div class="overflow-hidden rounded-lg border border-slate-200 dark:border-[#454956] bg-black">
+                        <video controls preload="metadata" class="mx-auto max-h-[75vh] w-full" src="<?= htmlspecialchars($streamUrl) ?>">Seu navegador não consegue reproduzir este vídeo.</video>
+                        <div class="flex items-center justify-between gap-3 bg-slate-50 dark:bg-[#2c2e33] px-3 py-2">
+                            <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($doc['original_filename'] ?: 'Arquivo de vídeo') ?></p>
+                            <a href="<?= $downloadUrl ?>" class="shrink-0 rounded bg-slate-900 dark:bg-white px-3 py-1.5 text-[10px] font-semibold text-white dark:text-slate-900">Baixar vídeo</a>
+                        </div>
+                    </div>
+
+                <?php elseif ($isExternalVideo): ?>
+                    <?php if (in_array($externalVideo['kind'], ['youtube', 'vimeo'], true)): ?>
+                        <div class="overflow-hidden rounded-lg border border-slate-200 bg-black dark:border-[#454956]">
+                            <iframe
+                                class="aspect-video w-full"
+                                src="<?= htmlspecialchars((string)$externalVideo['embed_url']) ?>"
+                                title="Vídeo do <?= htmlspecialchars((string)$externalVideo['provider']) ?>: <?= htmlspecialchars($doc['title']) ?>"
+                                loading="lazy"
+                                referrerpolicy="strict-origin-when-cross-origin"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                allowfullscreen></iframe>
+                            <div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2 dark:bg-[#2c2e33]">
+                                <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100">Vídeo incorporado do <?= htmlspecialchars((string)$externalVideo['provider']) ?></p>
+                                <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir origem</a>
+                            </div>
+                        </div>
+                    <?php elseif ($externalVideo['kind'] === 'direct'): ?>
+                        <div class="overflow-hidden rounded-lg border border-slate-200 bg-black dark:border-[#454956]">
+                            <video controls preload="metadata" class="mx-auto max-h-[75vh] w-full" src="<?= htmlspecialchars((string)$externalVideo['url']) ?>">Seu navegador não consegue reproduzir este vídeo externo.</video>
+                            <div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2 dark:bg-[#2c2e33]">
+                                <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100">Vídeo hospedado externamente</p>
+                                <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir origem</a>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <div class="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center dark:border-[#454956] dark:bg-[#2c2e33]">
+                            <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">Vídeo hospedado em site externo</p>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Esse provedor não permite uma prévia segura aqui. Abra o vídeo na origem.</p>
+                            <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="mt-4 inline-flex rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir vídeo externo</a>
+                        </div>
+                    <?php endif; ?>
+
+                <?php elseif ($contentType === 'code'): ?>
+                    <?php $codeLanguage = $doc['code_language'] ?: 'auto'; ?>
+                    <div class="code-snippet" data-code-snippet data-code-language="<?= htmlspecialchars($codeLanguage) ?>">
+                        <div class="code-snippet__header">
+                            <span class="code-snippet__language" data-code-language-label>
+                                <?= $codeLanguage === 'auto' ? 'Detectando...' : htmlspecialchars(strtoupper($codeLanguage)) ?>
+                            </span>
+                            <button type="button" class="code-snippet__copy" data-copy-code aria-label="Copiar código" title="Copiar código">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 8h10a2 2 0 012 2v10a2 2 0 01-2 2H8a2 2 0 01-2-2V10a2 2 0 012-2zM16 8V4a2 2 0 00-2-2H4a2 2 0 00-2 2v10a2 2 0 002 2h2"/></svg>
+                                <span data-copy-label>Copiar</span>
+                            </button>
+                        </div>
+                        <pre><code data-code-source><?= htmlspecialchars($doc['text_content'] ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></code></pre>
+                    </div>
+
                 <?php elseif ($contentType === 'text'): ?>
                     <div class="prose max-w-none text-slate-800 dark:text-slate-200 text-sm leading-relaxed">
                         <?= $doc['text_content'] ?: '<p>Nenhum conteúdo textual fornecido.</p>' ?>
@@ -491,8 +759,8 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                     </div>
 
                 <?php else: ?>
-                    <div class="space-y-4">
-                        <div class="flex items-center justify-between p-4 rounded-md bg-slate-50 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956]">
+                    <div class="overflow-hidden rounded-lg border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33]">
+                        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-[#454956] p-3">
                             <div class="flex items-center gap-3">
                                 <div class="w-10 h-10 rounded bg-slate-200 dark:bg-[#353842] flex items-center justify-center font-bold text-sm text-slate-700 dark:text-slate-200">
                                     <svg class="w-5 h-5 text-slate-600 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
@@ -506,13 +774,25 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                                     </p>
                                 </div>
                             </div>
-                            <a href="<?= $downloadUrl ?>" class="bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold px-3 py-1.5 rounded text-xs hover:bg-slate-800 transition">
-                                Baixar Arquivo
-                            </a>
+                            <div class="flex items-center gap-2">
+                                <a href="<?= htmlspecialchars($streamUrl) ?>" target="_blank" rel="noopener" class="rounded border border-slate-300 dark:border-[#454956] px-3 py-1.5 text-[10px] font-semibold text-slate-700 dark:text-slate-200">Abrir no navegador</a>
+                                <a href="<?= $downloadUrl ?>" class="rounded bg-slate-900 dark:bg-white px-3 py-1.5 text-[10px] font-semibold text-white dark:text-slate-900">Baixar arquivo</a>
+                            </div>
+                        </div>
+                        <object data="<?= htmlspecialchars($streamUrl) ?>" type="<?= htmlspecialchars($doc['mime_type'] ?: 'application/octet-stream') ?>" class="h-[65vh] min-h-96 w-full bg-white" aria-label="Prévia de <?= htmlspecialchars($doc['title']) ?>">
+                            <div class="p-8 text-center text-xs text-slate-500">
+                                Este navegador não possui um renderizador nativo para o formato <?= htmlspecialchars(strtoupper($fileExt ?: 'do arquivo')) ?>.
+                            </div>
+                        </object>
+                        <div class="border-t border-slate-200 dark:border-[#454956] px-3 py-2 text-[10px] text-slate-400">
+                            Se a prévia nativa não aparecer, use “Abrir no navegador” ou baixe o arquivo original.
                         </div>
                     </div>
                 <?php endif; ?>
 
+            </div>
+
+                </section>
             </div>
 
         </main>

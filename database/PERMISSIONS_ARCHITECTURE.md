@@ -1,9 +1,17 @@
 # 🔐 Arquitetura Definitiva de Gestão de Acesso — DocGov (Modelo Folder Permissions / Teams)
 
 > **Documento de Arquitetura e Especificação Técnica**  
-> **Status:** Proposta para Revisão (Pré-Migração)  
+> **Status:** Implementado; o nome definitivo da tabela é `permissions`
 > **Inspiração Conceitual:** Modelo de Folder Permissions & Teams (Grafana-like)  
-> **Nota:** Este documento descreve apenas os conceitos, matriz de regras, algoritmos e modelo relacional. Nenhuma alteração de código ou banco foi aplicada nesta fase.
+> **Nota:** As seções históricas que mencionam `resource_permissions` representam a proposta inicial; a implementação consolidada usa `permissions`.
+
+## Nota de implementação e legado (2026-08-10)
+
+- O motor definitivo é `services/PermissionService.php`, usando `users`, `groups`, `user_groups`, `permissions` e `permission_audit`.
+- `services/AccessService.php` permanece apenas como adaptador para o motor definitivo.
+- O antigo `config/permissions.php` foi removido depois de uma busca global confirmar que nenhuma de suas funções era chamada. Ele consultava `grupos`, `usuario_grupos` e `permissoes_grupo`, além de implementar `DENY`, conceitos incompatíveis com o modelo vigente.
+- A migração histórica `003_resource_permissions.sql` é um marcador inofensivo. A migração definitiva é `003_permissions_model.sql`, e `011_access_model_hardening.sql` reconcilia instalações antigas antes do ambiente real.
+- Toda escrita administrativa segue `interface -> api/permissions.php -> PermissionService -> permissions -> permission_audit`.
 
 ---
 

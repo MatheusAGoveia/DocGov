@@ -1,28 +1,50 @@
 <?php
-// api/search_principals.php - Endpoint JSON para pesquisa ao vivo de Usuários e Grupos com detecção de permissão existente
-if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
-    session_start();
-}
-require_once __DIR__ . '/../config/db.php';
-if (!headers_sent()) {
-    header('Content-Type: application/json');
-}
+// Pesquisa contextual de usuários e equipes para o painel de permissões.
+require_once __DIR__ . '/../config/session.php';
+docgovStartSession();
 
-$loggedUser = $_SESSION['user'] ?? null;
-if (!$loggedUser || ($loggedUser['role'] ?? '') !== 'admin') {
-    echo json_encode(['success' => false, 'error' => 'Acesso negado. Apenas administradores podem pesquisar principais para permissões.']);
+require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../services/PermissionService.php';
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, private');
+header('X-Content-Type-Options: nosniff');
+
+function searchPrincipalsResponse(int $status, array $payload): never {
+    http_response_code($status);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
-$query = trim($_GET['q'] ?? '');
-$principalType = trim($_GET['type'] ?? 'group'); // 'user' ou 'group'
-$resType = trim($_GET['resource_type'] ?? '');
-$resId = (int)($_GET['resource_id'] ?? 0);
+$currentUserId = (int)($_SESSION['user']['id'] ?? 0);
+if ($currentUserId <= 0) {
+    searchPrincipalsResponse(401, ['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+}
 
-$catId = ($resType === 'category') ? $resId : null;
-$subId = ($resType === 'subcategory') ? $resId : null;
-$subjId = ($resType === 'subject') ? $resId : null;
+$query = trim((string)($_GET['q'] ?? ''));
+$principalType = strtolower(trim((string)($_GET['type'] ?? 'user')));
+$resourceType = strtolower(trim((string)($_GET['resource_type'] ?? '')));
+$resourceId = (int)($_GET['resource_id'] ?? 0);
 
+if (!in_array($principalType, ['user', 'group', 'team'], true)) {
+    searchPrincipalsResponse(400, ['success' => false, 'error' => 'Tipo de principal inválido.']);
+}
+if (!in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $resourceId <= 0) {
+    searchPrincipalsResponse(400, ['success' => false, 'error' => 'O contexto do recurso é obrigatório.']);
+}
+
+$permissionService = new PermissionService($pdo);
+$resource = $permissionService->getResourceContext($resourceType, $resourceId);
+if ($resource === null) {
+    searchPrincipalsResponse(404, ['success' => false, 'error' => 'Recurso não encontrado.']);
+}
+if (!$permissionService->canAdmin($currentUserId, $resourceType, $resourceId)) {
+    searchPrincipalsResponse(403, ['success' => false, 'error' => 'Acesso negado para pesquisar principais neste recurso.']);
+}
+
+$categoryId = $resourceType === 'category' ? $resourceId : null;
+$subcategoryId = $resourceType === 'subcategory' ? $resourceId : null;
+$subjectId = $resourceType === 'subject' ? $resourceId : null;
 $results = [];
 
 try {
@@ -30,87 +52,82 @@ try {
         $sql = "
             SELECT u.id, u.name, u.username, u.email,
                    (
-                       SELECT p.permission_level 
-                       FROM permissions p 
-                       WHERE p.user_id = u.id 
-                         AND (p.category_id IS NOT DISTINCT FROM :cat_id)
-                         AND (p.subcategory_id IS NOT DISTINCT FROM :sub_id)
-                         AND (p.subject_id IS NOT DISTINCT FROM :subj_id)
+                       SELECT p.permission_level
+                       FROM permissions p
+                       WHERE p.user_id = u.id
+                         AND p.category_id IS NOT DISTINCT FROM :category_id
+                         AND p.subcategory_id IS NOT DISTINCT FROM :subcategory_id
+                         AND p.subject_id IS NOT DISTINCT FROM :subject_id
                        LIMIT 1
                    ) AS existing_level
             FROM users u
-            WHERE u.active = TRUE
+            WHERE u.active = TRUE AND u.role <> 'admin'
         ";
         $params = [
-            ':cat_id'  => $catId,
-            ':sub_id'  => $subId,
-            ':subj_id' => $subjId,
+            ':category_id' => $categoryId,
+            ':subcategory_id' => $subcategoryId,
+            ':subject_id' => $subjectId,
         ];
-
-        if (!empty($query)) {
-            $sql .= " AND (u.name ILIKE :q OR u.username ILIKE :q OR u.email ILIKE :q)";
-            $params[':q'] = '%' . $query . '%';
+        if ($query !== '') {
+            $sql .= ' AND (u.name ILIKE :query OR u.username ILIKE :query OR u.email ILIKE :query)';
+            $params[':query'] = '%' . $query . '%';
         }
-
-        $sql .= " ORDER BY u.name ASC LIMIT 25";
+        $sql .= ' ORDER BY u.name ASC LIMIT 25';
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        foreach ($rows as $r) {
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $results[] = [
-                'id'             => (int)$r['id'],
-                'name'           => $r['name'],
-                'type'           => 'user',
-                'subtext'        => '@' . $r['username'] . ' • ' . $r['email'],
-                'existing_level' => $r['existing_level'] ? strtolower($r['existing_level']) : null
+                'id' => (int)$row['id'],
+                'name' => $row['name'],
+                'type' => 'user',
+                'subtext' => '@' . $row['username'] . ' · ' . $row['email'],
+                'existing_level' => $row['existing_level'] ? strtolower($row['existing_level']) : null,
             ];
         }
     } else {
         $sql = "
-            SELECT g.id, g.name, g.description,
+            SELECT g.id, g.name, g.description, COUNT(ug.user_id) AS member_count,
                    (
-                       SELECT p.permission_level 
-                       FROM permissions p 
-                       WHERE p.group_id = g.id 
-                         AND (p.category_id IS NOT DISTINCT FROM :cat_id)
-                         AND (p.subcategory_id IS NOT DISTINCT FROM :sub_id)
-                         AND (p.subject_id IS NOT DISTINCT FROM :subj_id)
+                       SELECT p.permission_level
+                       FROM permissions p
+                       WHERE p.group_id = g.id
+                         AND p.category_id IS NOT DISTINCT FROM :category_id
+                         AND p.subcategory_id IS NOT DISTINCT FROM :subcategory_id
+                         AND p.subject_id IS NOT DISTINCT FROM :subject_id
                        LIMIT 1
                    ) AS existing_level
             FROM groups g
+            LEFT JOIN user_groups ug ON ug.group_id = g.id
             WHERE g.active = TRUE
         ";
         $params = [
-            ':cat_id'  => $catId,
-            ':sub_id'  => $subId,
-            ':subj_id' => $subjId,
+            ':category_id' => $categoryId,
+            ':subcategory_id' => $subcategoryId,
+            ':subject_id' => $subjectId,
         ];
-
-        if (!empty($query)) {
-            $sql .= " AND (g.name ILIKE :q OR g.description ILIKE :q)";
-            $params[':q'] = '%' . $query . '%';
+        if ($query !== '') {
+            $sql .= ' AND (g.name ILIKE :query OR g.description ILIKE :query)';
+            $params[':query'] = '%' . $query . '%';
         }
-
-        $sql .= " ORDER BY g.name ASC LIMIT 25";
+        $sql .= ' GROUP BY g.id, g.name, g.description ORDER BY g.name ASC LIMIT 25';
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        foreach ($rows as $r) {
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $memberCount = (int)$row['member_count'];
             $results[] = [
-                'id'             => (int)$r['id'],
-                'name'           => $r['name'],
-                'type'           => 'group',
-                'subtext'        => $r['description'] ?: 'Grupo de Acesso',
-                'existing_level' => $r['existing_level'] ? strtolower($r['existing_level']) : null
+                'id' => (int)$row['id'],
+                'name' => $row['name'],
+                'type' => 'group',
+                'subtext' => $memberCount . ($memberCount === 1 ? ' membro' : ' membros'),
+                'existing_level' => $row['existing_level'] ? strtolower($row['existing_level']) : null,
             ];
         }
     }
 
-    echo json_encode(['success' => true, 'data' => $results]);
-} catch (Exception $e) {
-    echo json_encode(['success' => false, 'error' => 'Erro ao buscar principais: ' . $e->getMessage()]);
+    searchPrincipalsResponse(200, ['success' => true, 'data' => $results]);
+} catch (Throwable $e) {
+    error_log('Erro em search_principals.php: ' . $e->getMessage());
+    searchPrincipalsResponse(500, ['success' => false, 'error' => 'Não foi possível pesquisar usuários e equipes.']);
 }

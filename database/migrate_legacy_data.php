@@ -9,8 +9,8 @@ echo "========================================================\n";
 try {
     // 1. Usuários Principais
     $usersSeed = [
-        ['Samuel Oliveira', 'samuel', 'samuel@prefeitura.gov.br', 'admin'],
-        ['Maria Santos', 'maria', 'maria@prefeitura.gov.br', 'editor'],
+        ['Samuel Oliveira', 'samuel', 'samuel@prefeitura.gov.br', 'reader'],
+        ['Maria Santos', 'maria', 'maria@prefeitura.gov.br', 'reader'],
         ['João Silva', 'joao', 'joao@prefeitura.gov.br', 'reader']
     ];
 

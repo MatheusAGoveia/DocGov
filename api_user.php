@@ -1,8 +1,7 @@
 <?php
 // api_user.php - API de Operações de Usuários e Favoritos (PostgreSQL)
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config/session.php';
+docgovStartSession();
 require_once __DIR__ . '/config/db.php';
 
 header('Content-Type: application/json');

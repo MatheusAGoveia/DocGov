@@ -1,8 +1,7 @@
 <?php
 // download.php - Gateway Seguro de Streaming e Download de Arquivos (PostgreSQL)
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require_once __DIR__ . '/config/session.php';
+docgovStartSession();
 require_once __DIR__ . '/config/db.php';
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -40,8 +39,18 @@ if (!$accessService->canAccessDocument($userId, $docId)) {
     die("Acesso negado. Sua conta não possui permissão para acessar este arquivo.");
 }
 
+require_once __DIR__ . '/services/UsageAuditService.php';
+$usageAuditService = new UsageAuditService($pdo);
+$usageEventType = !empty($doc['external_url']) && in_array($doc['content_type'], ['link', 'video'], true) && empty($doc['stored_filename'])
+    ? 'external_open'
+    : ($inline ? 'document_file_view' : 'document_download');
+$usageAuditService->log($usageEventType, $userId, 'DOCUMENT', $docId, [
+    'content_type' => (string)($doc['content_type'] ?? 'file'),
+    'inline' => $inline,
+]);
+
 // 1. CONTEÚDO DO TIPO LINK
-if ($doc['content_type'] === 'link') {
+if (in_array($doc['content_type'], ['link', 'video'], true) && empty($doc['stored_filename'])) {
     if (!empty($doc['external_url'])) {
         header('Location: ' . $doc['external_url']);
         exit;
@@ -51,7 +60,7 @@ if ($doc['content_type'] === 'link') {
 }
 
 // 2. CONTEÚDO DO TIPO ARQUIVO (FILE)
-if ($doc['content_type'] === 'file') {
+if (in_array($doc['content_type'], ['file', 'video'], true)) {
     $filename = $doc['stored_filename'] ?: ($doc['file_path'] ? basename($doc['file_path']) : '');
     
     // Tenta primeiro no storage/documents/ depois em uploads/docs/
