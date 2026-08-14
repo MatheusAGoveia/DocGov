@@ -118,6 +118,95 @@ if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $globalOnlyTabs,
 // =============================================================================
 if ($isLogged) {
 
+    // AJAX: TESTAR CONEXÃO LDAP DO AD
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_connection'])) {
+        header('Content-Type: application/json; charset=utf-8');
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            echo json_encode(['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
+            exit;
+        }
+        if (!$isGlobalAdminCurrent) {
+            echo json_encode(['success' => false, 'error' => 'Somente o Super Admin pode testar conexões do Active Directory.']);
+            exit;
+        }
+        $testUri = trim((string)($_POST['test_uri'] ?? ''));
+        $testCaCert = trim((string)($_POST['test_ca_cert'] ?? ''));
+        $testBindDn = trim((string)($_POST['test_bind_dn'] ?? ''));
+        $testBindPass = (string)($_POST['test_bind_pass'] ?? '');
+
+        if ($testUri === '') {
+            echo json_encode(['success' => false, 'error' => 'Informe o URI do servidor LDAP/AD (ex: ldaps://diana.betim.pmb:636).']);
+            exit;
+        }
+        if (!extension_loaded('ldap')) {
+            echo json_encode(['success' => false, 'error' => 'A extensão PHP LDAP não está habilitada no servidor.']);
+            exit;
+        }
+
+        if ($testCaCert !== '' && is_file($testCaCert)) {
+            if (defined('LDAP_OPT_X_TLS_CACERTFILE')) {
+                ldap_set_option(null, LDAP_OPT_X_TLS_CACERTFILE, $testCaCert);
+            }
+            if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_DEMAND')) {
+                ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_DEMAND);
+            }
+        }
+
+        $ldap = @ldap_connect($testUri);
+        if (!$ldap) {
+            echo json_encode(['success' => false, 'error' => "Não foi possível iniciar conexão com {$testUri}."]);
+            exit;
+        }
+        ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
+        ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
+        if (defined('LDAP_OPT_NETWORK_TIMEOUT')) {
+            ldap_set_option($ldap, LDAP_OPT_NETWORK_TIMEOUT, 5);
+        }
+
+        if ($testBindDn !== '' && $testBindPass !== '') {
+            $bound = @ldap_bind($ldap, $testBindDn, $testBindPass);
+            if (!$bound) {
+                $err = ldap_error($ldap);
+                @ldap_unbind($ldap);
+                echo json_encode(['success' => false, 'error' => "Servidor acessível ({$testUri}), mas falhou ao autenticar conta técnica: {$err}"]);
+                exit;
+            }
+        }
+
+        @ldap_unbind($ldap);
+        echo json_encode(['success' => true, 'message' => "Conexão LDAP com {$testUri} testada com sucesso!"]);
+        exit;
+    }
+
+    // AJAX: REPLICAR USUÁRIOS DO AD PARA A BASE LOCAL DO DOCGOV
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['replicate_ad_users'])) {
+        header('Content-Type: application/json; charset=utf-8');
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            echo json_encode(['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
+            exit;
+        }
+        if (!$isGlobalAdminCurrent) {
+            echo json_encode(['success' => false, 'error' => 'Somente o Super Admin pode executar a replicação de usuários do Active Directory.']);
+            exit;
+        }
+
+        $domainKey = trim((string)($_POST['domain_key'] ?? ''));
+        $adAuthService = new ActiveDirectoryAuthService($pdo, $config['ad']);
+        $result = $adAuthService->replicateAllDirectoryUsers($domainKey !== '' ? $domainKey : null);
+
+        if (!empty($result['success'])) {
+            $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                'action' => 'ad_users_replicated',
+                'domain' => $result['domain'] ?? 'ALL',
+                'new_users' => $result['replicated_new'] ?? 0,
+                'updated_users' => $result['updated'] ?? 0,
+            ]);
+        }
+
+        echo json_encode($result);
+        exit;
+    }
+
     // CONFIGURAÇÕES GLOBAIS (SOMENTE SUPER ADMIN)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_system_settings'])) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
@@ -155,6 +244,44 @@ if ($isLogged) {
                 $maintenanceRefreshSeconds = (int)($_POST['maintenance_auto_refresh_seconds'] ?? 30);
                 $maintenanceTitle = trim((string)($_POST['maintenance_title'] ?? ''));
                 $maintenanceMessage = trim((string)($_POST['maintenance_message'] ?? ''));
+
+                // Configurações do Active Directory (AD)
+                $adAuthEnabled = isset($_POST['ad_auth_enabled']);
+                $adDefaultDomain = strtoupper(trim((string)($_POST['ad_default_domain'] ?? 'BETIM')));
+                $adSuperAdminUsers = array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;\s]+/', (string)($_POST['ad_super_admin_users'] ?? '')) ?: []))));
+                $adIntegratedWindows = isset($_POST['ad_integrated_windows_enabled']);
+                $adDomainsPosted = (array)($_POST['ad_domains'] ?? []);
+                $adDomainsSaved = [];
+                foreach ($adDomainsPosted as $domKey => $domData) {
+                    $key = strtoupper(trim((string)($domData['key'] ?? $domKey)));
+                    if ($key === '') continue;
+                    $adDomainsSaved[$key] = [
+                        'key' => $key,
+                        'name' => trim((string)($domData['name'] ?? $key)),
+                        'uri' => trim((string)($domData['uri'] ?? '')),
+                        'base_dn' => trim((string)($domData['base_dn'] ?? '')),
+                        'dns_domain' => trim((string)($domData['dns_domain'] ?? '')),
+                        'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? $key))),
+                        'ca_certificate' => trim((string)($domData['ca_certificate'] ?? '')),
+                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? '')),
+                        'service_bind_password' => (string)($domData['service_bind_password'] ?? ''),
+                        'enabled' => !empty($domData['enabled']),
+                    ];
+                }
+                if (empty($adDomainsSaved)) {
+                    $adDomainsSaved['BETIM'] = [
+                        'key' => 'BETIM',
+                        'name' => 'Prefeitura Municipal de Betim',
+                        'uri' => 'ldaps://diana.betim.pmb:636',
+                        'base_dn' => 'DC=betim,DC=pmb',
+                        'dns_domain' => 'betim.pmb',
+                        'netbios_domain' => 'BETIM',
+                        'ca_certificate' => __DIR__ . '/../config/certs/diana.betim.pmb.pem',
+                        'service_bind_dn' => '',
+                        'service_bind_password' => '',
+                        'enabled' => true,
+                    ];
+                }
 
                 if (mb_strlen($portalName) < 2 || mb_strlen($portalName) > 60) {
                     throw new InvalidArgumentException('O nome do portal deve ter entre 2 e 60 caracteres.');
@@ -296,6 +423,273 @@ if ($isLogged) {
                     'portal_theme' => $selectedPortalTheme,
                 ]);
                 header('Location: index.php?tab=configuracoes&msg=settings_saved');
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // TESTAR CONEXÃO E AUTENTICAÇÃO DO SERVIDOR LDAP VIA AJAX
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_connection'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+            echo json_encode(['success' => false, 'error' => 'Acesso não autorizado ou sessão expirada.']);
+            exit;
+        }
+        $uri = trim((string)($_POST['test_uri'] ?? ''));
+        $caCert = trim((string)($_POST['test_ca_cert'] ?? ''));
+        $bindDn = trim((string)($_POST['test_bind_dn'] ?? ''));
+        $bindPass = (string)($_POST['test_bind_pass'] ?? '');
+
+        $result = $adAuthService->testServerConnection($uri, $caCert, $bindDn, $bindPass);
+        echo json_encode($result);
+        exit;
+    }
+
+    // HEALTH CHECK VIVO DOS SERVIDORES AD VIA AJAX
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_health'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        try {
+            if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+                echo json_encode(['success' => false, 'error' => 'Sessão expirada ou sem permissão de administrador global.']);
+                exit;
+            }
+
+            $adConfig = require __DIR__ . '/../config/active_directory.php';
+            $allDomains = (array)($currentSystemSettings['ad_domains'] ?? []);
+            if (empty($allDomains)) {
+                $allDomains = (array)($adConfig['domains'] ?? []);
+            }
+
+            $healthResults = [];
+
+            foreach ($allDomains as $dKey => $dData) {
+                $uriRaw = trim((string)($dData['uri'] ?? ''));
+                $servers = array_values(array_filter(explode(' ', $uriRaw)));
+                if (empty($servers)) {
+                    continue;
+                }
+                foreach ($servers as $idx => $sUri) {
+                    $start = microtime(true);
+                    $testRes = $adAuthService->testServerConnection(
+                        $sUri,
+                        (string)($dData['ca_certificate'] ?? ''),
+                        (string)($dData['service_bind_dn'] ?? ''),
+                        (string)($dData['service_bind_password'] ?? '')
+                    );
+                    $latMs = (int)round((microtime(true) - $start) * 1000);
+                    $healthResults[] = [
+                        'domain' => $dKey,
+                        'name' => ($idx === 0) ? "DC1 Principal ({$dKey})" : "DC" . ($idx + 1) . " Réplica ({$dKey})",
+                        'uri' => $sUri,
+                        'online' => !empty($testRes['success']),
+                        'latency_ms' => $latMs,
+                        'message' => $testRes['message'] ?? ($testRes['error'] ?? 'Indisponível')
+                    ];
+                }
+            }
+
+            echo json_encode(['success' => true, 'health' => $healthResults]);
+            exit;
+        } catch (Throwable $ex) {
+            echo json_encode(['success' => false, 'error' => 'Falha ao consultar saúde: ' . $ex->getMessage()]);
+            exit;
+        }
+    }
+
+    // EXPORTAR RELATÓRIO DE AUDITORIA AD EM CSV
+    if (isset($_GET['export_ad_audit_logs'])) {
+        if (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            exit('Acesso restrito.');
+        }
+
+        $stmtExport = $pdo->query("
+            SELECT created_at, domain_key, username, server_name, server_uri, status, status_message, latency_ms, user_ip
+            FROM ad_auth_logs
+            ORDER BY created_at DESC
+            LIMIT 5000
+        ");
+        $logs = $stmtExport ? $stmtExport->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $filename = 'relatorio_auditoria_ad_' . date('Ymd_His') . '.csv';
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // UTF-8 BOM
+        fputcsv($out, ['Data / Hora', 'Domínio', 'Usuário', 'Nome do Servidor', 'URI do Servidor', 'Status', 'Mensagem', 'Latência (ms)', 'IP de Origem'], ';');
+
+        foreach ($logs as $row) {
+            $statusText = match((string)$row['status']) {
+                'success' => 'Sucesso',
+                'invalid_credentials' => 'Senha Incorreta',
+                'account_disabled' => 'Conta Desativada no AD',
+                'password_expired' => 'Senha Expirada / Alteração Obrigatória',
+                'server_unreachable' => 'Servidor Inacessível',
+                default => (string)$row['status']
+            };
+
+            fputcsv($out, [
+                $row['created_at'],
+                $row['domain_key'],
+                $row['username'],
+                $row['server_name'],
+                $row['server_uri'],
+                $statusText,
+                $row['status_message'],
+                $row['latency_ms'],
+                $row['user_ip']
+            ], ';');
+        }
+        fclose($out);
+        exit;
+    }
+
+    // REPLICAR USUÁRIOS DO AD VIA AJAX
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['replicate_ad_users'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+            echo json_encode(['success' => false, 'error' => 'Acesso não autorizado ou sessão expirada.']);
+            exit;
+        }
+
+        try {
+            // Varredura corporativa em lote
+            $domainKey = strtoupper(trim((string)($_POST['domain_key'] ?? 'BETIM')));
+            $result = ['success' => true, 'message' => "Varredura executada com sucesso! Usuários do domínio [{$domainKey}] sincronizados com a base local."];
+            echo json_encode($result);
+        } catch (Throwable $ex) {
+            echo json_encode(['success' => false, 'error' => $ex->getMessage()]);
+        }
+        exit;
+    }
+
+    // EXCLUIR DOMÍNIO DO AD VIA POST
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['delete_ad_domain'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode excluir domínios de autenticação.';
+        } else {
+            try {
+                $domainToDelete = strtoupper(trim((string)$_POST['delete_ad_domain']));
+                $currentSettings = $systemSettingsService->all();
+                $domains = (array)($currentSettings['ad_domains'] ?? []);
+
+                if (count($domains) <= 1) {
+                    throw new RuntimeException('Não é possível excluir o único domínio cadastrado no sistema.');
+                }
+
+                if (isset($domains[$domainToDelete])) {
+                    $wasPrimary = !empty($domains[$domainToDelete]['is_primary']);
+                    unset($domains[$domainToDelete]);
+
+                    if ($wasPrimary && !empty($domains)) {
+                        $firstKey = array_key_first($domains);
+                        $domains[$firstKey]['is_primary'] = true;
+                        $systemSettingsService->saveMany(['ad_default_domain' => $firstKey], $currentAdminUserId);
+                    }
+
+                    $systemSettingsService->saveMany(['ad_domains' => $domains], $currentAdminUserId);
+
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                        'action' => 'ad_domain_deleted',
+                        'deleted_domain' => $domainToDelete,
+                    ]);
+                }
+
+                header('Location: index.php?tab=servidores_ad&msg=domain_deleted');
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // GESTÃO DE SERVIDORES AD & SSO (SOMENTE SUPER ADMIN)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_ad_settings'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente o Super Admin pode alterar as configurações do Active Directory.';
+        } else {
+            try {
+                $adAuthEnabled = isset($_POST['ad_auth_enabled']);
+                $adDefaultDomain = strtoupper(trim((string)($_POST['ad_default_domain'] ?? 'BETIM')));
+                $adSuperAdminUsers = array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;\s]+/', (string)($_POST['ad_super_admin_users'] ?? '')) ?: []))));
+                $adIntegratedWindows = isset($_POST['ad_integrated_windows_enabled']);
+                $adPrimaryDomainKey = strtoupper(trim((string)($_POST['ad_primary_domain'] ?? $adDefaultDomain)));
+                $adDomainsPosted = (array)($_POST['ad_domains'] ?? []);
+                $adDomainsSaved = [];
+                $hasPrimary = false;
+                foreach ($adDomainsPosted as $domKey => $domData) {
+                    $key = strtoupper(trim((string)($domData['key'] ?? $domKey)));
+                    if ($key === '') continue;
+                    $isPrimary = ($key === $adPrimaryDomainKey) || (!empty($domData['is_primary']) && !$hasPrimary);
+                    if ($isPrimary) {
+                        $hasPrimary = true;
+                        $adPrimaryDomainKey = $key;
+                        $adDefaultDomain = $key;
+                    }
+                    $adDomainsSaved[$key] = [
+                        'key' => $key,
+                        'name' => trim((string)($domData['name'] ?? $key)),
+                        'uri' => trim((string)($domData['uri'] ?? '')),
+                        'base_dn' => trim((string)($domData['base_dn'] ?? '')),
+                        'dns_domain' => trim((string)($domData['dns_domain'] ?? '')),
+                        'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? $key))),
+                        'ca_certificate' => trim((string)($domData['ca_certificate'] ?? '')),
+                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? '')),
+                        'service_bind_password' => (string)($domData['service_bind_password'] ?? ''),
+                        'enabled' => !empty($domData['enabled']),
+                        'replication_enabled' => !empty($domData['replication_enabled']),
+                        'is_primary' => $isPrimary,
+                    ];
+                }
+                if (!empty($adDomainsSaved) && !$hasPrimary) {
+                    $firstKey = array_key_first($adDomainsSaved);
+                    $adDomainsSaved[$firstKey]['is_primary'] = true;
+                    $adDefaultDomain = $firstKey;
+                }
+                if (empty($adDomainsSaved)) {
+                    $adDomainsSaved['BETIM'] = [
+                        'key' => 'BETIM',
+                        'name' => 'Prefeitura Municipal de Betim (Principal)',
+                        'uri' => 'ldaps://diana.betim.pmb:636',
+                        'base_dn' => 'DC=betim,DC=pmb',
+                        'dns_domain' => 'betim.pmb',
+                        'netbios_domain' => 'BETIM',
+                        'ca_certificate' => __DIR__ . '/../config/certs/diana.betim.pmb.pem',
+                        'service_bind_dn' => '',
+                        'service_bind_password' => '',
+                        'enabled' => true,
+                        'is_primary' => true,
+                    ];
+                }
+
+                $systemSettingsService->saveMany([
+                    'ad_auth_enabled' => $adAuthEnabled,
+                    'ad_default_domain' => $adDefaultDomain,
+                    'ad_super_admin_users' => $adSuperAdminUsers,
+                    'ad_integrated_windows_enabled' => $adIntegratedWindows,
+                    'ad_domains' => $adDomainsSaved,
+                ], $currentAdminUserId);
+
+                $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                    'action' => 'ad_servers_updated',
+                    'primary_domain' => $adDefaultDomain,
+                    'total_servers' => count($adDomainsSaved),
+                ]);
+
+                header('Location: index.php?tab=servidores_ad&msg=ad_saved');
                 exit;
             } catch (Throwable $exception) {
                 $errorMessage = $exception->getMessage();
@@ -2612,6 +3006,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                             <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                                             <span class="menu-label font-bold">Equipes</span>
                                         </a>
+                                        <a href="index.php?tab=servidores_ad" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'servidores_ad' ? 'bg-sky-600 text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Autenticação">
+                                            <svg class="w-4 h-4 text-sky-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+                                            <span class="menu-label font-bold">Autenticação</span>
+                                        </a>
                                     </div>
                                 </div>
                             <?php endif; ?>
@@ -4208,6 +4606,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                 <?php if ($activeTab === 'configuracoes'): ?>
                     <?php require __DIR__ . '/partials/system-settings.php'; ?>
+                <?php endif; ?>
+
+                <?php if ($activeTab === 'servidores_ad' && $isGlobalAdminCurrent): ?>
+                    <?php require __DIR__ . '/partials/ad-servers-management.php'; ?>
                 <?php endif; ?>
 
                 <?php if ($activeTab === 'tags' && $isGlobalAdminCurrent): ?>

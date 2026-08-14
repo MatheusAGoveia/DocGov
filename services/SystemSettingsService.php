@@ -30,6 +30,36 @@ final class SystemSettingsService {
         'maintenance_auto_refresh_seconds' => 30,
         'maintenance_title' => 'Sistema em manutenção',
         'maintenance_message' => 'Estamos realizando melhorias. O acesso será restabelecido em breve.',
+        'ad_auth_enabled' => true,
+        'ad_default_domain' => 'BETIM',
+        'ad_super_admin_users' => ['matheus.damiao', 'marcuss'],
+        'ad_integrated_windows_enabled' => false,
+        'ad_domains' => [
+            'BETIM' => [
+                'key' => 'BETIM',
+                'name' => 'Prefeitura Municipal de Betim',
+                'uri' => 'ldaps://diana.betim.pmb:636',
+                'base_dn' => 'DC=betim,DC=pmb',
+                'dns_domain' => 'betim.pmb',
+                'netbios_domain' => 'BETIM',
+                'ca_certificate' => __DIR__ . '/../config/certs/diana.betim.pmb.pem',
+                'service_bind_dn' => '',
+                'service_bind_password' => '',
+                'enabled' => true,
+            ],
+            'SAUDE' => [
+                'key' => 'SAUDE',
+                'name' => 'Secretaria de Saúde',
+                'uri' => '',
+                'base_dn' => '',
+                'dns_domain' => '',
+                'netbios_domain' => 'SAUDE',
+                'ca_certificate' => '',
+                'service_bind_dn' => '',
+                'service_bind_password' => '',
+                'enabled' => true,
+            ],
+        ],
     ];
 
     public function __construct(PDO $pdo) {

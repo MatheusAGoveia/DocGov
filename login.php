@@ -15,7 +15,13 @@ $permService = new PermissionService($pdo);
 $adAuthService = new ActiveDirectoryAuthService($pdo);
 $usageAuditService = new UsageAuditService($pdo);
 $adConfig = require __DIR__ . '/config/active_directory.php';
-$availableAdDomains = array_keys($adConfig['domains'] ?? []);
+$adDomainsMap = [];
+foreach ($adConfig['domains'] ?? [] as $dKey => $dVal) {
+    if (!isset($dVal['enabled']) || $dVal['enabled']) {
+        $adDomainsMap[$dKey] = !empty($dVal['name']) ? $dVal['name'] : $dKey;
+    }
+}
+$availableAdDomains = array_keys($adDomainsMap);
 $selectedAdDomain = strtoupper((string)($adConfig['default_domain'] ?? 'BETIM'));
 
 // A tela de entrada sempre termina no acervo. O painel administrativo é uma
@@ -157,8 +163,8 @@ try {
                         <div>
                             <label for="login-domain" class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider text-[10px]">Domínio</label>
                             <select name="ad_domain" id="login-domain" class="w-full px-2.5 py-2.5 text-xs rounded-lg border border-slate-300 dark:border-[#353842] bg-slate-50 dark:bg-[#181a1f] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-white transition">
-                                <?php foreach ($availableAdDomains as $domain): ?>
-                                    <option value="<?= htmlspecialchars($domain) ?>" <?= $selectedAdDomain === $domain ? 'selected' : '' ?>><?= htmlspecialchars($domain === 'SAUDE' ? 'SAÚDE' : $domain) ?></option>
+                                <?php foreach ($adDomainsMap as $domainKey => $domainName): ?>
+                                    <option value="<?= htmlspecialchars($domainKey) ?>" <?= $selectedAdDomain === $domainKey ? 'selected' : '' ?>><?= htmlspecialchars($domainName) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>

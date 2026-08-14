@@ -87,17 +87,21 @@ $allowedSubjectIds = $accessService->getAllowedSubjectIds($userId);
 
 if (!empty($allowedSubjectIds)) {
     try {
-        $subInSqlFav = implode(',', array_map('intval', $allowedSubjectIds));
+        $subInSqlRec = implode(',', array_map('intval', $allowedSubjectIds));
         $stmtRec = $pdo->prepare("
-            SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, f.created_at AS acessado_em,
+            SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, MAX(e.created_at) AS acessado_em,
                    s.name AS assunto, sc.name AS subcategoria, c.name AS categoria
-            FROM favorites f
-            JOIN documents d ON f.document_id = d.id
+            FROM usage_audit_events e
+            JOIN documents d ON e.resource_id = d.id
             JOIN subjects s ON d.subject_id = s.id
             JOIN subcategories sc ON s.subcategory_id = sc.id
             JOIN categories c ON c.id = sc.category_id
-            WHERE f.user_id = :uid AND d.subject_id IN ($subInSqlFav)
-            ORDER BY f.created_at DESC
+            WHERE e.user_id = :uid 
+              AND e.resource_type = 'DOCUMENT'
+              AND e.event_type IN ('document_view', 'document_file_view', 'document_download')
+              AND d.subject_id IN ($subInSqlRec)
+            GROUP BY d.id, d.title, d.description, d.content_type, s.name, sc.name, c.name
+            ORDER BY MAX(e.created_at) DESC
             LIMIT 10
         ");
         $stmtRec->execute([':uid' => $userId]);
@@ -106,8 +110,70 @@ if (!empty($allowedSubjectIds)) {
         $recentes = [];
     }
 }
+// Métricas do Dashboard Pessoal do Usuário
+$stmtM1 = $pdo->prepare("
+    SELECT COUNT(DISTINCT resource_id) 
+    FROM usage_audit_events 
+    WHERE user_id = ? 
+      AND resource_type = 'DOCUMENT' 
+      AND event_type IN ('document_view', 'document_file_view') 
+      AND created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP)
+");
+$stmtM1->execute([$userId]);
+$userDocsConsultadosMes = (int)$stmtM1->fetchColumn();
 
-$activeTab = trim($_GET['tab'] ?? 'perfil');
+$stmtM2 = $pdo->prepare("
+    SELECT COUNT(*) 
+    FROM documents 
+    WHERE created_by = ? AND trashed_at IS NULL
+");
+$stmtM2->execute([$userId]);
+$userDocsPublicados = (int)$stmtM2->fetchColumn();
+
+$stmtM3 = $pdo->prepare("
+    SELECT COUNT(*) 
+    FROM usage_audit_events 
+    WHERE user_id = ? AND event_type = 'document_download'
+");
+$stmtM3->execute([$userId]);
+$userTotalDownloads = (int)$stmtM3->fetchColumn();
+
+$stmtM4 = $pdo->prepare("
+    SELECT COUNT(*) 
+    FROM favorites 
+    WHERE user_id = ?
+");
+$stmtM4->execute([$userId]);
+$userTotalFavoritos = (int)$stmtM4->fetchColumn();
+
+$userTopViewedDocs = [];
+if (!empty($allowedSubjectIds)) {
+    try {
+        $subInSqlDash = implode(',', array_map('intval', $allowedSubjectIds));
+        $stmtTop = $pdo->prepare("
+            SELECT d.id, d.title AS titulo, d.content_type AS tipo_conteudo, COUNT(e.id) AS acessos, MAX(e.created_at) AS ultimo_acesso,
+                   s.name AS assunto, sc.name AS subcategoria, c.name AS categoria
+            FROM usage_audit_events e
+            JOIN documents d ON e.resource_id = d.id
+            JOIN subjects s ON d.subject_id = s.id
+            JOIN subcategories sc ON s.subcategory_id = sc.id
+            JOIN categories c ON c.id = sc.category_id
+            WHERE e.user_id = :uid 
+              AND e.resource_type = 'DOCUMENT'
+              AND e.event_type IN ('document_view', 'document_file_view', 'document_download')
+              AND d.subject_id IN ($subInSqlDash)
+            GROUP BY d.id, d.title, d.content_type, s.name, sc.name, c.name
+            ORDER BY COUNT(e.id) DESC, MAX(e.created_at) DESC
+            LIMIT 5
+        ");
+        $stmtTop->execute([':uid' => $userId]);
+        $userTopViewedDocs = $stmtTop->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        $userTopViewedDocs = [];
+    }
+}
+
+$activeTab = trim($_GET['tab'] ?? 'dashboard');
 $userTheme = $userData['tema_preferido'] ?? ($loggedUser['tema_preferido'] ?? 'light');
 $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 ?>
@@ -269,6 +335,11 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
         <!-- BARRA DE NAVEGAÇÃO DAS ABAS DA MINHA CONTA -->
         <div class="flex items-center gap-2 mb-6 border-b border-slate-200 dark:border-[#454956] pb-3 overflow-x-auto">
+            <a href="minha_conta.php?tab=dashboard" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition text-decoration-none <?= $activeTab === 'dashboard' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                <span>Meu Dashboard</span>
+            </a>
+
             <a href="minha_conta.php?tab=perfil" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-md text-xs font-medium transition text-decoration-none <?= $activeTab === 'perfil' ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-[#353842]' ?>">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
                 <span>Perfil & Acesso</span>
@@ -289,6 +360,107 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                 <span>Segurança & Senha</span>
             </a>
         </div>
+
+        <!-- ABA 0: MEU DASHBOARD -->
+        <?php if ($activeTab === 'dashboard'): ?>
+            <div class="space-y-6">
+                <!-- GRID DE CARDS DE MÉTRICAS PESSOAIS -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    
+                    <!-- CARD 1: CONSULTAS NESTE MÊS -->
+                    <div class="bg-white dark:bg-[#353842] p-4 rounded-lg border border-slate-200 dark:border-[#454956] shadow-2xs">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Consultas este Mês</span>
+                            <div class="p-2 rounded-lg bg-sky-50 text-sky-600 dark:bg-sky-950/50 dark:text-sky-400">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span class="text-2xl font-bold font-mono text-slate-900 dark:text-slate-100"><?= $userDocsConsultadosMes ?></span>
+                            <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Documentos únicos acessados no mês</span>
+                        </div>
+                    </div>
+
+                    <!-- CARD 2: PUBLICADOS POR MIM -->
+                    <div class="bg-white dark:bg-[#353842] p-4 rounded-lg border border-slate-200 dark:border-[#454956] shadow-2xs">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Publicados por Mim</span>
+                            <div class="p-2 rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span class="text-2xl font-bold font-mono text-slate-900 dark:text-slate-100"><?= $userDocsPublicados ?></span>
+                            <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Normas e conteúdos criados por você</span>
+                        </div>
+                    </div>
+
+                    <!-- CARD 3: TOTAL DE DOWNLOADS -->
+                    <div class="bg-white dark:bg-[#353842] p-4 rounded-lg border border-slate-200 dark:border-[#454956] shadow-2xs">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Downloads Realizados</span>
+                            <div class="p-2 rounded-lg bg-purple-50 text-purple-600 dark:bg-purple-950/50 dark:text-purple-400">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span class="text-2xl font-bold font-mono text-slate-900 dark:text-slate-100"><?= $userTotalDownloads ?></span>
+                            <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Arquivos baixados para uso local</span>
+                        </div>
+                    </div>
+
+                    <!-- CARD 4: TOTAL DE FAVORITOS -->
+                    <div class="bg-white dark:bg-[#353842] p-4 rounded-lg border border-slate-200 dark:border-[#454956] shadow-2xs">
+                        <div class="flex items-center justify-between">
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Meus Favoritos</span>
+                            <div class="p-2 rounded-lg bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span class="text-2xl font-bold font-mono text-slate-900 dark:text-slate-100"><?= $userTotalFavoritos ?></span>
+                            <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Normas e arquivos favoritados</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SEÇÃO: SEUS DOCUMENTOS MAIS ACESSADOS (TOP CONSULTAS) -->
+                <div class="bg-white dark:bg-[#353842] p-5 rounded-lg border border-slate-200 dark:border-[#454956]">
+                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4 pb-2 border-b border-slate-100 dark:border-[#454956]">
+                        Documentos Mais Acessados por Você
+                    </h3>
+
+                    <?php if (!empty($userTopViewedDocs)): ?>
+                        <div class="divide-y divide-slate-100 dark:divide-[#454956]/60">
+                            <?php foreach ($userTopViewedDocs as $topDoc): ?>
+                                <div class="py-3 flex items-center justify-between text-xs">
+                                    <div>
+                                        <a href="ver_conteudo.php?id=<?= (int)$topDoc['id'] ?>" class="font-bold text-slate-900 dark:text-slate-100 hover:underline text-xs">
+                                            <?= htmlspecialchars($topDoc['titulo']) ?>
+                                        </a>
+                                        <p class="text-[11px] text-slate-400 mt-0.5">
+                                            <?= htmlspecialchars($topDoc['categoria']) ?> &rsaquo; <?= htmlspecialchars($topDoc['subcategoria']) ?> &rsaquo; <?= htmlspecialchars($topDoc['assunto']) ?>
+                                        </p>
+                                    </div>
+                                    <div class="flex items-center gap-3 ml-4">
+                                        <span class="rounded bg-sky-100 dark:bg-sky-950/60 px-2 py-0.5 font-mono text-[11px] font-bold text-sky-800 dark:text-sky-300">
+                                            <?= (int)$topDoc['acessos'] ?> acesso(s)
+                                        </span>
+                                        <span class="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                                            Último: <?= date('d/m/Y H:i', strtotime($topDoc['ultimo_acesso'])) ?>
+                                        </span>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php else: ?>
+                        <p class="text-xs text-slate-400 text-center py-8">
+                            Seus documentos mais acessados aparecerão aqui conforme você navegar no portal.
+                        </p>
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php endif; ?>
 
         <!-- ABA 1: PERFIL & ACESSO -->
         <?php if ($activeTab === 'perfil'): ?>
@@ -379,7 +551,7 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
                         <?php foreach ($recentes as $r): ?>
                             <div class="py-3 flex items-center justify-between text-xs">
                                 <div>
-                                    <a href="index.php?cat=<?= urlencode($r['categoria']) ?>&subcat=<?= urlencode($r['subcategoria']) ?>&assunto=<?= urlencode($r['assunto']) ?>" class="font-bold text-slate-900 dark:text-slate-100 hover:underline text-xs">
+                                    <a href="ver_conteudo.php?id=<?= (int)$r['id'] ?>" class="font-bold text-slate-900 dark:text-slate-100 hover:underline text-xs">
                                         <?= htmlspecialchars($r['titulo']) ?>
                                     </a>
                                     <p class="text-[11px] text-slate-400 mt-0.5">
