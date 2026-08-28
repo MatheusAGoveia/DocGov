@@ -7,7 +7,8 @@ if (!headers_sent()) {
     header('Pragma: no-cache');
     header('X-Frame-Options: DENY');
     header('X-Content-Type-Options: nosniff');
-    header('Referrer-Policy: same-origin');
+    // O player incorporado do YouTube exige a origem da pagina no HTTP Referer.
+    header('Referrer-Policy: strict-origin-when-cross-origin');
 }
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
@@ -20,8 +21,10 @@ require_once __DIR__ . '/../services/NotificationService.php';
 require_once __DIR__ . '/../services/UsageAuditService.php';
 require_once __DIR__ . '/../services/CsrfService.php';
 require_once __DIR__ . '/../services/HierarchyService.php';
+require_once __DIR__ . '/../services/SubjectWorkspaceService.php';
 $tagService = new TagService($pdo);
 $hierarchyService = new HierarchyService($pdo);
+$subjectWorkspaceService = new SubjectWorkspaceService($pdo);
 $permService = new PermissionService($pdo);
 $adAuthService = new ActiveDirectoryAuthService($pdo);
 $categoryImageService = new CategoryImageService(dirname(__DIR__));
@@ -118,7 +121,46 @@ if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $globalOnlyTabs,
 // =============================================================================
 if ($isLogged) {
 
-    // AJAX: TESTAR CONEXÃO LDAP DO AD
+    // DOCUMENTAÇÃO ESTRUTURADA DO PROCESSO (NÍVEL ASSUNTO)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_subject_workspace'])) {
+        $workspaceSubjectId = (int)($_POST['subject_id'] ?? 0);
+        $workspaceSection = strtolower(trim((string)($_POST['workspace_section'] ?? 'overview')));
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif ($workspaceSubjectId <= 0 || !$permService->canEditSubject($currentAdminUserId, $workspaceSubjectId)) {
+            http_response_code(403);
+            $errorMessage = 'Você não possui permissão para editar a documentação deste assunto.';
+        } else {
+            try {
+                $subjectWorkspaceService->saveSection(
+                    $workspaceSubjectId,
+                    $currentAdminUserId,
+                    $workspaceSection,
+                    $_POST,
+                    $permService->canAdminSubject($currentAdminUserId, $workspaceSubjectId)
+                );
+                $usageAuditService->logAdminAction(
+                    $currentAdminUserId,
+                    'subject_workspace_' . $workspaceSection . '_updated',
+                    'SUBJECT',
+                    $workspaceSubjectId
+                );
+                header('Location: index.php?' . http_build_query([
+                    'tab' => 'editar_estrutura',
+                    'type' => 'assunto',
+                    'id' => $workspaceSubjectId,
+                    'res_tab' => $workspaceSection,
+                    'msg' => 'workspace_saved',
+                ]));
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    // AJAX: TESTAR CONEXÃO LDAP DO AD VIA ActiveDirectoryAuthService
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_connection'])) {
         header('Content-Type: application/json; charset=utf-8');
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
@@ -134,47 +176,8 @@ if ($isLogged) {
         $testBindDn = trim((string)($_POST['test_bind_dn'] ?? ''));
         $testBindPass = (string)($_POST['test_bind_pass'] ?? '');
 
-        if ($testUri === '') {
-            echo json_encode(['success' => false, 'error' => 'Informe o URI do servidor LDAP/AD (ex: ldaps://diana.betim.pmb:636).']);
-            exit;
-        }
-        if (!extension_loaded('ldap')) {
-            echo json_encode(['success' => false, 'error' => 'A extensão PHP LDAP não está habilitada no servidor.']);
-            exit;
-        }
-
-        if ($testCaCert !== '' && is_file($testCaCert)) {
-            if (defined('LDAP_OPT_X_TLS_CACERTFILE')) {
-                ldap_set_option(null, LDAP_OPT_X_TLS_CACERTFILE, $testCaCert);
-            }
-            if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_DEMAND')) {
-                ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_DEMAND);
-            }
-        }
-
-        $ldap = @ldap_connect($testUri);
-        if (!$ldap) {
-            echo json_encode(['success' => false, 'error' => "Não foi possível iniciar conexão com {$testUri}."]);
-            exit;
-        }
-        ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
-        ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
-        if (defined('LDAP_OPT_NETWORK_TIMEOUT')) {
-            ldap_set_option($ldap, LDAP_OPT_NETWORK_TIMEOUT, 5);
-        }
-
-        if ($testBindDn !== '' && $testBindPass !== '') {
-            $bound = @ldap_bind($ldap, $testBindDn, $testBindPass);
-            if (!$bound) {
-                $err = ldap_error($ldap);
-                @ldap_unbind($ldap);
-                echo json_encode(['success' => false, 'error' => "Servidor acessível ({$testUri}), mas falhou ao autenticar conta técnica: {$err}"]);
-                exit;
-            }
-        }
-
-        @ldap_unbind($ldap);
-        echo json_encode(['success' => true, 'message' => "Conexão LDAP com {$testUri} testada com sucesso!"]);
+        $res = $adAuthService->testServerConnection($testUri, $testCaCert, $testBindDn, $testBindPass);
+        echo json_encode($res);
         exit;
     }
 
@@ -498,6 +501,89 @@ if ($isLogged) {
         }
     }
 
+    // AJAX: FICHA 360° DETALHADA DO USUÁRIO (AD + DOCGOV)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['get_user_details'])) {
+        header('Content-Type: application/json; charset=UTF-8');
+        try {
+            if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+                echo json_encode(['success' => false, 'error' => 'Sessão expirada ou token inválido.']);
+                exit;
+            }
+
+            $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
+            $targetUserId = (int)($_POST['user_id'] ?? 0);
+
+            if ($targetUserId <= 0 || !$permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId)) {
+                echo json_encode(['success' => false, 'error' => 'Acesso negado ou usuário não localizado no seu escopo.']);
+                exit;
+            }
+
+            $stmt = $pdo->prepare("SELECT id, name, username, email, role, active, auth_source, ad_domain, ad_object_guid, department, job_title, phone, avatar, created_at, last_login_at FROM users WHERE id = ?");
+            $stmt->execute([$targetUserId]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$userData) {
+                echo json_encode(['success' => false, 'error' => 'Usuário não encontrado.']);
+                exit;
+            }
+
+            // Histórico recente de auditoria de logins (ad_auth_logs)
+            $stmtLogs = $pdo->prepare("
+                SELECT created_at, domain_key, username, server_name, server_uri, status, status_message, latency_ms, user_ip 
+                FROM ad_auth_logs 
+                WHERE LOWER(username) = LOWER(?) 
+                ORDER BY created_at DESC 
+                LIMIT 10
+            ");
+            $stmtLogs->execute([$userData['username']]);
+            $authLogs = $stmtLogs->fetchAll(PDO::FETCH_ASSOC);
+
+            // Equipes que o usuário pertence
+            $stmtGroups = $pdo->prepare("
+                SELECT g.id, g.name, g.description, ug.created_at AS joined_at
+                FROM user_groups ug
+                JOIN groups g ON g.id = ug.group_id
+                WHERE ug.user_id = ? AND (g.active = TRUE OR g.active IS NULL)
+                ORDER BY g.name ASC
+            ");
+            $stmtGroups->execute([$targetUserId]);
+            $userGroups = $stmtGroups->fetchAll(PDO::FETCH_ASSOC);
+
+            // Estatísticas de documentos
+            $stmtDocsCount = $pdo->prepare("SELECT COUNT(*) FROM documents WHERE created_by = ?");
+            $stmtDocsCount->execute([$targetUserId]);
+            $docsCreatedCount = (int)$stmtDocsCount->fetchColumn();
+
+            $stmtDocsPub = $pdo->prepare("SELECT COUNT(*) FROM documents WHERE created_by = ? AND status = 'published'");
+            $stmtDocsPub->execute([$targetUserId]);
+            $docsPublishedCount = (int)$stmtDocsPub->fetchColumn();
+
+            // Diagnóstico de acessos efetivos
+            $diagnosis = $permService->getUserEffectiveAccessDiagnosis($targetUserId);
+
+            echo json_encode([
+                'success' => true,
+                'user' => $userData,
+                'auth_logs' => $authLogs,
+                'groups' => $userGroups,
+                'activity' => [
+                    'docs_created' => $docsCreatedCount,
+                    'docs_published' => $docsPublishedCount,
+                ],
+                'diagnosis_summary' => [
+                    'is_global_admin' => (bool)($diagnosis['is_global_admin'] ?? false),
+                    'categories_count' => count($diagnosis['resources']['categories'] ?? []),
+                    'subcategories_count' => count($diagnosis['resources']['subcategories'] ?? []),
+                    'subjects_count' => count($diagnosis['resources']['subjects'] ?? []),
+                ],
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        } catch (Throwable $ex) {
+            echo json_encode(['success' => false, 'error' => 'Erro ao carregar detalhes: ' . $ex->getMessage()]);
+            exit;
+        }
+    }
+
     // EXPORTAR RELATÓRIO DE AUDITORIA AD EM CSV
     if (isset($_GET['export_ad_audit_logs'])) {
         if (!$isGlobalAdminCurrent) {
@@ -612,6 +698,57 @@ if ($isLogged) {
         }
     }
 
+    // CRIAÇÃO E CONFIGURAÇÃO DE NOVO DOMÍNIO AD VIA URL (GET: tab=servidores_ad&domain=KEY&new=1...)
+    if ($isGlobalAdminCurrent && isset($_GET['tab']) && $_GET['tab'] === 'servidores_ad' && isset($_GET['domain']) && (!empty($_GET['new']) || !empty($_GET['add_domain']) || !empty($_GET['uri']))) {
+        $rawDomainKey = strtoupper(trim((string)$_GET['domain']));
+        if ($rawDomainKey !== '') {
+            try {
+                $currentSettings = $systemSettingsService->all();
+                $domains = (array)($currentSettings['ad_domains'] ?? []);
+
+                $rawUri = trim((string)($_GET['uri'] ?? ''));
+                // Sanitização automática de erros de digitação de protocolo na URL (ex.: ldasps:// ou ldaps//)
+                $rawUri = preg_replace('/^ldasps:\/\//i', 'ldaps://', $rawUri);
+                $rawUri = preg_replace('/^ldaps\/\//i', 'ldaps://', $rawUri);
+                if ($rawUri === '') {
+                    $rawUri = 'ldaps://diana.betim.pmb:636';
+                }
+
+                $domainName = trim((string)($_GET['name'] ?? $rawDomainKey));
+                $dnsDomain = trim((string)($_GET['dns_domain'] ?? (strtolower($rawDomainKey) . '.betim.pmb')));
+                $baseDn = trim((string)($_GET['base_dn'] ?? ('DC=' . strtolower($rawDomainKey) . ',DC=betim,DC=pmb')));
+
+                $domains[$rawDomainKey] = [
+                    'key' => $rawDomainKey,
+                    'name' => $domainName !== '' ? $domainName : $rawDomainKey,
+                    'uri' => $rawUri,
+                    'base_dn' => $baseDn,
+                    'dns_domain' => $dnsDomain,
+                    'netbios_domain' => $rawDomainKey,
+                    'ca_certificate' => trim((string)($_GET['ca_certificate'] ?? '')),
+                    'service_bind_dn' => trim((string)($_GET['service_bind_dn'] ?? '')),
+                    'service_bind_password' => (string)($_GET['service_bind_password'] ?? ''),
+                    'enabled' => true,
+                    'replication_enabled' => true,
+                    'is_primary' => !empty($_GET['is_primary']) || count($domains) === 0,
+                ];
+
+                $systemSettingsService->saveMany(['ad_domains' => $domains], $currentAdminUserId);
+
+                $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                    'action' => 'ad_domain_created_via_url',
+                    'domain_key' => $rawDomainKey,
+                    'uri' => $rawUri,
+                ]);
+
+                header("Location: index.php?tab=servidores_ad&domain={$rawDomainKey}&msg=domain_added");
+                exit;
+            } catch (Throwable $ex) {
+                $errorMessage = 'Erro ao criar domínio via URL: ' . $ex->getMessage();
+            }
+        }
+    }
+
     // GESTÃO DE SERVIDORES AD & SSO (SOMENTE SUPER ADMIN)
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_ad_settings'])) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
@@ -628,7 +765,29 @@ if ($isLogged) {
                 $adIntegratedWindows = isset($_POST['ad_integrated_windows_enabled']);
                 $adPrimaryDomainKey = strtoupper(trim((string)($_POST['ad_primary_domain'] ?? $adDefaultDomain)));
                 $adDomainsPosted = (array)($_POST['ad_domains'] ?? []);
-                $adDomainsSaved = [];
+                
+                // Carregar domínios existentes para preservar a independência de cada domínio cadastrado
+                $currentSettings = $systemSettingsService->all();
+                $adDomainsSaved = (array)($currentSettings['ad_domains'] ?? []);
+                if (empty($adDomainsSaved)) {
+                    $adDomainsSaved = [
+                        'BETIM' => [
+                            'key' => 'BETIM',
+                            'name' => 'Prefeitura Municipal de Betim',
+                            'uri' => 'ldaps://diana.betim.pmb:636',
+                            'base_dn' => 'DC=betim,DC=pmb',
+                            'dns_domain' => 'betim.pmb',
+                            'netbios_domain' => 'BETIM',
+                            'ca_certificate' => __DIR__ . '/../config/certs/diana.betim.pmb.pem',
+                            'service_bind_dn' => '',
+                            'service_bind_password' => '',
+                            'enabled' => true,
+                            'replication_enabled' => true,
+                            'is_primary' => true,
+                        ]
+                    ];
+                }
+
                 $hasPrimary = false;
                 foreach ($adDomainsPosted as $domKey => $domData) {
                     $key = strtoupper(trim((string)($domData['key'] ?? $domKey)));
@@ -638,17 +797,23 @@ if ($isLogged) {
                         $hasPrimary = true;
                         $adPrimaryDomainKey = $key;
                         $adDefaultDomain = $key;
+                        foreach ($adDomainsSaved as &$d) {
+                            $d['is_primary'] = false;
+                        }
+                        unset($d);
                     }
+
+                    $existingDomain = $adDomainsSaved[$key] ?? [];
                     $adDomainsSaved[$key] = [
                         'key' => $key,
-                        'name' => trim((string)($domData['name'] ?? $key)),
-                        'uri' => trim((string)($domData['uri'] ?? '')),
-                        'base_dn' => trim((string)($domData['base_dn'] ?? '')),
-                        'dns_domain' => trim((string)($domData['dns_domain'] ?? '')),
-                        'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? $key))),
-                        'ca_certificate' => trim((string)($domData['ca_certificate'] ?? '')),
-                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? '')),
-                        'service_bind_password' => (string)($domData['service_bind_password'] ?? ''),
+                        'name' => trim((string)($domData['name'] ?? ($existingDomain['name'] ?? $key))),
+                        'uri' => trim((string)($domData['uri'] ?? ($existingDomain['uri'] ?? ''))),
+                        'base_dn' => trim((string)($domData['base_dn'] ?? ($existingDomain['base_dn'] ?? ''))),
+                        'dns_domain' => trim((string)($domData['dns_domain'] ?? ($existingDomain['dns_domain'] ?? ''))),
+                        'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? ($existingDomain['netbios_domain'] ?? $key)))),
+                        'ca_certificate' => trim((string)($domData['ca_certificate'] ?? ($existingDomain['ca_certificate'] ?? ''))),
+                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? ($existingDomain['service_bind_dn'] ?? ''))),
+                        'service_bind_password' => isset($domData['service_bind_password']) ? (string)$domData['service_bind_password'] : ((string)($existingDomain['service_bind_password'] ?? '')),
                         'enabled' => !empty($domData['enabled']),
                         'replication_enabled' => !empty($domData['replication_enabled']),
                         'is_primary' => $isPrimary,
@@ -1768,6 +1933,7 @@ if ($isLogged) {
         $assId = isset($_POST['id']) && $_POST['id'] !== '' ? (int)$_POST['id'] : null;
         $isNewSubject = !$assId;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'assuntos');
+        $redirectQuery = trim((string)($_POST['redirect_query'] ?? ''));
 
         $originalSubcategoryId = 0;
         if ($assId) {
@@ -1804,6 +1970,10 @@ if ($isLogged) {
                 $assId = (int)$stmt->fetchColumn();
             }
             $usageAuditService->logAdminAction($userId, $isNewSubject ? 'subject_created' : 'subject_updated', 'SUBJECT', (int)$assId);
+            if ($redirectQuery !== '' && preg_match('/^tab=editar_estrutura(?:&[a-z_]+=[a-z0-9_-]+)*$/i', $redirectQuery) === 1) {
+                header('Location: index.php?' . $redirectQuery . '&msg=subject_saved');
+                exit;
+            }
             $redirectParams = ['tab' => $redirectTab, 'msg' => 'subject_saved'];
             if ($redirectTab === 'novo_documento' && $isNewSubject && $statusVal) {
                 $parentStmt = $pdo->prepare('SELECT sc.category_id FROM subcategories sc WHERE sc.id = :id');
@@ -2643,8 +2813,8 @@ if ($activeTab === 'detalhes_usuario') {
     }
 }
 
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 ?>
 <?php
 $currentSystemSettings = $systemSettingsService->all(true);
@@ -3095,6 +3265,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'subcategory_deleted') echo "Subcategoria removida com sucesso!";
                             if ($_GET['msg'] === 'subject_saved') echo "✓ Assunto criado com sucesso!";
                             if ($_GET['msg'] === 'subject_deleted') echo "Assunto removido com sucesso!";
+                            if ($_GET['msg'] === 'workspace_saved') echo "Documentação do processo atualizada com sucesso.";
                             if ($_GET['msg'] === 'user_imported') echo "✓ Usuário localizado no Active Directory e importado para " . htmlspecialchars($appName) . ".";
                             if ($_GET['msg'] === 'settings_saved') echo "✓ Configurações do sistema atualizadas.";
                             if ($_GET['msg'] === 'tag_catalog_saved') echo "✓ Catálogo de tags atualizado.";
@@ -4678,16 +4849,21 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     <?php
                         $resTypeInput = strtolower(trim($_GET['type'] ?? 'categoria'));
                         $resId = (int)($_GET['id'] ?? 0);
-                        $resTab = trim($_GET['res_tab'] ?? 'info');
-                        if (!in_array($resTab, ['info', 'content', 'permissions'], true)) {
-                            $resTab = 'info';
-                        }
+                        $resTab = strtolower(trim($_GET['res_tab'] ?? 'info'));
 
                         $resType = 'category';
                         if ($resTypeInput === 'subcategoria' || $resTypeInput === 'subcategory') {
                             $resType = 'subcategory';
                         } elseif ($resTypeInput === 'assunto' || $resTypeInput === 'subject') {
                             $resType = 'subject';
+                        }
+                        if ($resType === 'subject') {
+                            $resTab = ['info' => 'overview', 'content' => 'evidence'][$resTab] ?? $resTab;
+                            if (!in_array($resTab, ['overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'permissions', 'integrations', 'history'], true)) {
+                                $resTab = 'overview';
+                            }
+                        } elseif (!in_array($resTab, ['info', 'content', 'permissions'], true)) {
+                            $resTab = 'info';
                         }
 
                         // Carregar o recurso do banco
@@ -4699,8 +4875,14 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         $canManageResourcePermissions = $canAccessResource
                             && $permService->canAdmin($currentAdminUserId, $resType, $resId);
                         if ($resTab === 'permissions' && !$canManageResourcePermissions) {
-                            $resTab = 'info';
+                            $resTab = $resType === 'subject' ? 'overview' : 'info';
                         }
+
+                        $subjectWorkspace = [];
+                        $subjectWorkspaceHistory = [];
+                        $subjectWorkspaceCompleteness = [];
+                        $subjectWorkspaceDocuments = [];
+                        $subjectVideoEmbed = ['kind' => 'invalid'];
 
                         if ($canAccessResource && $resType === 'category') {
                             $resTypeNameLabel = 'Categoria';
@@ -4747,6 +4929,27 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     'id'   => $resData['subcategory_id'],
                                     'name' => $resData['subcategory_name']
                                 ];
+                                $subjectWorkspace = $subjectWorkspaceService->get($resId);
+                                $subjectWorkspaceHistory = $subjectWorkspaceService->history($resId);
+                                $subjectWorkspaceCompleteness = $subjectWorkspaceService->completeness($subjectWorkspace);
+                                $stmtWorkspaceDocs = $pdo->prepare("SELECT id, title, status, content_type, external_url, stored_filename FROM documents WHERE subject_id = :subject_id AND status <> 'inactive' ORDER BY title");
+                                $stmtWorkspaceDocs->execute([':subject_id' => $resId]);
+                                $subjectWorkspaceDocuments = $stmtWorkspaceDocs->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                                $workspaceVideoDocumentId = (int)($subjectWorkspace['video_document_id'] ?? 0);
+                                $workspaceVideoDocument = null;
+                                foreach ($subjectWorkspaceDocuments as $workspaceDocument) {
+                                    if ((int)$workspaceDocument['id'] === $workspaceVideoDocumentId) {
+                                        $workspaceVideoDocument = $workspaceDocument;
+                                        break;
+                                    }
+                                }
+                                if ($workspaceVideoDocument && trim((string)$workspaceVideoDocument['external_url']) !== '') {
+                                    $subjectVideoEmbed = VideoEmbedService::resolve((string)$workspaceVideoDocument['external_url']);
+                                } elseif ($workspaceVideoDocument && !empty($workspaceVideoDocument['stored_filename'])) {
+                                    $subjectVideoEmbed = ['kind' => 'direct', 'url' => '../document-file.php?id=' . (int)$workspaceVideoDocument['id']];
+                                } elseif (trim((string)$subjectWorkspace['video_url']) !== '') {
+                                    $subjectVideoEmbed = VideoEmbedService::resolve((string)$subjectWorkspace['video_url']);
+                                }
                             }
                         }
 
@@ -4951,6 +5154,9 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             </div>
                         </div>
 
+                        <?php if ($resType === 'subject'): ?>
+                            <?php require __DIR__ . '/partials/subject-workspace.php'; ?>
+                        <?php else: ?>
                         <!-- NAV ABAS EXIGIDAS: [ Informações ] [ Conteúdo ] [ Permissões ] -->
                         <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956]">
                             <a href="index.php?tab=editar_estrutura&type=<?= $resTypeInput ?>&id=<?= $resId ?>&res_tab=info" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $resTab === 'info' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
@@ -5141,6 +5347,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     require __DIR__ . '/partials/permissions-panel.php';
                                 ?>
                             <?php endif; ?>
+                        <?php endif; ?>
                         <?php endif; ?>
                     </div>
                     <?php } ?>
@@ -5608,12 +5815,37 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <span class="w-fit rounded-full bg-sky-500/10 px-2.5 py-1 text-[10px] font-bold text-sky-700 dark:text-sky-300">Somente contas AD</span>
                                 </div>
 
-                                <form method="POST" action="index.php?tab=usuarios" class="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-end dark:border-[#454956]">
+                                <form method="POST" action="index.php?tab=usuarios" class="mt-4 border-t border-slate-100 pt-4 dark:border-[#454956]">
                                     <input type="hidden" name="create_user" value="1">
                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
-                                    <label class="block sm:w-32"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Domínio *</span><select name="ad_domain" class="input-minimal w-full px-3 py-2 text-xs"><?php foreach ($availableAdDomains as $domain): ?><option value="<?= htmlspecialchars($domain) ?>"><?= htmlspecialchars($domain === 'SAUDE' ? 'SAÚDE' : $domain) ?></option><?php endforeach; ?></select></label>
-                                    <label class="block flex-1"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Usuário AD *</span><input type="text" name="ad_username" required maxlength="100" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex.: ana.silva" autocomplete="off"><span class="mt-1 block text-[10px] text-slate-400">A conta precisa já existir e estar ativa no Active Directory.</span></label>
-                                    <button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900"><svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>Importar do AD</button>
+                                    
+                                    <div class="flex flex-col sm:flex-row sm:items-start gap-3">
+                                        <div class="w-full sm:w-44">
+                                            <label class="block">
+                                                <span class="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">Domínio *</span>
+                                                <select name="ad_domain" class="input-minimal h-9 w-full px-3 text-xs font-semibold">
+                                                    <?php foreach ($availableAdDomains as $domain): ?>
+                                                        <option value="<?= htmlspecialchars($domain) ?>"><?= htmlspecialchars($domain === 'SAUDE' ? 'SAÚDE' : $domain) ?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
+                                            </label>
+                                        </div>
+
+                                        <div class="flex-1 w-full">
+                                            <label class="block">
+                                                <span class="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">Usuário AD *</span>
+                                                <input type="text" name="ad_username" required maxlength="100" class="input-minimal h-9 w-full px-3 text-xs" placeholder="Ex.: ana.silva" autocomplete="off">
+                                            </label>
+                                        </div>
+
+                                        <div class="w-full sm:w-auto pt-0 sm:pt-[22px]">
+                                            <button type="submit" class="inline-flex h-9 w-full sm:w-auto items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">
+                                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                                <span>Importar do AD</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <p class="mt-1.5 text-[10px] text-slate-400">A conta precisa já existir e estar ativa no Active Directory.</p>
                                 </form>
                             </section>
                         <?php endif; ?>
@@ -5661,10 +5893,16 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     <?php endif; ?>
                                                 </td>
                                                 <td class="py-2.5 px-4 text-right">
-                                                    <a href="index.php?tab=editar_usuario&id=<?= $uRow['id'] ?>&user_tab=access" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-semibold hover:opacity-90 transition shadow-xs">
-                                                        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                                                        <span>Acessos Efetivos</span>
-                                                    </a>
+                                                    <div class="flex items-center justify-end gap-1.5">
+                                                        <button type="button" data-user-360-id="<?= $uRow['id'] ?>" class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#353842] text-slate-700 dark:text-slate-200 text-[11px] font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 transition shadow-2xs">
+                                                            <svg class="w-3.5 h-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                                            <span>Ficha 360°</span>
+                                                        </button>
+                                                        <a href="index.php?tab=editar_usuario&id=<?= $uRow['id'] ?>&user_tab=access" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-semibold hover:opacity-90 transition shadow-xs">
+                                                            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                                            <span>Acessos</span>
+                                                        </a>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -6926,6 +7164,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
         </script>
     <?php endif; ?>
 
+    <?php require __DIR__ . '/partials/user-detail-modal.php'; ?>
     <script src="../assets/permissions.js"></script>
 </body>
 </html>

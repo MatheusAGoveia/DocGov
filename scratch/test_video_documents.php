@@ -22,6 +22,10 @@ $youtube = VideoEmbedService::resolve('https://www.youtube.com/watch?v=dQw4w9WgX
 videoAssert($youtube['kind'] === 'youtube', 'O link do YouTube não foi reconhecido.');
 videoAssert(($youtube['embed_url'] ?? '') === 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ', 'O embed seguro do YouTube está incorreto.');
 
+$youtubeWithTracking = VideoEmbedService::resolve('https://www.youtube.com/watch?v=tvnAs_Y0VT8&source_ve_path=MTc4NDI0');
+videoAssert(($youtubeWithTracking['kind'] ?? '') === 'youtube', 'O link real do YouTube não foi reconhecido.');
+videoAssert(($youtubeWithTracking['embed_url'] ?? '') === 'https://www.youtube-nocookie.com/embed/tvnAs_Y0VT8', 'Os parâmetros extras do YouTube não foram tratados corretamente.');
+
 $direct = VideoEmbedService::resolve('https://cdn.example.test/videos/guia.mp4?version=2');
 videoAssert($direct['kind'] === 'direct', 'Uma URL direta de vídeo não foi reconhecida.');
 

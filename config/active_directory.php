@@ -13,7 +13,7 @@ $domains = [
         'ca_certificate' => getenv('AD_CA_CERTIFICATE') ?: __DIR__ . '/certs/diana.betim.pmb.pem',
         'service_bind_dn' => trim((string)(getenv('AD_SERVICE_BIND_DN') ?: '')),
         'service_bind_password' => (string)(getenv('AD_SERVICE_BIND_PASSWORD') ?: ''),
-        'aliases' => ['BETIM'],
+        'aliases' => ['BETIM', 'betim.pmb', 'betim.mg.gov.br'],
         'enabled' => true,
         'is_primary' => true,
     ],
@@ -75,7 +75,7 @@ if (isset($pdo) && $pdo instanceof PDO && class_exists('SystemSettingsService'))
                     'ca_certificate' => (string)($dom['ca_certificate'] ?? ''),
                     'service_bind_dn' => (string)($dom['service_bind_dn'] ?? ''),
                     'service_bind_password' => (string)($dom['service_bind_password'] ?? ''),
-                    'aliases' => array_unique(array_filter([$k, (string)($dom['netbios_domain'] ?? ''), (string)($dom['dns_domain'] ?? '')])),
+                    'aliases' => array_unique(array_filter([$k, (string)($dom['netbios_domain'] ?? ''), (string)($dom['dns_domain'] ?? ''), 'betim.pmb', 'betim.mg.gov.br'])),
                     'enabled' => !isset($dom['enabled']) || (bool)$dom['enabled'],
                     'is_primary' => !empty($dom['is_primary']),
                 ];

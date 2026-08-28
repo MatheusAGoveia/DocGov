@@ -124,24 +124,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // =========================================================================
-    // 4. Alternância do Tema Claro (Padrão) / Escuro + Persistência no Usuário
+    // 4. Modo Claro Padrão
     // =========================================================================
-    if (themeToggleBtn) {
-        themeToggleBtn.addEventListener('click', () => {
-            const isDark = document.documentElement.classList.toggle('dark');
-            const newTheme = isDark ? 'dark' : 'light';
-            localStorage.setItem('theme', newTheme);
-
-            // Salva a configuração no perfil do usuário
-            fetch('api_user.php?action=update_theme&theme=' + newTheme).catch(() => {});
-        });
-    }
-
-    // Aplica preferência do localStorage caso não tenha sido definida pelo servidor
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark') {
-        document.documentElement.classList.add('dark');
-    } else if (savedTheme === 'light') {
-        document.documentElement.classList.remove('dark');
-    }
+    document.documentElement.classList.remove('dark');
+    document.documentElement.classList.add('light');
+    localStorage.removeItem('theme');
 });

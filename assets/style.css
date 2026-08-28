@@ -27,18 +27,504 @@ body {
   color: var(--dg-text);
 }
 
-/* Modo escuro neutro, com contraste estável nos campos e controles. */
+/* ===========================================================================
+   ARQUITETURA DE CORES COMPOSICIONAL (TEMA ESTRUTURAL + ACCENT TOKENS)
+   =========================================================================== */
+
+/* 1. MODO CLARO (NEUTRO BASE) */
+:root,
+.light {
+  color-scheme: light;
+
+  /* Superfícies Neutras */
+  --bg-canvas: #f8fafc;
+  --bg-surface-1: #ffffff;
+  --bg-surface-2: #ffffff;
+  --bg-surface-3: #f1f5f9;
+  --bg-surface-hover: #e2e8f0;
+  --bg-surface-selected: #cbd5e1;
+
+  /* Bordas Neutras */
+  --border-subtle: #f1f5f9;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+
+  /* Tipografia Neutra */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
+  --text-disabled: #94a3b8;
+
+  /* Tokens Legados de Compatibilidade */
+  --dg-canvas: var(--bg-canvas);
+  --dg-surface: var(--bg-surface-2);
+  --dg-surface-raised: var(--bg-surface-3);
+  --dg-surface-muted: var(--bg-surface-1);
+  --dg-surface-hover: var(--bg-surface-hover);
+  --dg-border: var(--border);
+  --dg-border-strong: var(--border-strong);
+  --dg-text: var(--text-primary);
+  --dg-muted: var(--text-secondary);
+}
+
+/* 2. MODO ESCURO (BASE 100% NEUTRA COMPARTILHADA POR TODAS AS CORES - SEM TINGIMENTO) */
 .dark {
   color-scheme: dark;
-  --dg-canvas: #212121;
-  --dg-surface: #2f2f2f;
-  --dg-surface-raised: #303030;
-  --dg-surface-muted: #262626;
-  --dg-surface-hover: #3a3a3a;
-  --dg-border: #424242;
-  --dg-border-strong: #4a4a4a;
-  --dg-text: #ececec;
-  --dg-muted: #b4b4b4;
+
+  /* Hierarquia Suave de Grafites (Inspirado em Linear / Vercel / GitHub Dark) */
+  --bg-canvas: #15171c;          /* Página / Body */
+  --bg-navbar: #181b21;          /* Navbar / Sidebar (um pouco mais clara que o body) */
+  --bg-surface-1: #1b1e24;       /* Superfície base da estrutura */
+  --bg-surface-2: #20242b;       /* Cards / Conteúdo principal */
+  --bg-surface-3: #262b33;       /* Inputs / Elementos internos */
+  --bg-surface-4: #2b313a;       /* Dropdowns / Popovers / Modais */
+
+  /* Estados de Interação Neutros */
+  --bg-surface-hover: #2b313a;   /* Hover neutro nas superfícies */
+  --bg-surface-selected: #313742;/* Seleção neutra de elementos/linhas */
+
+  /* Bordas Neutras de Alto Contraste */
+  --border-subtle: #2b3038;
+  --border-default: #343a44;      /* Bordas dos cards */
+  --border-strong: #3f4753;       /* Bordas em hover/ênfase neutra */
+  --border-navbar: #2b3038;       /* Borda inferior sutil da navbar */
+
+  /* Tipografia Neutra de Alta Legibilidade */
+  --text-primary: #f0f2f5;        /* Títulos */
+  --text-main: #d7dbe1;           /* Texto principal */
+  --text-secondary: #aeb6c2;      /* Texto secundário */
+  --text-tertiary: #7e8896;       /* Texto auxiliar */
+  --text-disabled: #606977;       /* Texto desabilitado */
+
+  /* Compatibilidade de Tokens Legados */
+  --dg-canvas: var(--bg-canvas);
+  --dg-surface: var(--bg-surface-2);
+  --dg-surface-raised: var(--bg-surface-3);
+  --dg-surface-muted: var(--bg-surface-1);
+  --dg-surface-hover: var(--bg-surface-hover);
+  --dg-border: var(--border-default);
+  --dg-border-strong: var(--border-strong);
+  --dg-text: var(--text-primary);
+  --dg-muted: var(--text-secondary);
+}
+
+
+/* ===========================================================================
+   CORES SEMÂNTICAS FIXAS (INDEPENDENTES DA COR DE DESTAQUE DO USUÁRIO)
+   =========================================================================== */
+:root {
+  --semantic-success: #10b981;
+  --semantic-success-subtle: rgba(16, 185, 129, 0.12);
+  --semantic-warning: #f59e0b;
+  --semantic-warning-subtle: rgba(245, 158, 11, 0.12);
+  --semantic-error: #ef4444;
+  --semantic-error-subtle: rgba(239, 68, 68, 0.12);
+  --semantic-info: #3b82f6;
+  --semantic-info-subtle: rgba(59, 130, 246, 0.12);
+}
+
+
+/* ===========================================================================
+   TOKENS DE DESTAQUE (ACCENT COLORS) - MODO CLARO
+   =========================================================================== */
+
+/* 1. EMERALD / VERDE PREFEITURA */
+[data-portal-theme="emerald"],
+:root:not([data-portal-theme]) {
+  --accent: #0f8f6f;
+  --accent-hover: #0c775c;
+  --accent-active: #0a604a;
+  --accent-subtle: rgba(15, 143, 111, 0.10);
+  --accent-subtle-hover: rgba(15, 143, 111, 0.18);
+  --accent-border: rgba(15, 143, 111, 0.35);
+  --accent-focus: rgba(15, 143, 111, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 2. BLUE / AZUL INSTITUCIONAL */
+[data-portal-theme="blue"] {
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-active: #1e40af;
+  --accent-subtle: rgba(37, 99, 235, 0.10);
+  --accent-subtle-hover: rgba(37, 99, 235, 0.18);
+  --accent-border: rgba(37, 99, 235, 0.35);
+  --accent-focus: rgba(37, 99, 235, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 3. INDIGO / ÍNDIGO TÉCNICO */
+[data-portal-theme="indigo"] {
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-active: #3730a3;
+  --accent-subtle: rgba(79, 70, 229, 0.10);
+  --accent-subtle-hover: rgba(79, 70, 229, 0.18);
+  --accent-border: rgba(79, 70, 229, 0.35);
+  --accent-focus: rgba(79, 70, 229, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 4. VIOLET / VIOLETA CONTEMPORÂNEO */
+[data-portal-theme="violet"] {
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-active: #5b21b6;
+  --accent-subtle: rgba(124, 58, 237, 0.10);
+  --accent-subtle-hover: rgba(124, 58, 237, 0.18);
+  --accent-border: rgba(124, 58, 237, 0.35);
+  --accent-focus: rgba(124, 58, 237, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 5. ROSE / RUBI MARCANTE (Carmim sofisticado, distinto de erro) */
+[data-portal-theme="rose"] {
+  --accent: #be123c;
+  --accent-hover: #9f1239;
+  --accent-active: #881337;
+  --accent-subtle: rgba(190, 18, 60, 0.10);
+  --accent-subtle-hover: rgba(190, 18, 60, 0.18);
+  --accent-border: rgba(190, 18, 60, 0.35);
+  --accent-focus: rgba(190, 18, 60, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 6. AMBER / ÂMBAR DOURADO (Âmbar quente) */
+[data-portal-theme="amber"] {
+  --accent: #b45309;
+  --accent-hover: #92400e;
+  --accent-active: #78350f;
+  --accent-subtle: rgba(180, 83, 9, 0.10);
+  --accent-subtle-hover: rgba(180, 83, 9, 0.18);
+  --accent-border: rgba(180, 83, 9, 0.35);
+  --accent-focus: rgba(180, 83, 9, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 7. OCEAN / OCEANO CIANO */
+[data-portal-theme="ocean"] {
+  --accent: #0e7490;
+  --accent-hover: #155e75;
+  --accent-active: #164e63;
+  --accent-subtle: rgba(14, 116, 144, 0.10);
+  --accent-subtle-hover: rgba(14, 116, 144, 0.18);
+  --accent-border: rgba(14, 116, 144, 0.35);
+  --accent-focus: rgba(14, 116, 144, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 8. GRAPHITE / GRAFITE MINIMALISTA */
+[data-portal-theme="graphite"] {
+  --accent: #3f3f46;
+  --accent-hover: #27272a;
+  --accent-active: #18181b;
+  --accent-subtle: rgba(63, 63, 70, 0.10);
+  --accent-subtle-hover: rgba(63, 63, 70, 0.18);
+  --accent-border: rgba(63, 63, 70, 0.35);
+  --accent-focus: rgba(63, 63, 70, 0.25);
+  --accent-foreground: #ffffff;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+
+/* ===========================================================================
+   TOKENS DE DESTAQUE (ACCENT COLORS) - MODO ESCURO (SEM ALTERAR CANVAS OU CARDS)
+   =========================================================================== */
+
+/* 1. EMERALD DARK */
+.dark[data-portal-theme="emerald"],
+.dark:not([data-portal-theme]) {
+  --accent: #22c997;
+  --accent-hover: #2dd4a3;
+  --accent-active: #19b889;
+  --accent-subtle: rgba(34, 201, 151, 0.14);
+  --accent-border: rgba(34, 201, 151, 0.35);
+  --accent-focus: rgba(34, 201, 151, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 2. BLUE DARK */
+.dark[data-portal-theme="blue"] {
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-active: #2563eb;
+  --accent-subtle: rgba(59, 130, 246, 0.14);
+  --accent-border: rgba(59, 130, 246, 0.35);
+  --accent-focus: rgba(59, 130, 246, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 3. INDIGO DARK */
+.dark[data-portal-theme="indigo"] {
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-active: #4f46e5;
+  --accent-subtle: rgba(99, 102, 241, 0.14);
+  --accent-border: rgba(99, 102, 241, 0.35);
+  --accent-focus: rgba(99, 102, 241, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 4. VIOLET DARK */
+.dark[data-portal-theme="violet"] {
+  --accent: #8b5cf6;
+  --accent-hover: #9d75f7;
+  --accent-active: #7c3aed;
+  --accent-subtle: rgba(139, 92, 246, 0.14);
+  --accent-border: rgba(139, 92, 246, 0.35);
+  --accent-focus: rgba(139, 92, 246, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 5. ROSE DARK (RUBI - DISTINTO DE ERRO) */
+.dark[data-portal-theme="rose"] {
+  --accent: #f43f5e;
+  --accent-hover: #fb7185;
+  --accent-active: #e11d48;
+  --accent-subtle: rgba(244, 63, 94, 0.14);
+  --accent-border: rgba(244, 63, 94, 0.35);
+  --accent-focus: rgba(244, 63, 94, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 6. AMBER DARK (ÂMBAR DOURADO CONFORTÁVEL) */
+.dark[data-portal-theme="amber"] {
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-active: #d97706;
+  --accent-subtle: rgba(245, 158, 11, 0.14);
+  --accent-border: rgba(245, 158, 11, 0.35);
+  --accent-focus: rgba(245, 158, 11, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 7. OCEAN DARK */
+.dark[data-portal-theme="ocean"] {
+  --accent: #0ea5e9;
+  --accent-hover: #38bdf8;
+  --accent-active: #0284c7;
+  --accent-subtle: rgba(14, 165, 233, 0.14);
+  --accent-border: rgba(14, 165, 233, 0.35);
+  --accent-focus: rgba(14, 165, 233, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+/* 8. GRAPHITE DARK (TITANIUM PARA ALTO CONTRASTE CONTRA BACKGROUNDS ESCUROS) */
+.dark[data-portal-theme="graphite"] {
+  --accent: #cbd5e1;
+  --accent-hover: #f1f5f9;
+  --accent-active: #94a3b8;
+  --accent-subtle: rgba(203, 213, 225, 0.14);
+  --accent-border: rgba(203, 213, 225, 0.35);
+  --accent-focus: rgba(203, 213, 225, 0.25);
+  --accent-foreground: #0f1115;
+  --dg-accent: var(--accent);
+  --dg-accent-soft: var(--accent-subtle);
+}
+
+
+/* ===========================================================================
+   MAPEAMENTO DAS SUPERFÍCIES NEUTRAS GRAFITE EM MODO ESCURO (0% AZULADO)
+   =========================================================================== */
+
+/* 1. Página / Body */
+.dark body {
+  background-color: #15171c !important;
+  color: #d7dbe1 !important;
+}
+
+.dark main h1,
+.dark main h2,
+.dark main h3,
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .font-bold {
+  color: #f0f2f5 !important;
+}
+
+.dark p,
+.dark span.text-slate-600,
+.dark span.text-slate-700 {
+  color: #aeb6c2;
+}
+
+/* 2. Navbar & Sidebar */
+.dark header,
+.dark .fixed.inset-x-0.top-0,
+.dark #sidebar-menu {
+  background-color: #181b21 !important;
+  border-color: #2b3038 !important;
+}
+
+/* 3. Cards & Containers */
+.dark .group,
+.dark .nav-card,
+.dark .dashboard-panel,
+.dark .bg-white,
+.dark .dark\:bg-\[\#353842\],
+.dark .dark\:bg-slate-900 {
+  background-color: #20242b !important;
+  border-color: #343a44 !important;
+}
+
+/* Card Hover Neutro (Grafite Elevado por Luminosidade) */
+.dark .group:hover,
+.dark .nav-card:hover,
+.dark .hover\:bg-slate-100:hover,
+.dark .dark\:hover\:bg-\[\#2c2e33\]:hover {
+  background-color: #262b33 !important;
+  border-color: #3f4753 !important;
+}
+
+/* 4. Inputs & Form Controls */
+.dark input[type="text"],
+.dark input[type="search"],
+.dark input[type="password"],
+.dark input[type="email"],
+.dark input[type="date"],
+.dark select,
+.dark textarea,
+.dark .input-minimal,
+.dark .dark\:bg-\[\#2c2e33\],
+.dark .dark\:bg-slate-800 {
+  background-color: #262b33 !important;
+  border-color: #343a44 !important;
+  color: #f0f2f5 !important;
+}
+
+.dark input:hover,
+.dark select:hover,
+.dark textarea:hover {
+  background-color: #2b313a !important;
+  border-color: #3f4753 !important;
+}
+
+.dark input:focus,
+.dark select:focus,
+.dark textarea:focus,
+.dark .input-minimal:focus {
+  background-color: #262b33 !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-focus) !important;
+}
+
+/* 5. Modais, Popovers & Dropdowns */
+.dark [role="dialog"],
+.dark .theme-dropdown-menu,
+.dark .dropdown-content,
+.dark .dg-permissions-modal__dialog {
+  background-color: #2b313a !important;
+  border-color: #3f4753 !important;
+  color: #f0f2f5 !important;
+}
+
+/* 6. Footer Neutro */
+.dark footer {
+  background-color: #181b21 !important;
+  border-color: #2b3038 !important;
+  color: #7e8896 !important;
+}
+
+
+/* ===========================================================================
+   PONTOS DE DESTAQUE DIRECIONADOS (ACCENT HIGHLIGHTS ONLY)
+   =========================================================================== */
+
+/* 1. Botões Primários & Ações de Acesso (Admin / Entrar) */
+.btn-primary,
+.btn-accent,
+a.btn-accent,
+button.bg-slate-900,
+.dark button.bg-white,
+.dark .btn-accent,
+.dark a[href="admin/index.php"],
+.dark a[href="login.php"] {
+  background-color: var(--accent) !important;
+  color: var(--accent-foreground) !important;
+  border-color: var(--accent) !important;
+}
+
+.btn-primary:hover,
+.btn-accent:hover,
+a.btn-accent:hover,
+button.bg-slate-900:hover,
+.dark button.bg-white:hover,
+.dark .btn-accent:hover,
+.dark a[href="admin/index.php"]:hover,
+.dark a[href="login.php"]:hover {
+  background-color: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+}
+
+/* 2. Item Início e Navegação Principal Ativa */
+.nav-item-active,
+header nav a[href="index.php"].nav-item-active,
+header nav a.nav-item-active {
+  background-color: var(--accent-subtle) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+
+/* 3. Indicador de Categorias Selecionadas */
+.nav-trail-active-dot {
+  background-color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-focus) !important;
+}
+
+/* 4. Focus, Switches, Radios e Checkboxes */
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  accent-color: var(--accent) !important;
+}
+
+/* 5. Tab e Seleção de Sidebar Ativa */
+#sidebar-menu .menu-item-active,
+.vertical-nav-item-active,
+[data-sidebar-active="true"] {
+  background-color: var(--accent-subtle) !important;
+  border-left: 3px solid var(--accent) !important;
+  color: var(--text-primary) !important;
+}
+
+#sidebar-menu .menu-item-active svg,
+.vertical-nav-item-active svg {
+  color: var(--accent) !important;
+}
+
+.tab-active,
+[aria-selected="true"] {
+  border-bottom: 2px solid var(--accent) !important;
+  color: var(--accent) !important;
 }
 
 /* ===========================================================================
@@ -49,9 +535,17 @@ body {
    menos elevação, cantos consistentes e uma única cor de ênfase funcional.
    =========================================================================== */
 
-body .rounded-xl { border-radius: var(--radius-lg); }
-body .rounded-lg { border-radius: var(--radius-md); }
-body .rounded-md { border-radius: var(--radius-sm); }
+body .rounded-xl {
+  border-radius: var(--radius-lg);
+}
+
+body .rounded-lg {
+  border-radius: var(--radius-md);
+}
+
+body .rounded-md {
+  border-radius: var(--radius-sm);
+}
 
 /* Sombras decorativas davam a impressão de cartões soltos. A borda passa a
    definir as superfícies; sombras permanecem apenas em modais. */
@@ -67,8 +561,8 @@ body .fixed.inset-x-0.top-0 {
 }
 
 .dark body .fixed.inset-x-0.top-0 {
-  background-color: var(--dg-canvas) !important;
-  border-color: var(--dg-border) !important;
+  background-color: #15181e !important;
+  border-color: #2a3039 !important;
 }
 
 body main h1 {
@@ -80,38 +574,32 @@ body main h2 {
   letter-spacing: -0.012em;
 }
 
-/* Campos mais legíveis e menos chamativos: foco é indicado por borda verde,
-   sem o halo grande que competia com o conteúdo. */
+/* Campos de entrada: foco neutro na cor de destaque ativa */
 .input-minimal,
 body input[class*="border-slate"],
 body select[class*="border-slate"],
 body textarea[class*="border-slate"] {
   border-radius: var(--radius-sm) !important;
-  border-color: var(--dg-border-strong) !important;
+  border-color: var(--border-default) !important;
   box-shadow: none !important;
 }
 
 .input-minimal:focus,
 body input[class*="border-slate"]:focus,
 body select[class*="border-slate"]:focus,
-body textarea[class*="border-slate"]:focus {
-  border-color: var(--dg-accent) !important;
-  box-shadow: 0 0 0 2px rgba(15, 143, 111, 0.14) !important;
-}
-
+body textarea[class*="border-slate"]:focus,
 .dark .input-minimal:focus,
 .dark body input[class*="border-slate"]:focus,
 .dark body select[class*="border-slate"]:focus,
 .dark body textarea[class*="border-slate"]:focus {
-  border-color: #22a67f !important;
-  box-shadow: 0 0 0 2px rgba(34, 166, 127, 0.2) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-focus) !important;
 }
 
-/* Cartões de navegação e de gestão se comportam como uma grade editorial,
-   e não como botões flutuantes. */
+/* Cartões de navegação */
 body .nav-card,
-body [class*="min-h-28"],
-body [class*="min-h-32"],
+body [class*="min-h-24"],
+body [class*="min-h-22"],
 body .dashboard-panel,
 body .dg-permissions {
   border-radius: var(--radius-lg) !important;
@@ -123,48 +611,42 @@ body [class*="hover:-translate-y"]:hover {
 }
 
 body .nav-card:hover,
-body [class*="min-h-28"]:hover,
-body [class*="min-h-32"]:hover {
-  border-color: #9ca3af !important;
-  box-shadow: inset 3px 0 0 var(--dg-accent) !important;
+body [class*="min-h-24"]:hover,
+body [class*="min-h-22"]:hover {
+  border-color: var(--border-strong) !important;
 }
 
 .dark body .nav-card:hover,
-.dark body [class*="min-h-28"]:hover,
-.dark body [class*="min-h-32"]:hover {
-  border-color: #666666 !important;
-  box-shadow: inset 3px 0 0 #22a67f !important;
+.dark body [class*="min-h-24"]:hover,
+.dark body [class*="min-h-22"]:hover {
+  background-color: #20252d !important;
+  border-color: #3b4350 !important;
 }
 
-/* Ações principais usam uma única ênfase. Os indicadores deixam de competir
-   entre si com blocos azul, violeta e verde em excesso. */
+/* Dashboard Stat Cards */
 .dashboard-stat-card {
   background: var(--dg-surface) !important;
   border-color: var(--dg-border) !important;
 }
 
-.dashboard-stat-card--primary {
-  border-left: 3px solid var(--dg-accent) !important;
-}
-
+.dashboard-stat-card--primary,
 .dark .dashboard-stat-card--primary {
-  border-left-color: #22a67f !important;
+  border-left: 3px solid var(--accent) !important;
 }
 
 .dashboard-link-card::after {
   display: none !important;
 }
 
-/* Sidebar administrativa: contraste, espaçamento e estado ativo com leitura
-   imediata, sem elevação ou efeitos de painel. */
+/* Sidebar administrativa */
 #sidebar-menu {
   background: var(--dg-surface) !important;
   border-color: var(--dg-border) !important;
 }
 
 .dark #sidebar-menu {
-  background: var(--dg-canvas) !important;
-  border-color: var(--dg-border) !important;
+  background: #15181e !important;
+  border-color: #2a3039 !important;
 }
 
 #sidebar-menu .menu-item-content {
@@ -200,18 +682,21 @@ body [class*="min-h-32"]:hover {
 /* Modais preservam uma pequena elevação para não se confundirem com a tela. */
 body [role="dialog"],
 body .dg-permissions-modal__dialog,
-body #doc-reader-modal > div {
+body #doc-reader-modal>div {
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18) !important;
 }
 
 .dark body [role="dialog"],
 .dark body .dg-permissions-modal__dialog,
-.dark body #doc-reader-modal > div {
+.dark body #doc-reader-modal>div {
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+
+  *,
+  *::before,
+  *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
@@ -226,37 +711,105 @@ body #doc-reader-modal > div {
 
 /* Compatibilidade para os utilitários Tailwind já presentes nas telas.
    Centraliza a paleta sem exigir reescrever centenas de componentes. */
-.dark [class*="dark:bg-[#181a1f]"] { background-color: #212121 !important; }
-.dark [class*="dark:bg-[#1e293b]"] { background-color: #2f2f2f !important; }
+.dark [class*="dark:bg-[#181a1f]"] {
+  background-color: #212121 !important;
+}
+
+.dark [class*="dark:bg-[#1e293b]"] {
+  background-color: #2f2f2f !important;
+}
+
 .dark [class*="dark:bg-[#1f2128]"],
 .dark [class*="dark:bg-[#202329]"],
 .dark [class*="dark:bg-[#23252a]"],
-.dark [class*="dark:bg-[#25272d]"] { background-color: #262626 !important; }
+.dark [class*="dark:bg-[#25272d]"] {
+  background-color: #262626 !important;
+}
+
 .dark [class*="dark:bg-[#2c2e33]"],
-.dark [class*="dark:bg-[#32353e]"] { background-color: #2f2f2f !important; }
-.dark [class*="dark:bg-[#353842]"] { background-color: #303030 !important; }
-.dark [class*="dark:bg-[#454956]"] { background-color: #3a3a3a !important; }
+.dark [class*="dark:bg-[#32353e]"] {
+  background-color: #2f2f2f !important;
+}
+
+.dark [class*="dark:bg-[#353842]"] {
+  background-color: #303030 !important;
+}
+
+.dark [class*="dark:bg-[#454956]"] {
+  background-color: #3a3a3a !important;
+}
+
 .dark [class*="dark:bg-[#3e424e]"],
-.dark [class*="dark:hover:bg-[#3e424e]"]:hover { background-color: #3a3a3a !important; }
+.dark [class*="dark:hover:bg-[#3e424e]"]:hover {
+  background-color: #3a3a3a !important;
+}
+
 .dark [class*="dark:border-[#454956]"],
-.dark [class*="dark:border-[#4a4e5c]"] { border-color: #424242 !important; }
-.dark [class*="dark:divide-[#454956]"] > :not([hidden]) ~ :not([hidden]) { border-color: #424242 !important; }
-.dark [class*="dark:hover:bg-[#2c2e33]"]:hover { background-color: #3a3a3a !important; }
-.dark [class*="dark:hover:border-slate-500"]:hover { border-color: #5a5a5a !important; }
-.dark [class*="dark:bg-slate-800"] { background-color: #2f2f2f !important; }
-.dark [class*="dark:bg-slate-700"] { background-color: #383838 !important; }
-.dark [class*="dark:bg-slate-600"] { background-color: #424242 !important; }
-.dark [class*="dark:bg-slate-300"] { background-color: #4a4a4a !important; }
-.dark [class*="dark:hover:bg-slate-800"]:hover { background-color: #3a3a3a !important; }
+.dark [class*="dark:border-[#4a4e5c]"] {
+  border-color: #424242 !important;
+}
+
+.dark [class*="dark:divide-[#454956]"]> :not([hidden])~ :not([hidden]) {
+  border-color: #424242 !important;
+}
+
+.dark [class*="dark:hover:bg-[#2c2e33]"]:hover {
+  background-color: #3a3a3a !important;
+}
+
+.dark [class*="dark:hover:border-slate-500"]:hover {
+  border-color: #5a5a5a !important;
+}
+
+.dark [class*="dark:bg-slate-800"] {
+  background-color: #2f2f2f !important;
+}
+
+.dark [class*="dark:bg-slate-700"] {
+  background-color: #383838 !important;
+}
+
+.dark [class*="dark:bg-slate-600"] {
+  background-color: #424242 !important;
+}
+
+.dark [class*="dark:bg-slate-300"] {
+  background-color: #4a4a4a !important;
+}
+
+.dark [class*="dark:hover:bg-slate-800"]:hover {
+  background-color: #3a3a3a !important;
+}
+
 .dark [class*="dark:border-slate-800"],
 .dark [class*="dark:border-slate-700"],
-.dark [class*="dark:border-slate-600"] { border-color: #424242 !important; }
-.dark [class*="dark:text-slate-100"] { color: #ececec !important; }
-.dark [class*="dark:text-slate-900"] { color: #212121 !important; }
-.dark [class*="dark:text-slate-200"] { color: #d8d8d8 !important; }
-.dark [class*="dark:text-slate-300"] { color: #c2c2c2 !important; }
-.dark [class*="dark:text-slate-400"] { color: #a0a0a0 !important; }
-.dark [class*="dark:text-slate-500"] { color: #8a8a8a !important; }
+.dark [class*="dark:border-slate-600"] {
+  border-color: #424242 !important;
+}
+
+.dark [class*="dark:text-slate-100"] {
+  color: #ececec !important;
+}
+
+.dark [class*="dark:text-slate-900"] {
+  color: #212121 !important;
+}
+
+.dark [class*="dark:text-slate-200"] {
+  color: #d8d8d8 !important;
+}
+
+.dark [class*="dark:text-slate-300"] {
+  color: #c2c2c2 !important;
+}
+
+.dark [class*="dark:text-slate-400"] {
+  color: #a0a0a0 !important;
+}
+
+.dark [class*="dark:text-slate-500"] {
+  color: #8a8a8a !important;
+}
 
 /* Container amplo: usa melhor monitores grandes sem encostar nas bordas. */
 .max-container {
@@ -515,12 +1068,12 @@ body #doc-reader-modal > div {
   transition: opacity 150ms ease, visibility 150ms ease;
 }
 
-#doc-reader-modal > div {
+#doc-reader-modal>div {
   animation: modalFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
   border-radius: var(--radius-md);
 }
 
-.dark #doc-reader-modal > div {
+.dark #doc-reader-modal>div {
   background-color: var(--dg-surface-raised);
   border-color: var(--dg-border);
 }
@@ -530,18 +1083,53 @@ body #doc-reader-modal > div {
     opacity: 0;
     transform: scale(0.97);
   }
+
   to {
     opacity: 1;
     transform: scale(1);
   }
 }
 
-#modal-doc-body h1 { font-size: 1.25rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; color: inherit; }
-#modal-doc-body h2 { font-size: 1.125rem; font-weight: 600; margin-top: 0.875rem; margin-bottom: 0.375rem; color: inherit; }
-#modal-doc-body h3 { font-size: 1rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.25rem; color: inherit; }
-#modal-doc-body p { margin-bottom: 0.75rem; line-height: 1.6; font-size: 0.875rem; }
-#modal-doc-body ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.75rem; font-size: 0.875rem; }
-#modal-doc-body li { margin-bottom: 0.25rem; }
+#modal-doc-body h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: inherit;
+}
+
+#modal-doc-body h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-top: 0.875rem;
+  margin-bottom: 0.375rem;
+  color: inherit;
+}
+
+#modal-doc-body h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  color: inherit;
+}
+
+#modal-doc-body p {
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+  font-size: 0.875rem;
+}
+
+#modal-doc-body ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+
+#modal-doc-body li {
+  margin-bottom: 0.25rem;
+}
 
 /* ==========================================================================
    5. CUSTOM SCROLLBAR DISCRETO
@@ -550,19 +1138,24 @@ body #doc-reader-modal > div {
   width: 6px;
   height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 3px;
 }
+
 .dark ::-webkit-scrollbar-thumb {
   background: #555555;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
 .dark ::-webkit-scrollbar-thumb:hover {
   background: #6a6a6a;
 }
@@ -653,8 +1246,13 @@ body #doc-reader-modal > div {
 }
 
 @keyframes backdropFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes modalSlideUp {
@@ -662,6 +1260,7 @@ body #doc-reader-modal > div {
     opacity: 0;
     transform: translateY(12px) scale(0.97);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -686,13 +1285,9 @@ body #doc-reader-modal > div {
 }
 
 /* ===========================================================================
-   TEMAS INSTITUCIONAIS
-
-   O tema é uma configuração global. A classe .dark continua sendo uma
-   preferência individual de luminosidade; a paleta abaixo é aplicada nos dois
-   modos e não depende de JavaScript ou armazenamento local.
+   TEMAS INSTITUCIONAIS - MODO CLARO (html:not(.dark))
    =========================================================================== */
-html[data-portal-theme="emerald"] {
+html:not(.dark)[data-portal-theme="emerald"] {
   --dg-canvas: #f6f9f8;
   --dg-surface: #ffffff;
   --dg-surface-muted: #eef6f3;
@@ -702,7 +1297,8 @@ html[data-portal-theme="emerald"] {
   --dg-accent-strong: #08735a;
   --dg-accent-soft: #e1f3ed;
 }
-html[data-portal-theme="blue"] {
+
+html:not(.dark)[data-portal-theme="blue"] {
   --dg-canvas: #f6f8fc;
   --dg-surface: #ffffff;
   --dg-surface-muted: #eef4ff;
@@ -712,7 +1308,8 @@ html[data-portal-theme="blue"] {
   --dg-accent-strong: #1d4ed8;
   --dg-accent-soft: #e6efff;
 }
-html[data-portal-theme="indigo"] {
+
+html:not(.dark)[data-portal-theme="indigo"] {
   --dg-canvas: #f7f7fe;
   --dg-surface: #ffffff;
   --dg-surface-muted: #f0f1ff;
@@ -722,7 +1319,8 @@ html[data-portal-theme="indigo"] {
   --dg-accent-strong: #4338ca;
   --dg-accent-soft: #eae9ff;
 }
-html[data-portal-theme="violet"] {
+
+html:not(.dark)[data-portal-theme="violet"] {
   --dg-canvas: #faf8fc;
   --dg-surface: #ffffff;
   --dg-surface-muted: #f5f0fa;
@@ -732,7 +1330,8 @@ html[data-portal-theme="violet"] {
   --dg-accent-strong: #6d28d9;
   --dg-accent-soft: #f0e8ff;
 }
-html[data-portal-theme="rose"] {
+
+html:not(.dark)[data-portal-theme="rose"] {
   --dg-canvas: #fcf8f9;
   --dg-surface: #ffffff;
   --dg-surface-muted: #fbf0f3;
@@ -742,7 +1341,8 @@ html[data-portal-theme="rose"] {
   --dg-accent-strong: #9f1239;
   --dg-accent-soft: #fce7ed;
 }
-html[data-portal-theme="amber"] {
+
+html:not(.dark)[data-portal-theme="amber"] {
   --dg-canvas: #fcfaf6;
   --dg-surface: #ffffff;
   --dg-surface-muted: #faf5ea;
@@ -752,7 +1352,8 @@ html[data-portal-theme="amber"] {
   --dg-accent-strong: #92400e;
   --dg-accent-soft: #fff0d8;
 }
-html[data-portal-theme="ocean"] {
+
+html:not(.dark)[data-portal-theme="ocean"] {
   --dg-canvas: #f5fafb;
   --dg-surface: #ffffff;
   --dg-surface-muted: #ebf6f8;
@@ -762,7 +1363,8 @@ html[data-portal-theme="ocean"] {
   --dg-accent-strong: #0f5f74;
   --dg-accent-soft: #dff3f6;
 }
-html[data-portal-theme="graphite"] {
+
+html:not(.dark)[data-portal-theme="graphite"] {
   --dg-canvas: #f8f8f8;
   --dg-surface: #ffffff;
   --dg-surface-muted: #f1f1f1;
@@ -773,62 +1375,25 @@ html[data-portal-theme="graphite"] {
   --dg-accent-soft: #ececed;
 }
 
-html.dark[data-portal-theme="emerald"] { --dg-canvas: #17241f; --dg-surface: #1e2e29; --dg-surface-raised: #243831; --dg-surface-muted: #1a2924; --dg-surface-hover: #2b443a; --dg-border: #365247; --dg-border-strong: #4b6a5d; }
-html.dark[data-portal-theme="blue"] { --dg-canvas: #172033; --dg-surface: #1e2b45; --dg-surface-raised: #243553; --dg-surface-muted: #1a263d; --dg-surface-hover: #2b4064; --dg-border: #3b557d; --dg-border-strong: #526f9d; }
-html.dark[data-portal-theme="indigo"] { --dg-canvas: #1b1d38; --dg-surface: #252849; --dg-surface-raised: #2d3158; --dg-surface-muted: #202344; --dg-surface-hover: #373d68; --dg-border: #4a5180; --dg-border-strong: #626ba4; }
-html.dark[data-portal-theme="violet"] { --dg-canvas: #241d33; --dg-surface: #302641; --dg-surface-raised: #3a2e4e; --dg-surface-muted: #2a2139; --dg-surface-hover: #47365f; --dg-border: #5d4776; --dg-border-strong: #775c96; }
-html.dark[data-portal-theme="rose"] { --dg-canvas: #301b24; --dg-surface: #3e2530; --dg-surface-raised: #4a2c3a; --dg-surface-muted: #351e29; --dg-surface-hover: #5b3546; --dg-border: #734454; --dg-border-strong: #92596c; }
-html.dark[data-portal-theme="amber"] { --dg-canvas: #2c2619; --dg-surface: #39311f; --dg-surface-raised: #453b26; --dg-surface-muted: #312a1b; --dg-surface-hover: #544830; --dg-border: #6d5b38; --dg-border-strong: #8c7448; }
-html.dark[data-portal-theme="ocean"] { --dg-canvas: #152a30; --dg-surface: #1c353c; --dg-surface-raised: #224149; --dg-surface-muted: #193037; --dg-surface-hover: #2b4f58; --dg-border: #3d626b; --dg-border-strong: #53808b; }
-html.dark[data-portal-theme="graphite"] { --dg-canvas: #212121; --dg-surface: #2b2b2b; --dg-surface-raised: #333333; --dg-surface-muted: #262626; --dg-surface-hover: #3d3d3d; --dg-border: #4a4a4a; --dg-border-strong: #606060; }
-
-html[data-portal-theme] body[class*="bg-[#f8f9fa]"],
-html[data-portal-theme] body[class*="bg-[#181a1f]"],
-html[data-portal-theme] body[class*="bg-[#2c2e33]"] {
+html:not(.dark)[data-portal-theme] body[class*="bg-[#f8f9fa]"] {
   background-color: var(--dg-canvas) !important;
 }
 
-html[data-portal-theme] body .bg-white {
+html:not(.dark)[data-portal-theme] body .bg-white {
   background-color: var(--dg-surface) !important;
 }
 
-html[data-portal-theme] body .bg-slate-50 {
+html:not(.dark)[data-portal-theme] body .bg-slate-50 {
   background-color: var(--dg-surface-muted) !important;
 }
 
-html.dark[data-portal-theme] [class*="dark:bg-[#181a1f]"],
-html.dark[data-portal-theme] [class*="dark:bg-[#1e293b]"],
-html.dark[data-portal-theme] [class*="dark:bg-[#2c2e33]"],
-html.dark[data-portal-theme] [class*="dark:bg-[#32353e]"] {
-  background-color: var(--dg-canvas) !important;
-}
-
-html.dark[data-portal-theme] [class*="dark:bg-[#353842]"],
-html.dark[data-portal-theme] [class*="dark:bg-slate-800"] {
-  background-color: var(--dg-surface-raised) !important;
-}
-
-html.dark[data-portal-theme] [class*="dark:bg-[#454956]"],
-html.dark[data-portal-theme] [class*="dark:bg-slate-700"] {
-  background-color: var(--dg-surface-hover) !important;
-}
-
-html[data-portal-theme] body [class~="bg-slate-900"],
-html[data-portal-theme] body [class~="bg-emerald-600"] {
+html:not(.dark)[data-portal-theme] body [class~="bg-slate-900"],
+html:not(.dark)[data-portal-theme] body [class~="bg-emerald-600"] {
   background-color: var(--dg-accent) !important;
 }
 
-html[data-portal-theme] body [class*="hover:bg-slate-800"]:hover,
-html[data-portal-theme] body [class*="hover:bg-emerald-500"]:hover {
-  background-color: var(--dg-accent-strong) !important;
-}
-
-html.dark[data-portal-theme] body [class*="dark:bg-white"] {
-  background-color: var(--dg-accent) !important;
-  color: #ffffff !important;
-}
-
-html.dark[data-portal-theme] body [class*="dark:hover:bg-slate-100"]:hover {
+html:not(.dark)[data-portal-theme] body [class*="hover:bg-slate-800"]:hover,
+html:not(.dark)[data-portal-theme] body [class*="hover:bg-emerald-500"]:hover {
   background-color: var(--dg-accent-strong) !important;
 }
 
@@ -843,19 +1408,19 @@ html[data-portal-theme] ::selection {
   color: #ffffff;
 }
 
-html[data-portal-theme] #sidebar-menu .menu-item-content[class*="bg-slate-100"],
-html[data-portal-theme] body .fixed.inset-x-0.top-0 a[class*="bg-slate-100"] {
+html:not(.dark)[data-portal-theme] #sidebar-menu .menu-item-content[class*="bg-slate-100"],
+html:not(.dark)[data-portal-theme] body .fixed.inset-x-0.top-0 a[class*="bg-slate-100"] {
   background-color: var(--dg-accent-soft) !important;
   color: var(--dg-accent-strong) !important;
 }
 
-html[data-portal-theme] .navigation-trail [class*="border-emerald-500"],
-html[data-portal-theme] .navigation-trail [class*="bg-emerald-500"] {
+html:not(.dark)[data-portal-theme] .navigation-trail [class*="border-emerald-500"],
+html:not(.dark)[data-portal-theme] .navigation-trail [class*="bg-emerald-500"] {
   border-color: var(--dg-accent) !important;
   background-color: var(--dg-accent) !important;
 }
 
-html[data-portal-theme] .dashboard-stat-card--primary {
+html:not(.dark)[data-portal-theme] .dashboard-stat-card--primary {
   border-left-color: var(--dg-accent) !important;
 }
 
@@ -867,7 +1432,10 @@ html[data-portal-theme] .dashboard-stat-card--primary {
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
-.settings-theme-option { cursor: pointer; display: block; }
+.settings-theme-option {
+  cursor: pointer;
+  display: block;
+}
 
 .settings-theme-option__card {
   display: flex;
@@ -885,12 +1453,12 @@ html[data-portal-theme] .dashboard-stat-card--primary {
   border-color: var(--theme-preview-accent, var(--dg-border-strong));
 }
 
-.settings-theme-option input:focus-visible + .settings-theme-option__card {
+.settings-theme-option input:focus-visible+.settings-theme-option__card {
   outline: 2px solid var(--dg-accent);
   outline-offset: 2px;
 }
 
-.settings-theme-option input:checked + .settings-theme-option__card {
+.settings-theme-option input:checked+.settings-theme-option__card {
   border-color: var(--dg-accent);
   background: var(--dg-accent-soft);
 }
@@ -910,14 +1478,41 @@ html[data-portal-theme] .dashboard-stat-card--primary {
   padding: 0.3rem;
 }
 
-.settings-theme-option__preview i { display: block; border-radius: 0.12rem; }
-.settings-theme-option__preview i:first-child { grid-row: 1 / span 2; background: var(--theme-preview-accent); }
-.settings-theme-option__preview i:nth-child(2) { background: color-mix(in srgb, var(--theme-preview-accent) 45%, #ffffff); }
-.settings-theme-option__preview i:nth-child(3) { background: #ffffff; }
+.settings-theme-option__preview i {
+  display: block;
+  border-radius: 0.12rem;
+}
 
-.settings-theme-option__copy { display: grid; min-width: 0; gap: 0.18rem; }
-.settings-theme-option__copy strong { color: var(--dg-text); font-size: 0.75rem; line-height: 1.2; }
-.settings-theme-option__copy small { color: var(--dg-muted); font-size: 0.65rem; line-height: 1.35; }
+.settings-theme-option__preview i:first-child {
+  grid-row: 1 / span 2;
+  background: var(--theme-preview-accent);
+}
+
+.settings-theme-option__preview i:nth-child(2) {
+  background: color-mix(in srgb, var(--theme-preview-accent) 45%, #ffffff);
+}
+
+.settings-theme-option__preview i:nth-child(3) {
+  background: #ffffff;
+}
+
+.settings-theme-option__copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.settings-theme-option__copy strong {
+  color: var(--dg-text);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.settings-theme-option__copy small {
+  color: var(--dg-muted);
+  font-size: 0.65rem;
+  line-height: 1.35;
+}
 
 .settings-theme-option__check {
   display: none;
@@ -928,10 +1523,23 @@ html[data-portal-theme] .dashboard-stat-card--primary {
   color: var(--dg-accent);
 }
 
-.settings-theme-option input:checked + .settings-theme-option__card .settings-theme-option__check { display: block; }
-.settings-theme-option__check svg { display: block; width: 100%; height: 100%; }
+.settings-theme-option input:checked+.settings-theme-option__card .settings-theme-option__check {
+  display: block;
+}
+
+.settings-theme-option__check svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 
 @supports not (color: color-mix(in srgb, #000, #fff)) {
-  .settings-theme-option__preview { border-color: #cbd5e1; background: #f8fafc; }
-  .settings-theme-option__preview i:nth-child(2) { background: #cbd5e1; }
+  .settings-theme-option__preview {
+    border-color: #cbd5e1;
+    background: #f8fafc;
+  }
+
+  .settings-theme-option__preview i:nth-child(2) {
+    background: #cbd5e1;
+  }
 }

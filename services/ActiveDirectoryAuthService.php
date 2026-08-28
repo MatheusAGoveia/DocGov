@@ -60,10 +60,78 @@ final class ActiveDirectoryAuthService {
         }
 
         try {
-            $bindIdentity = (!empty($domain['netbios_domain']) ? $domain['netbios_domain'] : $domainKey) . '\\' . $username;
-            if (!@ldap_bind($ldap, $bindIdentity, $password)) {
+            $bindIdentities = [];
+            $netbiosDomain = !empty($domain['netbios_domain']) ? $domain['netbios_domain'] : $domainKey;
+            if (!empty($netbiosDomain)) {
+                $bindIdentities[] = $netbiosDomain . '\\' . $username;
+            }
+            $dnsDomain = !empty($domain['dns_domain']) ? $domain['dns_domain'] : '';
+            if (!empty($dnsDomain)) {
+                $bindIdentities[] = $username . '@' . $dnsDomain;
+            }
+            $typedHint = trim((string)($identity['typed_domain_hint'] ?? ''));
+            if ($typedHint !== '' && str_contains($typedHint, '.')) {
+                $bindIdentities[] = $username . '@' . $typedHint;
+            }
+            $bindIdentities[] = $username;
+            $bindIdentities = array_values(array_unique($bindIdentities));
+
+            $bound = false;
+            $lastDiagnosticMessage = '';
+
+            foreach ($bindIdentities as $bindIdentity) {
+                if (@ldap_bind($ldap, $bindIdentity, $password)) {
+                    $bound = true;
+                    break;
+                }
+                $diag = '';
+                if (defined('LDAP_OPT_DIAGNOSTIC_MESSAGE')) {
+                    @ldap_get_option($ldap, LDAP_OPT_DIAGNOSTIC_MESSAGE, $diag);
+                }
+                if ($diag !== '') {
+                    $lastDiagnosticMessage = $diag;
+                }
+            }
+
+            if (!$bound) {
+                // Tentar Fallback de Emergência Break-Glass se a conta possuir senha local cadastrada no sistema
+                $breakGlassUser = $this->tryBreakGlassEmergencyLogin($login, $password);
+                if ($breakGlassUser !== null) {
+                    return [
+                        'success' => true,
+                        'code' => 'authenticated_breakglass',
+                        'message' => 'Login efetuado via Conta de Emergência Local (Break-Glass).',
+                        'user' => $breakGlassUser,
+                    ];
+                }
+
                 $latencyMs = (int)round((microtime(true) - $startTime) * 1000);
-                $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'invalid_credentials', 'Senha do AD incorreta ou inválida.', $latencyMs, $userIp);
+
+                // Identifica códigos de erro estendidos do Active Directory (ex.: data 775 = bloqueio, data 532/773 = senha expirada, data 533 = conta desativada)
+                $adErrorCode = null;
+                if (preg_match('/data\s+([0-9a-fA-F]+)/i', $lastDiagnosticMessage, $matches)) {
+                    $adErrorCode = strtolower($matches[1]);
+                }
+
+                if ($adErrorCode === '775') {
+                    $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'account_locked', 'Conta bloqueada por excesso de tentativas no AD.', $latencyMs, $userIp);
+                    return $this->failure('account_locked', 'Sua conta do Active Directory está temporariamente bloqueada por excesso de tentativas de senha incorreta. Aguarde alguns minutos ou solicite o desbloqueio ao suporte de TI.');
+                } elseif ($adErrorCode === '532' || $adErrorCode === '773') {
+                    $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'password_expired', 'Senha do AD expirada ou troca obrigatória no próximo logon.', $latencyMs, $userIp);
+                    return $this->failure('password_expired', 'Sua senha do Active Directory expirou ou requer alteração no próximo logon. Atualize sua senha em um computador da rede corporativa antes de acessar o DocGov.');
+                } elseif ($adErrorCode === '533') {
+                    $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'account_disabled', 'Conta desativada no Active Directory.', $latencyMs, $userIp);
+                    return $this->failure('directory_account_disabled', 'Sua conta está desativada no Active Directory.');
+                } elseif ($adErrorCode === '701') {
+                    $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'account_expired', 'Conta expirada no Active Directory.', $latencyMs, $userIp);
+                    return $this->failure('account_expired', 'Sua conta corporativa expirou no Active Directory. Entre em contato com a TI.');
+                } elseif (in_array($adErrorCode, ['52f', '530', '531'], true)) {
+                    $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'logon_restriction', 'Restrição de horário/estação no AD.', $latencyMs, $userIp);
+                    return $this->failure('logon_restriction', 'Sua conta do Active Directory possui restrições de horário ou computador para logon.');
+                }
+
+                $logDetails = 'Senha do AD incorreta ou usuário/domínio não reconhecido pelo servidor.' . ($lastDiagnosticMessage !== '' ? " (Diagnóstico AD: {$lastDiagnosticMessage})" : '');
+                $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'invalid_credentials', $logDetails, $latencyMs, $userIp);
                 return $this->failure('invalid_credentials', 'Usuário ou senha do Active Directory inválidos.');
             }
 
@@ -377,6 +445,11 @@ final class ActiveDirectoryAuthService {
             if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_DEMAND')) {
                 @ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_DEMAND);
             }
+        } else {
+            putenv('LDAPTLS_REQCERT=never');
+            if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_NEVER')) {
+                @ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_NEVER);
+            }
         }
 
         @ldap_set_option(null, LDAP_OPT_DEBUG_LEVEL, 0);
@@ -404,24 +477,50 @@ final class ActiveDirectoryAuthService {
     private function resolveIdentity(string $login): ?array {
         $login = strtolower(trim($login));
         $domainHint = '';
-        if (str_contains($login, '\\')) {
-            [$domainHint, $login] = array_pad(explode('\\', $login, 2), 2, '');
-        } elseif (str_contains($login, '@')) {
-            [$login, $domainHint] = array_pad(explode('@', $login, 2), 2, '');
+
+        // Limpa iterativamente prefixos (DOMINIO\user) e sufixos UPN (user@dominio.com) aninhados ou duplicados
+        while (str_contains($login, '\\') || str_contains($login, '@')) {
+            if (str_contains($login, '\\')) {
+                $parts = explode('\\', $login, 2);
+                if ($parts[0] !== '') {
+                    $domainHint = $parts[0];
+                }
+                $login = $parts[1];
+            } elseif (str_contains($login, '@')) {
+                $parts = explode('@', $login, 2);
+                $login = $parts[0];
+                if ($parts[1] !== '') {
+                    $domainHint = $parts[1];
+                }
+            }
         }
+
         if (!preg_match('/^[a-z0-9._-]{1,100}$/', $login)) {
             return null;
         }
 
         $domains = $this->config['domains'] ?? [];
         $defaultKey = strtoupper((string)($this->config['default_domain'] ?? 'BETIM'));
+
+        // 1. Tentar encontrar por alias ou chave direta do domínio
         foreach ($domains as $key => $domain) {
-            $aliases = array_merge([$key, $domain['key'] ?? '', $domain['netbios_domain'] ?? '', $domain['dns_domain'] ?? ''], $domain['aliases'] ?? []);
-            if ($domainHint === '' ? strtoupper($key) === $defaultKey : in_array($domainHint, array_map('strtolower', array_filter($aliases)), true)) {
+            $aliases = array_merge(
+                [$key, $domain['key'] ?? '', $domain['netbios_domain'] ?? '', $domain['dns_domain'] ?? ''],
+                $domain['aliases'] ?? []
+            );
+            if ($domainHint !== '' && in_array($domainHint, array_map('strtolower', array_filter($aliases)), true)) {
                 $domain['key'] = strtoupper((string)($domain['key'] ?? $key));
-                return ['username' => $login, 'domain' => $domain];
+                return ['username' => $login, 'domain' => $domain, 'typed_domain_hint' => $domainHint];
             }
         }
+
+        // 2. Fallback ao domínio padrão se o hint for vazio ou for apenas um e-mail sem correspondência em outro domínio
+        $matchedDomain = $domains[$defaultKey] ?? reset($domains);
+        if ($matchedDomain) {
+            $matchedDomain['key'] = strtoupper((string)($matchedDomain['key'] ?? $defaultKey));
+            return ['username' => $login, 'domain' => $matchedDomain, 'typed_domain_hint' => $domainHint];
+        }
+
         return null;
     }
 
@@ -496,7 +595,7 @@ final class ActiveDirectoryAuthService {
                     username = :username,
                     email = :email,
                     role = :role,
-                    password_hash = NULL,
+                    password_hash = password_hash,
                     auth_source = 'ad',
                     ad_object_guid = :object_guid,
                     ad_domain = :ad_domain,
@@ -678,10 +777,45 @@ final class ActiveDirectoryAuthService {
             return ['success' => false, 'error' => 'URI do servidor LDAP/LDAPS não informada.'];
         }
 
+        // 1. Extração rigorosa de Host e Porta TCP para teste direto de Socket
+        $parsedUrl = parse_url($uri);
+        $scheme = strtolower($parsedUrl['scheme'] ?? 'ldaps');
+        $host = $parsedUrl['host'] ?? '';
+        $port = (int)($parsedUrl['port'] ?? ($scheme === 'ldaps' ? 636 : 389));
+
+        if ($host === '') {
+            // Tentar regex se parse_url falhar por sintaxe de URI
+            if (preg_match('/^ldaps?:\/\/([^\/:]+)(?::(\d+))?/i', $uri, $m)) {
+                $host = $m[1];
+                $port = !empty($m[2]) ? (int)$m[2] : ($scheme === 'ldaps' ? 636 : 389);
+            } else {
+                return ['success' => false, 'error' => "Sintaxe da URI do servidor LDAP inválida: [{$uri}]."];
+            }
+        }
+
+        // 2. Teste físico de conectividade TCP via Socket antes do aperto de mão LDAP
+        $errno = 0;
+        $errstr = '';
+        $socket = @fsockopen($host, $port, $errno, $errstr, 2.5);
+        if (!$socket) {
+            $socketMsg = $errstr !== '' ? $errstr : "Não foi possível estabelecer conexão TCP com {$host}:{$port}";
+            return [
+                'success' => false,
+                'error' => "Servidor ou porta inacessível [{$uri}]: {$socketMsg} (Erro {$errno}). Verifique o endereço IP/Host e a porta TCP {$port} no Firewall."
+            ];
+        }
+        fclose($socket);
+
+        // 3. Configurações de certificado TLS/SSL
         if (!empty($caCert) && file_exists($caCert)) {
             putenv("LDAPTLS_CACERT={$caCert}");
             if (defined('LDAP_OPT_X_TLS_CACERTFILE')) {
                 @ldap_set_option(null, LDAP_OPT_X_TLS_CACERTFILE, $caCert);
+            }
+        } else {
+            putenv('LDAPTLS_REQCERT=never');
+            if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_NEVER')) {
+                @ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_NEVER);
             }
         }
 
@@ -700,8 +834,12 @@ final class ActiveDirectoryAuthService {
             @ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, 3);
         }
 
-        // Tentar realizar o aperto de mão TCP e autenticação real via ldap_bind
-        if (!empty($bindDn) && !empty($bindPass)) {
+        // 4. Se a senha for a máscara visual (•), ignorar a senha para não dar erro falso de bind
+        $isPlaceholderPass = str_contains($bindPass, '•') || str_contains($bindPass, '*');
+        $bindDn = trim($bindDn);
+        $bindPass = trim($bindPass);
+
+        if ($bindDn !== '' && $bindPass !== '' && !$isPlaceholderPass) {
             $bound = @ldap_bind($conn, $bindDn, $bindPass);
             if (!$bound) {
                 $err = ldap_error($conn);
@@ -714,7 +852,7 @@ final class ActiveDirectoryAuthService {
             @ldap_unbind($conn);
             return [
                 'success' => true,
-                'message' => "Comunicação e Autenticação BIND bem-sucedidas no servidor [{$uri}]!"
+                'message' => "Conexão de rede e Autenticação BIND bem-sucedidas no servidor [{$uri}]!"
             ];
         } else {
             $bound = @ldap_bind($conn);
@@ -723,13 +861,13 @@ final class ActiveDirectoryAuthService {
                 @ldap_unbind($conn);
                 return [
                     'success' => false,
-                    'error' => "Falha de comunicação de rede no servidor [{$uri}]: {$err}. Verifique se o endereço/porta e a rota de rede estão operacionais."
+                    'error' => "Falha no protocolo LDAP/TLS no servidor [{$uri}]: {$err}."
                 ];
             }
             @ldap_unbind($conn);
             return [
                 'success' => true,
-                'message' => "Conexão de rede e protocolo LDAP testados e operacionais com sucesso no servidor [{$uri}]!"
+                'message' => "Conexão TCP e protocolo LDAP/TLS validados com sucesso no servidor [{$uri}]!"
             ];
         }
     }

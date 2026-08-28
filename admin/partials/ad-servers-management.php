@@ -5,6 +5,9 @@ if (!$isGlobalAdminCurrent) {
     echo '<div class="p-6 text-center font-bold text-red-600">Acesso restrito. Apenas administradores globais possuem permissão para gerenciar a autenticação corporativa.</div>';
     return;
 }
+?>
+<input type="hidden" name="csrf_token" id="ad-csrf-token" value="<?= htmlspecialchars(CsrfService::token(), ENT_QUOTES, 'UTF-8') ?>">
+<?php
 
 $adAuthEnabled = (bool)($currentSystemSettings['ad_auth_enabled'] ?? true);
 $adDefaultDomain = strtoupper((string)($currentSystemSettings['ad_default_domain'] ?? 'BETIM'));
@@ -76,33 +79,115 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
 <div class="mx-auto max-w-5xl space-y-5">
 
-    <!-- BARRA NAVEGAÇÃO DE SUBTABS: SERVIDORES VS AUDITORIA DE LOGINS -->
+    <?php if (($_GET['msg'] ?? '') === 'domain_added'): ?>
+        <div class="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center gap-2">
+            <svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span>✓ Domínio corporativo salvo e configurado com sucesso!</span>
+        </div>
+    <?php endif; ?>
+
+    <!-- BARRA NAVEGAÇÃO DE SUBTABS: SERVIDORES vs AUDITORIA vs SAÚDE DOS SERVIDORES -->
     <div class="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-[#454956]">
-        <div class="flex items-center gap-2">
-            <a href="index.php?tab=servidores_ad&subtab=servers" class="rounded-lg px-3.5 py-1.5 text-xs font-bold transition text-decoration-none <?= $subtab !== 'logs' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300' ?>">
+        <div class="flex items-center gap-2 flex-wrap">
+            <a href="index.php?tab=servidores_ad&subtab=servers" class="rounded-lg px-3.5 py-1.5 text-xs font-bold transition text-decoration-none <?= ($subtab !== 'logs' && $subtab !== 'health') ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300' ?>">
                 Servidores & Domínios
             </a>
             <a href="index.php?tab=servidores_ad&subtab=logs" class="rounded-lg px-3.5 py-1.5 text-xs font-bold transition text-decoration-none <?= $subtab === 'logs' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300' ?>">
                 Auditoria de Logins AD (<?= count($recentLogs) ?>)
             </a>
+            <a href="index.php?tab=servidores_ad&subtab=health" class="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition text-decoration-none <?= $subtab === 'health' ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300' ?>">
+                <svg class="h-3.5 w-3.5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <span>Saúde dos Servidores (Tempo Real)</span>
+            </a>
         </div>
-
-        <button type="button" id="btn-trigger-health-check" class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-2xs transition hover:bg-slate-50 dark:border-slate-700 dark:bg-[#353842] dark:text-slate-200">
-            <svg class="h-3.5 w-3.5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            Verificar Saúde dos Servidores
-        </button>
     </div>
 
-    <!-- PAINEL VIVO DE MONITOR DE SAÚDE DOS SERVIDORES (LIVE HEALTH CHECK) -->
-    <div id="live-health-container" class="hidden rounded-lg border border-slate-200 bg-white p-4 shadow-2xs dark:border-[#454956] dark:bg-[#353842]">
-        <div class="mb-3 flex items-center justify-between border-b border-slate-100 pb-2 dark:border-[#454956]">
-            <span class="text-xs font-bold text-slate-800 dark:text-slate-200">Monitor de Saúde dos Servidores LDAP (Tempo Real)</span>
-            <span id="health-check-spinner" class="hidden text-[11px] font-semibold text-slate-500">Testando conectividade de todos os controladores de domínio...</span>
-        </div>
-        <div id="health-check-results-grid" class="grid gap-2.5 sm:grid-cols-2 md:grid-cols-3"></div>
-    </div>
+    <?php if ($subtab === 'health'): ?>
+        <!-- ================================================================= -->
+        <!-- ABA: DASHBOARD INDEPENDENTE DE SAÚDE DOS SERVIDORES LDAP         -->
+        <!-- ================================================================= -->
+        <div class="space-y-5">
+            
+            <!-- CABEÇALHO DO DASHBOARD & CONTROLES DE AUTO-REFRESH -->
+            <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-4 dark:border-[#454956]">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base font-bold text-slate-900 dark:text-slate-100">Dashboard de Saúde & Telemetria LDAP</h2>
+                            <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                <span class="relative flex h-2 w-2">
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                </span>
+                                Tempo Real
+                            </span>
+                        </div>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            Monitoramento contínuo de conectividade TCP/TLS, portas ativas e tempo de resposta de todos os servidores corporativos.
+                        </p>
+                    </div>
 
-    <?php if ($subtab === 'logs'): ?>
+                    <div class="flex items-center gap-3 flex-wrap">
+                        <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                            <input type="checkbox" id="chk-auto-refresh-health" value="1" class="h-4 w-4 rounded accent-emerald-600">
+                            Auto-Atualizar (15s)
+                        </label>
+
+                        <button type="button" id="btn-trigger-health-check" class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700">
+                            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                            <span>Atualizar Saúde Agora</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- CARDS DE METRICAS KPI -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-4">
+                    <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-[#454956] dark:bg-[#2c2e33]">
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Disponibilidade</span>
+                        <div class="mt-1 flex items-baseline justify-between">
+                            <span id="kpi-uptime-rate" class="text-xl font-bold text-emerald-600 dark:text-emerald-400">--%</span>
+                            <span id="kpi-online-count" class="text-xs font-mono font-bold text-slate-500">0/0 On</span>
+                        </div>
+                    </div>
+
+                    <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-[#454956] dark:bg-[#2c2e33]">
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Latência Média</span>
+                        <div class="mt-1 flex items-baseline justify-between">
+                            <span id="kpi-avg-latency" class="text-xl font-bold text-slate-900 dark:text-slate-100 font-mono">-- ms</span>
+                            <span id="kpi-latency-quality" class="text-[10px] font-bold text-emerald-500 uppercase">Excelente</span>
+                        </div>
+                    </div>
+
+                    <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-[#454956] dark:bg-[#2c2e33]">
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Domínios Monitorados</span>
+                        <div class="mt-1 flex items-baseline justify-between">
+                            <span class="text-xl font-bold text-slate-900 dark:text-slate-100 font-mono"><?= count($adDomains) ?></span>
+                            <span class="text-[10px] font-semibold text-slate-400 uppercase">Ambientes</span>
+                        </div>
+                    </div>
+
+                    <div class="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-[#454956] dark:bg-[#2c2e33]">
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Última Checagem</span>
+                        <div class="mt-1 flex items-baseline justify-between">
+                            <span id="kpi-last-check-time" class="text-xs font-bold font-mono text-slate-800 dark:text-slate-200">Aguardando...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CONTAINER DE SERVIDORES EM GRID DE CARDS EXECUTIVOS -->
+            <div id="live-health-container" class="space-y-3">
+                <div class="flex items-center justify-between">
+                    <span id="health-check-spinner" class="hidden text-xs font-semibold text-slate-500 flex items-center gap-2">
+                        <svg class="h-4 w-4 animate-spin text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        Testando conectividade de todos os controladores de domínio e réplicas...
+                    </span>
+                </div>
+                <div id="health-check-results-grid" class="grid gap-4 md:grid-cols-2 lg:grid-cols-3"></div>
+            </div>
+
+        </div>
+    <?php elseif ($subtab === 'logs'): ?>
         <!-- ================================================================= -->
         <!-- ABA: PAINEL DE AUDITORIA DE LOGINS AD E DIAGNÓSTICO EM TEMPO REAL  -->
         <!-- ================================================================= -->
@@ -370,10 +455,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                 <h1 class="text-lg font-bold text-slate-900 dark:text-slate-100">Autenticação & Domínios Corporativos</h1>
                 <p class="text-xs text-slate-500 dark:text-slate-400">Domínios habilitados para o login da rede e status de ativação.</p>
             </div>
-            <button type="button" id="btn-open-add-modal" class="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-sky-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                Cadastrar Novo Domínio
-            </button>
         </div>
 
         <form method="POST" action="index.php?tab=servidores_ad" class="space-y-4">
@@ -398,10 +479,16 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             <div class="rounded-lg border border-slate-200 bg-white shadow-2xs dark:border-[#454956] dark:bg-[#353842] overflow-hidden">
                 <div class="px-4 py-3 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between bg-slate-50/50 dark:bg-[#2c2e33]/50">
                     <span class="text-xs font-bold text-slate-700 dark:text-slate-300">Domínios Corporativos (<?= count($adDomains) ?>)</span>
-                    <button type="button" id="btn-replicate-all-users" class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-bold text-white transition hover:bg-emerald-700">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                        Replicar Usuários do AD
-                    </button>
+                    <div class="flex items-center gap-2">
+                        <button type="button" id="btn-open-add-modal" class="inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-3 py-1 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                            Adicionar Domínio AD
+                        </button>
+                        <button type="button" id="btn-replicate-all-users" class="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1 text-xs font-bold text-white transition hover:bg-emerald-700">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                            Replicar Usuários do AD
+                        </button>
+                    </div>
                 </div>
 
                 <div id="replication-global-result-box" class="m-3 hidden rounded-md p-2.5 text-xs font-semibold"></div>
@@ -471,12 +558,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                         </div>
                     <?php endforeach; ?>
                 </div>
-            </div>
-
-            <div class="flex justify-end pt-1">
-                <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-sky-700">
-                    Salvar Alterações
-                </button>
             </div>
         </form>
 
@@ -583,6 +664,12 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
         window.location.href = `index.php?tab=servidores_ad&domain=${keyUpper}&new=1&name=${encodeURIComponent(name)}&uri=${encodeURIComponent(uri)}`;
     });
 
+    document.addEventListener('change', e => {
+        if (e.target.matches('.ad-domain-card input[type="checkbox"], input[name="ad_auth_enabled"]')) {
+            e.target.closest('form')?.submit();
+        }
+    });
+
     document.addEventListener('click', e => {
         const btnDelete = e.target.closest('.btn-delete-domain-inline');
         if (btnDelete) {
@@ -611,8 +698,11 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
     document.getElementById('form-domain-servers')?.addEventListener('submit', syncCombinedUris);
 
-    // ATUALIZAR RÓTULO DO CARDO QUANDO O NOME DO SERVIDOR É EDITADO
+    // ATUALIZAR RÓTULO DO CARD E URIS COMBINADAS EM TEMPO REAL AO DIGITAR
     document.addEventListener('input', e => {
+        if (e.target.classList.contains('server-uri-input')) {
+            syncCombinedUris();
+        }
         if (e.target.classList.contains('server-name-input')) {
             const card = e.target.closest('.server-item-row');
             const badge = card?.querySelector('.server-badge');
@@ -792,17 +882,16 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
         }
     });
 
-    // EXECUÇÃO DO HEALTH CHECK EM TEMPO REAL DOS SERVIDORES
+    // EXECUÇÃO DO DASHBOARD DE HEALTH CHECK & TELEMETRIA DOS SERVIDORES LDAP
+    let healthAutoTimer = null;
+
     const runLiveHealthCheck = async () => {
-        const healthContainer = document.getElementById('live-health-container');
         const grid = document.getElementById('health-check-results-grid');
         const spinner = document.getElementById('health-check-spinner');
-        const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+        const csrfToken = document.getElementById('ad-csrf-token')?.value || document.querySelector('input[name="csrf_token"]')?.value || '';
 
-        if (!healthContainer || !grid) return;
-        healthContainer.classList.remove('hidden');
+        if (!grid) return;
         spinner?.classList.remove('hidden');
-        grid.innerHTML = '<div class="col-span-full py-4 text-center text-xs font-semibold text-slate-500 animate-pulse">Consultando estado de comunicação dos controladores de domínio e réplicas...</div>';
 
         const formData = new FormData();
         formData.append('test_ad_health', '1');
@@ -811,34 +900,117 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
         try {
             const res = await fetch('index.php?tab=servidores_ad', { method: 'POST', body: formData }).then(r => r.json());
             spinner?.classList.add('hidden');
-            if (res.success && res.health) {
+            
+            // Horário da checagem
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('pt-BR');
+            const kpiTime = document.getElementById('kpi-last-check-time');
+            if (kpiTime) kpiTime.textContent = timeStr;
+
+            if (res.success && res.health && res.health.length > 0) {
                 grid.innerHTML = '';
+                
+                let onlineCount = 0;
+                let totalCount = res.health.length;
+                let totalLatency = 0;
+
                 res.health.forEach(srv => {
-                    const div = document.createElement('div');
                     const isOnline = srv.online;
-                    div.className = `rounded-md border p-2.5 text-xs font-mono flex flex-col justify-between gap-1.5 ${isOnline ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/40' : 'border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-950/40'}`;
-                    div.innerHTML = `
-                        <div class="flex items-center justify-between">
-                            <span class="font-bold font-sans text-slate-800 dark:text-slate-200">${srv.name}</span>
-                            <span class="rounded px-1.5 py-0.2 text-[9px] font-bold uppercase ${isOnline ? 'bg-emerald-200 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200' : 'bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200'}">
-                                ${isOnline ? 'Operacional (' + srv.latency_ms + 'ms)' : 'Indisponível'}
-                            </span>
+                    if (isOnline) {
+                        onlineCount++;
+                        totalLatency += (srv.latency_ms || 0);
+                    }
+
+                    const lat = srv.latency_ms || 0;
+                    let speedPercent = Math.min(100, Math.max(10, 100 - (lat / 2)));
+                    if (!isOnline) speedPercent = 0;
+
+                    let speedColor = 'bg-emerald-500';
+                    if (lat > 50) speedColor = 'bg-amber-500';
+                    if (!isOnline || lat > 150) speedColor = 'bg-red-500';
+
+                    const card = document.createElement('div');
+                    card.className = `rounded-xl border p-4 shadow-2xs transition-all flex flex-col justify-between space-y-3 ${isOnline ? 'border-slate-200 bg-white dark:border-[#454956] dark:bg-[#353842]' : 'border-red-200 bg-red-50/40 dark:border-red-900/40 dark:bg-red-950/20'}`;
+                    
+                    card.innerHTML = `
+                        <div>
+                            <div class="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-[#454956] pb-2.5">
+                                <div>
+                                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">${srv.domain || 'BETIM'}</span>
+                                    <h3 class="text-xs font-bold text-slate-900 dark:text-slate-100">${srv.name}</h3>
+                                </div>
+                                <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${isOnline ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30' : 'bg-red-500/15 text-red-700 dark:text-red-300 border border-red-500/30'}">
+                                    <span class="h-1.5 w-1.5 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}"></span>
+                                    ${isOnline ? 'Operacional' : 'Indisponível'}
+                                </span>
+                            </div>
+
+                            <div class="mt-3 space-y-2 text-xs font-mono">
+                                <div>
+                                    <span class="text-[10px] font-sans font-semibold text-slate-400 block">Endereço URI & Porta</span>
+                                    <span class="font-bold text-slate-800 dark:text-slate-200 text-[11px] truncate block" title="${srv.uri}">${srv.uri}</span>
+                                </div>
+
+                                <div>
+                                    <div class="flex items-center justify-between text-[11px]">
+                                        <span class="font-sans font-semibold text-slate-500">Tempo de Resposta:</span>
+                                        <span class="font-bold ${isOnline ? 'text-slate-900 dark:text-white' : 'text-red-500'}">${isOnline ? lat + ' ms' : 'Offline'}</span>
+                                    </div>
+                                    <div class="mt-1 h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden">
+                                        <div class="h-full ${speedColor} transition-all duration-500" style="width: ${speedPercent}%"></div>
+                                    </div>
+                                </div>
+
+                                <div class="p-2 rounded bg-slate-50 dark:bg-[#2c2e33] border border-slate-100 dark:border-slate-800 text-[10px] font-sans text-slate-600 dark:text-slate-300">
+                                    ${srv.message || (isOnline ? 'Comunicação TCP/TLS ativa' : 'Falha no aperto de mão')}
+                                </div>
+                            </div>
                         </div>
-                        <span class="text-[10px] text-slate-500 truncate" title="${srv.uri}">${srv.uri}</span>
                     `;
-                    grid.appendChild(div);
+                    grid.appendChild(card);
                 });
+
+                // Atualizar KPIs superiores
+                const uptimeRate = Math.round((onlineCount / totalCount) * 100);
+                const avgLat = onlineCount > 0 ? Math.round(totalLatency / onlineCount) : 0;
+
+                const kpiUptime = document.getElementById('kpi-uptime-rate');
+                const kpiOnline = document.getElementById('kpi-online-count');
+                const kpiLat = document.getElementById('kpi-avg-latency');
+                const kpiQual = document.getElementById('kpi-latency-quality');
+
+                if (kpiUptime) kpiUptime.textContent = uptimeRate + '%';
+                if (kpiOnline) kpiOnline.textContent = `${onlineCount}/${totalCount} On`;
+                if (kpiLat) kpiLat.textContent = avgLat + ' ms';
+                if (kpiQual) {
+                    if (avgLat < 25) { kpiQual.textContent = 'Excelente'; kpiQual.className = 'text-[10px] font-bold text-emerald-500 uppercase'; }
+                    else if (avgLat < 60) { kpiQual.textContent = 'Bom'; kpiQual.className = 'text-[10px] font-bold text-sky-500 uppercase'; }
+                    else { kpiQual.textContent = 'Lento'; kpiQual.className = 'text-[10px] font-bold text-amber-500 uppercase'; }
+                }
+
             } else {
                 const errMsg = res.error || 'Erro ao consultar estado de saúde dos servidores.';
-                grid.innerHTML = `<div class="col-span-full text-xs font-bold text-red-600">${errMsg}</div>`;
+                grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">${errMsg}</div>`;
             }
         } catch (err) {
             spinner?.classList.add('hidden');
-            grid.innerHTML = `<div class="col-span-full text-xs font-bold text-red-600">Erro na requisição de health check: ${err.message}</div>`;
+            grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">Erro na requisição de health check: ${err.message}</div>`;
         }
     };
 
     document.getElementById('btn-trigger-health-check')?.addEventListener('click', runLiveHealthCheck);
+    
+    document.getElementById('chk-auto-refresh-health')?.addEventListener('change', function(e) {
+        if (e.target.checked) {
+            if (!healthAutoTimer) healthAutoTimer = setInterval(runLiveHealthCheck, 15000);
+        } else {
+            if (healthAutoTimer) { clearInterval(healthAutoTimer); healthAutoTimer = null; }
+        }
+    });
+
+    if (document.getElementById('health-check-results-grid')) {
+        runLiveHealthCheck();
+    }
 
     document.addEventListener('click', async e => {
         const btn = e.target.closest('.btn-test-single-server');
@@ -850,7 +1022,7 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             const caCert = card.querySelector('.js-test-ca-cert')?.value || '';
             const bindDn = card.querySelector('.js-test-bind-dn')?.value || '';
             const bindPass = card.querySelector('.js-test-bind-pass')?.value || '';
-            const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+            const csrfToken = document.getElementById('ad-csrf-token')?.value || document.querySelector('input[name="csrf_token"]')?.value || '';
 
             resultBox.classList.remove('hidden', 'bg-emerald-100', 'text-emerald-800', 'bg-red-100', 'text-red-800', 'dark:bg-emerald-900/50', 'dark:text-emerald-200', 'dark:bg-red-900/50', 'dark:text-red-200');
             resultBox.classList.add('bg-slate-100', 'text-slate-800', 'dark:bg-slate-800', 'dark:text-slate-200');
@@ -886,7 +1058,7 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
     document.getElementById('btn-replicate-all-users')?.addEventListener('click', async () => {
         const resultBox = document.getElementById('replication-global-result-box');
         const primaryKey = document.getElementById('input-ad-primary-domain')?.value || '';
-        const csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+        const csrfToken = document.getElementById('ad-csrf-token')?.value || document.querySelector('input[name="csrf_token"]')?.value || '';
 
         if (!resultBox) return;
         resultBox.classList.remove('hidden', 'bg-emerald-100', 'text-emerald-800', 'bg-red-100', 'text-red-800', 'dark:bg-emerald-900/50', 'dark:text-emerald-200', 'dark:bg-red-900/50', 'dark:text-red-200');

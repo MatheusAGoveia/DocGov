@@ -17,7 +17,7 @@ $navigationTrail = $navigationTrail ?? [];
                     </li>
                 <?php endif; ?>
                 <li class="relative max-w-52 truncate sm:max-w-72 lg:max-w-none lg:min-h-8 lg:pl-5">
-                    <span aria-hidden="true" class="absolute left-0 top-1.5 hidden h-2 w-2 rounded-full border <?= $isLastTrailItem ? 'border-emerald-500 bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.12)]' : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-[#2c2e33]' ?> lg:block"></span>
+                    <span aria-hidden="true" class="absolute left-0 top-1.5 hidden h-2 w-2 rounded-full border <?= $isLastTrailItem ? 'nav-trail-active-dot' : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-[#2c2e33]' ?> lg:block"></span>
                     <?php if (!$isLastTrailItem): ?>
                         <span aria-hidden="true" class="absolute left-[0.22rem] top-4 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 lg:block"></span>
                     <?php endif; ?>

@@ -23,6 +23,8 @@ $migrationFiles = [
     __DIR__ . '/../database/migrations/016_document_tags.sql',
     __DIR__ . '/../database/migrations/017_portal_theme.sql',
     __DIR__ . '/../database/migrations/018_document_approval_workflow.sql',
+    __DIR__ . '/../database/migrations/019_document_trash.sql',
+    __DIR__ . '/../database/migrations/020_subject_process_documentation.sql',
 ];
 
 foreach ($migrationFiles as $file) {
