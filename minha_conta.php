@@ -174,8 +174,8 @@ if (!empty($allowedSubjectIds)) {
 }
 
 $activeTab = trim($_GET['tab'] ?? 'dashboard');
-$userTheme = $userData['tema_preferido'] ?? ($loggedUser['tema_preferido'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
@@ -574,26 +574,19 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
 
         <!-- ABA 4: PREFERÊNCIAS -->
         <?php if ($activeTab === 'preferencias'): ?>
-            <div class="bg-white dark:bg-[#353842] p-5 rounded-md border border-slate-200 dark:border-[#454956] max-w-xl">
-                <h2 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4 pb-2 border-b border-slate-100 dark:border-[#454956]">
+            <div class="bg-white p-5 rounded-md border border-slate-200 max-w-xl">
+                <h2 class="text-sm font-bold text-slate-900 mb-4 pb-2 border-b border-slate-100">
                     Preferências Visuais da Interface
                 </h2>
 
                 <div class="space-y-4 text-xs">
                     <div>
-                        <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                            Tema da Interface
+                        <label class="block font-semibold text-slate-700 mb-1.5">
+                            Cor de Destaque
                         </label>
-                        <div class="grid grid-cols-2 gap-3">
-                            <button type="button" onclick="setThemePreference('dark')" class="p-3 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-900 text-white font-semibold text-left flex items-center justify-between">
-                                <span>Escuro (Grafite)</span>
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
-                            </button>
-                            <button type="button" onclick="setThemePreference('light')" class="p-3 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-100 text-slate-900 font-semibold text-left flex items-center justify-between">
-                                <span>Claro</span>
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-                            </button>
-                        </div>
+                        <p class="text-slate-500 mb-3">
+                            A interface opera no modo claro padrão. Escolha a cor de destaque institucional no menu de tema disponível no cabeçalho superior.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -682,37 +675,10 @@ $userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
     </div>
 
     <script>
-        function setThemePreference(mode) {
-            const html = document.documentElement;
-            if (mode === 'dark') {
-                html.classList.add('dark');
-                html.classList.remove('light');
-                localStorage.setItem('theme', 'dark');
-            } else {
-                html.classList.remove('dark');
-                html.classList.add('light');
-                localStorage.setItem('theme', 'light');
-            }
-            fetch('api_user.php?action=update_theme&theme=' + mode)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        location.reload();
-                    }
-                })
-                .catch(() => {});
-        }
-
-        // Aplicação Imediata de Tema por LocalStorage no Carregamento
         (function() {
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
+            document.documentElement.classList.remove('dark');
+            document.documentElement.classList.add('light');
+            localStorage.removeItem('theme');
         })();
     </script>
 </body>

@@ -42,8 +42,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['mark_all_read
 
 $notificationItems = $notifications->listForUser($userId);
 $unreadNotificationCount = $notifications->unreadCount($userId);
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 
 function notificationTone(string $type): string {
     return match ($type) {

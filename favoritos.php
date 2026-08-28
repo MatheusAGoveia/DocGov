@@ -92,12 +92,12 @@ if ($loggedUser && $userId > 0) {
     }
 }
 
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
+<html lang="pt-BR" class="light" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -124,14 +124,9 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
     </script>
     <script>
         (function() {
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
+            localStorage.setItem('theme', 'light');
+            document.documentElement.classList.remove('dark');
+            document.documentElement.classList.add('light');
         })();
     </script>
     

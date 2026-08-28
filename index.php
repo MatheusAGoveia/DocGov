@@ -2,6 +2,10 @@
 // index.php - Portal de Documentos da Prefeitura (PostgreSQL Fonte Única de Verdade)
 require_once __DIR__ . '/config/session.php';
 docgovStartSession();
+if (!headers_sent()) {
+    // Mantem apenas a origem ao carregar players externos (exigencia do YouTube).
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+}
 require_once __DIR__ . '/config/db.php';
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -24,6 +28,8 @@ require_once __DIR__ . '/services/UsageAuditService.php';
 $usageAuditService = new UsageAuditService($pdo);
 require_once __DIR__ . '/services/TagService.php';
 $tagService = new TagService($pdo);
+require_once __DIR__ . '/services/SubjectWorkspaceService.php';
+$subjectWorkspaceService = new SubjectWorkspaceService($pdo);
 
 $allowedCatIds = $accessService->getAllowedCategoryIds($userId);
 $allowedSubcatIds = $accessService->getAllowedSubcategoryIds($userId);
@@ -33,6 +39,10 @@ $allowedSubjectIds = $accessService->getAllowedSubjectIds($userId);
 $selectedCat = trim($_GET['cat'] ?? '');
 $selectedSubcat = trim($_GET['subcat'] ?? '');
 $selectedAssunto = trim($_GET['assunto'] ?? '');
+$subjectSection = strtolower(trim((string)($_GET['section'] ?? 'overview')));
+if (!in_array($subjectSection, ['overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'permissions', 'integrations', 'history'], true)) {
+    $subjectSection = 'overview';
+}
 $currentView = trim($_GET['view'] ?? '');
 $searchQuery = trim($_GET['q'] ?? '');
 $searchCategory = trim($_GET['search_category'] ?? '');
@@ -84,6 +94,11 @@ $favMapSubjs = [];
 
 $pageTitle = "Documentos e Referências";
 $pageDesc = "Encontre rapidamente documentos, normas, manuais e orientações de {$organizationName}.";
+$subjectWorkspace = [];
+$subjectWorkspaceHistory = [];
+$subjectWorkspaceCompleteness = [];
+$subjectWorkspaceVideo = ['kind' => 'invalid'];
+$canManageSubjectWorkspace = false;
 $searchCategoryOptions = [];
 $searchTagOptions = $tagService->allActive();
 if (!empty($allowedCatIds)) {
@@ -351,7 +366,31 @@ if ($searchMode) {
 
             $assuntoName = $items[0]['subject_name'] ?? $assRes['name'];
             $pageTitle = $assuntoName;
-            $pageDesc = count($items) . " documento(s) oficial(is) encontrado(s).";
+            $subjectWorkspace = $subjectWorkspaceService->get((int)$assRes['id']);
+            $subjectWorkspaceHistory = $subjectWorkspaceService->history((int)$assRes['id'], 60);
+            $subjectWorkspaceCompleteness = $subjectWorkspaceService->completeness($subjectWorkspace);
+            $canManageSubjectWorkspace = $permissionService->canAdminSubject($userId, (int)$assRes['id']);
+            if (!$canManageSubjectWorkspace && $subjectSection === 'permissions') {
+                $subjectSection = 'overview';
+            }
+            $workspaceVideoDocumentId = (int)($subjectWorkspace['video_document_id'] ?? 0);
+            $workspaceVideoDocument = null;
+            foreach ($items as $workspaceDocument) {
+                if ((int)$workspaceDocument['id'] === $workspaceVideoDocumentId && ($workspaceDocument['content_type'] ?? '') === 'video') {
+                    $workspaceVideoDocument = $workspaceDocument;
+                    break;
+                }
+            }
+            if ($workspaceVideoDocument && trim((string)$workspaceVideoDocument['external_url']) !== '') {
+                $subjectWorkspaceVideo = VideoEmbedService::resolve((string)$workspaceVideoDocument['external_url']);
+            } elseif ($workspaceVideoDocument) {
+                $subjectWorkspaceVideo = ['kind' => 'direct', 'url' => 'document-file.php?id=' . (int)$workspaceVideoDocument['id']];
+            } elseif (trim((string)$subjectWorkspace['video_url']) !== '') {
+                $subjectWorkspaceVideo = VideoEmbedService::resolve((string)$subjectWorkspace['video_url']);
+            }
+            $pageDesc = trim((string)$subjectWorkspace['objective']) !== ''
+                ? (string)$subjectWorkspace['objective']
+                : count($items) . " documento(s) oficial(is) encontrado(s).";
         }
     }
 }
@@ -363,8 +402,8 @@ if (($searchMode || $currentLevel === 4) && !empty($items)) {
     unset($item);
 }
 
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 $navigationTrail = [
     ['kind' => 'Portal', 'label' => 'Categorias', 'url' => 'index.php'],
 ];
@@ -423,12 +462,12 @@ if ($userId > 0) {
     }
 }
 
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubjs);
 ?>
 <!DOCTYPE html>
-<html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
+<html lang="pt-BR" class="light" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -456,14 +495,9 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
     </script>
     <script>
         (function() {
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
+            localStorage.setItem('theme', 'light');
+            document.documentElement.classList.remove('dark');
+            document.documentElement.classList.add('light');
             const savedPortalTheme = localStorage.getItem('portal_theme');
             if (savedPortalTheme) {
                 document.documentElement.setAttribute('data-portal-theme', savedPortalTheme);
@@ -473,10 +507,10 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
     
     <link rel="stylesheet" href="assets/style.css">
 </head>
-<body class="bg-[#f8f9fa] dark:bg-[#2c2e33] text-slate-900 dark:text-slate-100 min-h-screen flex flex-col justify-between selection:bg-slate-800 selection:text-white dark:selection:bg-slate-200 dark:selection:text-slate-900">
+<body class="bg-[#f8f9fa] dark:bg-[#111318] text-slate-900 dark:text-[#d7dbe1] min-h-screen flex flex-col selection:bg-slate-800 selection:text-white dark:selection:bg-slate-200 dark:selection:text-slate-900">
     <?php require __DIR__ . '/partials/maintenance-banner.php'; ?>
 
-    <div>
+    <div class="flex-1 flex flex-col">
         <!-- NAVBAR FIXA, LEVE E DE LARGURA TOTAL -->
         <div class="fixed inset-x-0 top-0 z-50 border-b border-slate-200/80 bg-white/90 shadow-sm shadow-slate-900/5 backdrop-blur-md dark:border-slate-800/80 dark:bg-[#1f2128]/95">
             <header class="max-container">
@@ -499,7 +533,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 
                         <!-- NAVEGAÇÃO PRINCIPAL (DESKTOP) -->
                         <nav class="hidden md:flex items-center gap-1">
-                            <a href="index.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white">
+                            <a href="index.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold nav-item-active">
                                 Início
                             </a>
 
@@ -522,7 +556,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                                 <input type="search" name="q" value="<?= htmlspecialchars($searchQuery) ?>" placeholder="Pesquisar..." class="w-28 bg-transparent px-2 py-1.5 text-xs text-slate-900 outline-none transition-all duration-200 focus:w-48 dark:text-slate-100">
                                 <button id="navbar-search-filter-toggle" type="button" onclick="toggleNavbarSearchFilters(event)" class="relative mr-1 inline-flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white" title="Filtros de busca" aria-label="Abrir filtros de busca" aria-expanded="<?= $hasAdvancedSearchFilters ? 'true' : 'false' ?>">
                                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L15 12.414V18a1 1 0 01-.553.894l-4 2A1 1 0 019 20v-7.586L3.293 6.707A1 1 0 013 6V4z"/></svg>
-                                    <?php if ($hasAdvancedSearchFilters): ?><span class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500"></span><?php endif; ?>
+                                    <?php if ($hasAdvancedSearchFilters): ?><span class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full nav-trail-active-dot"></span><?php endif; ?>
                                 </button>
                             </div>
                             <div id="navbar-search-filters" class="<?= $hasAdvancedSearchFilters ? '' : 'hidden' ?> absolute right-0 top-full z-[60] mt-2 w-[34rem] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-3 shadow-xl shadow-slate-900/10 dark:border-[#454956] dark:bg-[#353842]">
@@ -535,7 +569,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                                     <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">De</span><input type="date" name="date_from" value="<?= htmlspecialchars($searchDateFrom) ?>" class="input-minimal w-full px-2 py-1.5 text-xs"></label>
                                     <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Até</span><input type="date" name="date_to" value="<?= htmlspecialchars($searchDateTo) ?>" class="input-minimal w-full px-2 py-1.5 text-xs"></label>
                                 </div>
-                                <div class="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-[#454956]"><a href="index.php" class="text-xs font-semibold text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Limpar</a><button type="submit" class="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">Pesquisar</button></div>
+                                <div class="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-[#454956]"><a href="index.php" class="text-xs font-semibold text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Limpar</a><button type="submit" class="btn-accent rounded-lg px-3 py-1.5 text-xs font-semibold transition">Pesquisar</button></div>
                             </div>
                         </form>
 
@@ -544,7 +578,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                         <?php if ($loggedUser): ?>
                             <!-- PAINEL ADMIN SE FOR ADMIN/EDITOR -->
                             <?php if ($canAccessAdminPanel): ?>
-                                <a href="admin/index.php" class="hidden md:inline-flex text-xs font-semibold bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3 py-1.5 rounded-xl hover:opacity-90 transition">
+                                <a href="admin/index.php" class="btn-accent hidden md:inline-flex text-xs font-semibold px-3 py-1.5 rounded-xl transition">
                                     Admin
                                 </a>
                             <?php endif; ?>
@@ -562,7 +596,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                             </a>
                         <?php else: ?>
-                            <a href="login.php" class="text-xs font-semibold bg-slate-900 dark:bg-white text-white dark:text-slate-900 px-3.5 py-1.5 rounded-xl hover:opacity-90 transition">
+                            <a href="login.php" class="btn-accent text-xs font-semibold px-3.5 py-1.5 rounded-xl transition">
                                 Entrar
                             </a>
                         <?php endif; ?>
@@ -596,7 +630,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
         </div>
 
         <!-- CONTAINER PRINCIPAL -->
-        <main class="max-container pb-10 pt-20 sm:pt-24">
+        <main class="flex-1 w-full max-container pb-10 pt-20 sm:pt-24">
             <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[10.5rem_minmax(0,1fr)] lg:gap-6">
                 <?php require __DIR__ . '/partials/vertical_navigation.php'; ?>
                 <section class="min-w-0">
@@ -614,7 +648,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
             </div>
 
             <!-- ESTADO VAZIO (SEM CONTEÚDOS PERMITIDOS PARA O GRUPO / NENHUM REGISTRO) -->
-            <?php if (empty($items)): ?>
+            <?php if (empty($items) && !($currentLevel === 4 && !$searchMode && !empty($assRes))): ?>
                 <div class="p-10 text-center bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
                     <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-[#2c2e33] text-slate-400 flex items-center justify-center mx-auto">
                         <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
@@ -736,7 +770,11 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                     <?php endforeach; ?>
                 </div>
 
-            <!-- NÍVEL 4 / PESQUISA: LISTA DE DOCUMENTOS COM ESTRELA DISCRETA ★ -->
+            <!-- NÍVEL 4: ESPAÇO COMPLETO DA DOCUMENTAÇÃO DO PROCESSO -->
+            <?php elseif ($currentLevel === 4 && !$searchMode): ?>
+                <?php require __DIR__ . '/partials/subject_workspace_view.php'; ?>
+
+            <!-- PESQUISA: LISTA DE DOCUMENTOS COM ESTRELA DISCRETA ★ -->
             <?php else: ?>
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                     <?php if (empty($items)): ?>
@@ -805,12 +843,12 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
             </div>
 
         </main>
-    </div>
 
-    <!-- RODAPÉ -->
-    <footer class="border-t border-slate-200/80 dark:border-[#454956] py-6 text-center text-xs text-slate-400">
-        <?= htmlspecialchars($appName) ?> &bull; <?= htmlspecialchars($appDescription) ?> &bull; <?= htmlspecialchars($organizationName) ?>
-    </footer>
+        <!-- RODAPÉ NEUTRO COLADO AO FINAL DA PÁGINA -->
+        <footer class="mt-auto w-full border-t border-slate-200/80 dark:border-[#292e37] bg-slate-100/60 dark:bg-[#14171d] py-5 text-center text-xs text-slate-500 dark:text-[#7e8896]">
+            <?= htmlspecialchars($appName) ?> &bull; <?= htmlspecialchars($appDescription) ?> &bull; <?= htmlspecialchars($organizationName) ?>
+        </footer>
+    </div>
 
     <script>
         function toggleEntityFavorito(targetId, targetType, btnElem, event) {

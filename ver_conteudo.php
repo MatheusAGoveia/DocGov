@@ -2,6 +2,9 @@
 // ver_conteudo.php — Visualizador de Conteúdo em PostgreSQL (Fonte Única & Engine PDF.js Nativa)
 require_once __DIR__ . '/config/session.php';
 docgovStartSession();
+if (!headers_sent()) {
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+}
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/VideoEmbedService.php';
 
@@ -123,8 +126,8 @@ $displayTypeLabel = $contentType === 'file' ? ($fileExt ?: 'arquivo') : ($conten
 
 $streamUrl = 'document-file.php?id=' . $docId;
 $downloadUrl = 'download.php?id=' . $docId;
-$userTheme = $loggedUser['tema_preferido'] ?? ($loggedUser['theme_preference'] ?? 'light');
-$userThemeClass = $userTheme === 'dark' ? 'dark' : 'light';
+$userTheme = 'light';
+$userThemeClass = 'light';
 $navigationTrail = [
     ['kind' => 'Portal', 'label' => 'Categorias', 'url' => 'index.php'],
     [
@@ -185,14 +188,9 @@ $navigationTrail = [
     </script>
     <script>
         (function() {
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
+            document.documentElement.classList.remove('dark');
+            document.documentElement.classList.add('light');
+            localStorage.removeItem('theme');
         })();
     </script>
     
