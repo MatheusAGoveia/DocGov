@@ -30,6 +30,16 @@ if (in_array($configuredTimezone, timezone_identifiers_list(), true)) {
 }
 
 if (PHP_SAPI !== 'cli' && !headers_sent()) {
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    $httpsRequest = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+    if ($httpsRequest) {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+    }
+
     $origin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
     $corsEnabled = (bool)($appSettings['cors_enabled'] ?? false);
     $allowedOrigins = is_array($appSettings['cors_allowed_origins'] ?? null) ? $appSettings['cors_allowed_origins'] : [];
@@ -37,7 +47,10 @@ if (PHP_SAPI !== 'cli' && !headers_sent()) {
     if ($corsEnabled && $origin !== '') {
         $originAllowed = in_array($origin, $allowedOrigins, true) || (!$allowCredentials && in_array('*', $allowedOrigins, true));
         if ($originAllowed) {
-            header('Access-Control-Allow-Origin: ' . (in_array('*', $allowedOrigins, true) ? '*' : $origin));
+            $responseOrigin = $allowCredentials
+                ? $origin
+                : (in_array('*', $allowedOrigins, true) ? '*' : $origin);
+            header('Access-Control-Allow-Origin: ' . $responseOrigin);
             header('Vary: Origin');
             header('Access-Control-Allow-Methods: ' . implode(', ', $appSettings['cors_allowed_methods'] ?? ['GET', 'POST', 'OPTIONS']));
             header('Access-Control-Allow-Headers: Content-Type, X-CSRF-Token, X-Requested-With');

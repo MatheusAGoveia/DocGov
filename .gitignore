@@ -1,0 +1,7 @@
+/node_modules/
+/config/local.php
+/backups/
+/releases/
+/storage/document-media/
+/scratch/*.log
+/scratch/*.png

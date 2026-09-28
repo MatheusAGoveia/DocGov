@@ -1,0 +1,16 @@
+{
+  "name": "govdoc-assets",
+  "private": true,
+  "description": "Dependências de frontend locais do GovDoc.",
+  "dependencies": {
+    "@highlightjs/cdn-assets": "^11.11.1",
+    "docx-preview": "^0.3.6",
+    "gridstack": "^7.3.0",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^4.4.168",
+    "quill": "2.0.2"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}
