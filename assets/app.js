@@ -1,6 +1,16 @@
 // assets/app.js - Filtros, Interações do Navbar, Leitura de Documentos e Tema
 
 document.addEventListener('DOMContentLoaded', () => {
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const postUserAction = (payload) => fetch('api_user.php', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+            'X-CSRF-Token': csrfToken,
+        },
+        body: new URLSearchParams(payload),
+    });
     const searchInput = document.getElementById('mysearch-input');
     const navCards = document.querySelectorAll('.nav-card');
     const themeToggleBtn = document.getElementById('theme-toggle');
@@ -80,7 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const htmlContent = card.querySelector('.doc-html-store')?.innerHTML || '';
 
             if (docId) {
-                fetch('api_user.php?action=record_view&doc_id=' + docId).catch(() => {});
+                postUserAction({ action: 'record_view', doc_id: docId }).catch(() => {});
             }
 
             if (readerModal) {

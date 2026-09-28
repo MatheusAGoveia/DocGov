@@ -59,7 +59,16 @@ function initFavorite() {
   if (!btn) return;
   const docId = btn.dataset.docId;
   btn.addEventListener('click', () => {
-    fetch(`api_user.php?action=toggle_favorito&doc_id=${docId}`)
+    const csrfToken = qs('meta[name="csrf-token"]')?.content || '';
+    fetch('api_user.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'X-CSRF-Token': csrfToken,
+      },
+      body: new URLSearchParams({ action: 'toggle_favorito', doc_id: docId }),
+    })
       .then((r) => r.json())
       .then((data) => {
         if (!data.success) return;
