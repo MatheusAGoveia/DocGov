@@ -1,95 +1,172 @@
 <?php
-$processEscape = static fn(mixed $value): string => htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
-$processBaseQuery = http_build_query(['cat' => $selectedCat, 'subcat' => $selectedSubcat, 'assunto' => $selectedAssunto]);
-$processBaseUrl = 'index.php?' . $processBaseQuery . '&section=';
-$processTabs = [
-    'overview' => 'Visão Geral', 'description' => 'Descrição', 'flow' => 'Fluxo do Processo',
-    'steps' => 'Passo a Passo', 'video' => 'Vídeo', 'evidence' => 'Evidências',
-    'faq' => 'Erros e FAQ', 'integrations' => 'Integrações', 'history' => 'Histórico',
-];
-if ($canManageSubjectWorkspace) $processTabs = array_slice($processTabs, 0, 7, true) + ['permissions' => 'Permissões'] + array_slice($processTabs, 7, null, true);
-$processStatusLabels = ['draft' => 'Em elaboração', 'review' => 'Em revisão', 'approved' => 'Homologado', 'deprecated' => 'Obsoleto'];
-$processStatus = (string)($subjectWorkspace['documentation_status'] ?? 'draft');
-$processDocumentMap = [];
-foreach ($items as $processDocument) $processDocumentMap[(int)$processDocument['id']] = $processDocument;
+$sectionEscape = static fn(mixed $value): string => htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+$sectionBaseUrl = 'index.php?' . http_build_query([
+    'cat' => $selectedCat,
+    'subcat' => $selectedSubcat,
+    'assunto' => $selectedAssunto,
+]) . '&section=';
+$activeSectionDefinition = null;
+foreach ($subjectDocumentSections as $definition) {
+    if ((string)$definition['section_key'] === $subjectSection) {
+        $activeSectionDefinition = $definition;
+        break;
+    }
+}
+$activeSectionDocuments = $subjectDocumentsBySection[$subjectSection] ?? [];
+$canAddSubjectDocument = $permissionService->canCreateDocument($userId, (int)$assRes['id']);
+$newDocumentUrl = 'admin/index.php?' . http_build_query([
+    'tab' => 'novo_documento',
+    'cat' => $selectedCat,
+    'subcat' => $selectedSubcat,
+    'subject_id' => (int)$assRes['id'],
+    'section' => $subjectSection !== '' ? $subjectSection : 'documents',
+]);
+
+$decodeStructuredContent = static function (mixed $value): array {
+    if (is_array($value)) return $value;
+    if (!is_string($value) || trim($value) === '') return [];
+    $decoded = json_decode($value, true);
+    return is_array($decoded) ? $decoded : [];
+};
 ?>
 
-<div class="-mt-4 mb-5 flex flex-wrap items-center justify-between gap-3">
-    <span class="inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold <?= $processStatus === 'approved' ? 'bg-emerald-500/10 text-emerald-700' : ($processStatus === 'review' ? 'bg-sky-500/10 text-sky-700' : ($processStatus === 'deprecated' ? 'bg-red-500/10 text-red-700' : 'bg-amber-500/10 text-amber-700')) ?>">
-        <?= $processEscape($processStatusLabels[$processStatus] ?? 'Em elaboração') ?><?= trim((string)($subjectWorkspace['version_label'] ?? '')) !== '' ? ' · v' . $processEscape($subjectWorkspace['version_label']) : '' ?>
-    </span>
-    <?php if ($permissionService->canEditSubject($userId, (int)$assRes['id'])): ?>
-        <a href="admin/index.php?tab=editar_estrutura&type=assunto&id=<?= (int)$assRes['id'] ?>&res_tab=<?= urlencode($subjectSection) ?>" class="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 shadow-xs transition hover:bg-slate-50">
-            Editar documentação
+<?php if ($subjectDocumentSections === []): ?>
+    <section class="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+        <svg class="mx-auto h-8 w-8 text-slate-300 dark:text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.6L19 9.4V19a2 2 0 01-2 2z"/></svg>
+        <h2 class="mt-3 text-sm font-bold text-slate-900 dark:text-slate-100">Nenhum conteúdo publicado neste assunto</h2>
+        <p class="mx-auto mt-1 max-w-lg text-xs leading-5 text-slate-500 dark:text-slate-400">As seções serão criadas automaticamente quando o primeiro conteúdo relacionado for publicado.</p>
+        <?php if ($canAddSubjectDocument): ?>
+            <a href="<?= $sectionEscape($newDocumentUrl) ?>" class="mt-5 inline-flex rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 dark:bg-white dark:text-slate-900">Criar conteúdo</a>
+        <?php endif; ?>
+    </section>
+    <?php return; ?>
+<?php endif; ?>
+
+<?php if (trim((string)($subjectWorkspace['objective'] ?? '')) !== ''): ?>
+    <p class="-mt-4 mb-4 max-w-4xl text-xs leading-5 text-slate-500 dark:text-slate-400"><?= $sectionEscape($subjectWorkspace['objective']) ?></p>
+<?php endif; ?>
+
+<div class="mb-5 flex flex-col gap-3 border-b border-slate-200 dark:border-[#454956] sm:flex-row sm:items-end sm:justify-between">
+    <nav class="min-w-0 overflow-x-auto" aria-label="Seções disponíveis neste assunto">
+        <div class="flex min-w-max items-end gap-1">
+            <?php foreach ($subjectDocumentSections as $definition): ?>
+                <?php $key = (string)$definition['section_key']; ?>
+                <a href="<?= $sectionEscape($sectionBaseUrl . urlencode($key)) ?>"
+                   class="flex items-center gap-2 border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $subjectSection === $key ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>"
+                   <?= $subjectSection === $key ? 'aria-current="page"' : '' ?>>
+                    <span><?= $sectionEscape($definition['label']) ?></span>
+                    <span class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-500 dark:bg-[#2c2e33] dark:text-slate-400"><?= (int)$definition['document_count'] ?></span>
+                </a>
+            <?php endforeach; ?>
+        </div>
+    </nav>
+    <?php if ($canAddSubjectDocument): ?>
+        <a href="<?= $sectionEscape($newDocumentUrl) ?>" class="mb-2 inline-flex shrink-0 items-center gap-1.5 self-start rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 shadow-xs transition hover:bg-slate-50 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-200 dark:hover:bg-[#3e424e]">
+            <span aria-hidden="true">+</span> Adicionar nesta seção
         </a>
     <?php endif; ?>
 </div>
 
-<nav class="mb-5 overflow-x-auto border-b border-slate-200" aria-label="Seções da documentação">
-    <div class="flex min-w-max items-center gap-1">
-        <?php foreach ($processTabs as $key => $label): ?>
-            <a href="<?= $processBaseUrl . urlencode($key) ?>" class="border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $subjectSection === $key ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800' ?>"><?= $processEscape($label) ?></a>
+<header class="mb-4">
+    <h2 class="text-base font-bold text-slate-900 dark:text-slate-100"><?= $sectionEscape($activeSectionDefinition['label'] ?? 'Conteúdo') ?></h2>
+    <?php if (trim((string)($activeSectionDefinition['description'] ?? '')) !== ''): ?>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400"><?= $sectionEscape($activeSectionDefinition['description']) ?></p>
+    <?php endif; ?>
+</header>
+
+<?php $editorKind = (string)($activeSectionDefinition['editor_kind'] ?? 'file'); ?>
+
+<?php if ($editorKind === 'richtext'): ?>
+    <div class="space-y-4">
+        <?php foreach ($activeSectionDocuments as $document): ?>
+            <?php
+            try {
+                $safeRichContent = RichTextSanitizer::sanitize((string)($document['text_content'] ?? ''));
+            } catch (Throwable) {
+                $safeRichContent = '';
+            }
+            ?>
+            <article class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] sm:p-6">
+                <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-3 dark:border-[#454956]">
+                    <div><h3 class="text-sm font-bold text-slate-900 dark:text-slate-100"><?= $sectionEscape($document['title']) ?></h3><?php if (!empty($document['description'])): ?><p class="mt-1 text-[11px] leading-5 text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description']) ?></p><?php endif; ?></div>
+                    <a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="text-[11px] font-semibold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white">Abrir página →</a>
+                </div>
+                <?php if ($safeRichContent !== ''): ?><div class="govdoc-rich-content mt-5 text-slate-700 dark:text-slate-200"><?= $safeRichContent ?></div><?php else: ?><p class="mt-5 text-xs text-slate-400">Este conteúdo ainda não possui texto.</p><?php endif; ?>
+            </article>
         <?php endforeach; ?>
     </div>
-</nav>
 
-<?php if ($subjectSection === 'overview'): ?>
-    <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
-        <div class="space-y-4">
-            <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs">
-                <h2 class="text-sm font-bold text-slate-900">Visão geral</h2>
-                <dl class="mt-4 grid gap-4 text-xs sm:grid-cols-2">
-                    <div class="sm:col-span-2"><dt class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Objetivo</dt><dd class="mt-1 leading-5 text-slate-700"><?= $processEscape($subjectWorkspace['objective'] ?: 'Objetivo ainda não informado.') ?></dd></div>
-                    <div><dt class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Responsável</dt><dd class="mt-1 font-semibold text-slate-700"><?= $processEscape($subjectWorkspace['owner_name'] ?: 'Não informado') ?></dd></div>
-                    <div><dt class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Público-alvo</dt><dd class="mt-1 text-slate-700"><?= $processEscape($subjectWorkspace['audience'] ?: 'Não informado') ?></dd></div>
-                    <div><dt class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Última atualização</dt><dd class="mt-1 text-slate-700"><?= !empty($subjectWorkspace['updated_at']) ? date('d/m/Y H:i', strtotime((string)$subjectWorkspace['updated_at'])) : 'Não registrada' ?></dd></div>
-                    <div><dt class="text-[10px] font-bold uppercase tracking-wide text-slate-400">Próxima revisão</dt><dd class="mt-1 text-slate-700"><?= !empty($subjectWorkspace['next_review_on']) ? date('d/m/Y', strtotime((string)$subjectWorkspace['next_review_on'])) : 'Não agendada' ?></dd></div>
-                </dl>
-            </section>
-            <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs">
-                <h2 class="text-sm font-bold text-slate-900">Informações do processo</h2>
-                <?php if (trim((string)$subjectWorkspace['process_summary']) !== ''): ?><p class="mt-3 whitespace-pre-line text-xs leading-5 text-slate-600"><?= $processEscape($subjectWorkspace['process_summary']) ?></p><?php endif; ?>
-                <div class="mt-4 grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-3">
-                    <?php foreach ([['Início do processo','process_start'],['Validação','process_validation'],['Resultado esperado','expected_result']] as [$label,$field]): ?><div><h3 class="text-xs font-bold text-slate-800"><?= $label ?></h3><p class="mt-1 whitespace-pre-line text-[11px] leading-5 text-slate-500"><?= $processEscape($subjectWorkspace[$field] ?: 'Não informado.') ?></p></div><?php endforeach; ?>
-                </div>
-            </section>
-        </div>
-        <aside class="space-y-4">
-            <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs">
-                <h3 class="text-xs font-bold text-slate-900">Resumo rápido</h3>
-                <div class="mt-3 space-y-2"><?php foreach (['flow'=>'Fluxo documentado','steps'=>'Procedimento passo a passo','video'=>'Vídeo demonstrativo','evidence'=>'Evidências vinculadas','faq'=>'Erros e FAQ registrados'] as $key=>$label): ?><a href="<?= $processBaseUrl . $key ?>" class="flex items-center gap-2 rounded py-1 text-[11px] text-slate-600 hover:text-slate-900"><span class="flex h-4 w-4 items-center justify-center rounded-full <?= !empty($subjectWorkspaceCompleteness[$key]) ? 'bg-emerald-500/10 text-emerald-600' : 'bg-slate-100 text-slate-400' ?>"><?= !empty($subjectWorkspaceCompleteness[$key]) ? '✓' : '–' ?></span><?= $label ?></a><?php endforeach; ?></div>
-            </section>
-            <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs"><h3 class="text-xs font-bold text-slate-900">Acesso rápido</h3><div class="mt-2 divide-y divide-slate-100"><?php foreach (['flow'=>'Abrir fluxo','video'=>'Assistir ao vídeo','evidence'=>'Ver evidências','faq'=>'Consultar FAQ'] as $key=>$label): ?><a href="<?= $processBaseUrl . $key ?>" class="flex items-center justify-between py-2 text-[11px] font-semibold text-slate-600 hover:text-slate-900"><span><?= $label ?></span><span>→</span></a><?php endforeach; ?></div></section>
-        </aside>
+<?php elseif ($editorKind === 'flow'): ?>
+    <div class="space-y-6">
+        <?php foreach ($activeSectionDocuments as $document): ?>
+            <?php $structure = $decodeStructuredContent($document['structured_content'] ?? null); $nodes = (array)($structure['nodes'] ?? []); ?>
+            <article class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] sm:p-6">
+                <div class="mb-5 flex items-start justify-between gap-3"><div><h3 class="text-sm font-bold"><?= $sectionEscape($document['title']) ?></h3><?php if (!empty($document['description'])): ?><p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description']) ?></p><?php endif; ?></div><a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="shrink-0 text-[11px] font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white">Detalhes →</a></div>
+                <ol class="govdoc-flow" aria-label="Etapas de <?= $sectionEscape($document['title']) ?>">
+                    <?php foreach ($nodes as $index => $node): ?>
+                        <?php $nodeType = (string)($node['type'] ?? 'process'); ?>
+                        <li class="govdoc-flow-node <?= in_array($nodeType, ['start', 'end'], true) ? 'govdoc-flow-node--terminal' : ($nodeType === 'decision' ? 'govdoc-flow-node--decision' : '') ?>">
+                            <span class="text-[9px] font-bold uppercase tracking-wider text-slate-400"><?= $sectionEscape(['start' => 'Início', 'process' => 'Etapa', 'decision' => 'Decisão', 'end' => 'Fim'][$nodeType] ?? 'Etapa') ?> <?= $index + 1 ?></span>
+                            <strong class="mt-1 block text-xs text-slate-900 dark:text-slate-100"><?= $sectionEscape($node['title'] ?? '') ?></strong>
+                            <?php if (!empty($node['description'])): ?><p class="mt-1 whitespace-pre-line text-[11px] leading-5 text-slate-500 dark:text-slate-400"><?= $sectionEscape($node['description']) ?></p><?php endif; ?>
+                            <?php if (!empty($node['owner'])): ?><span class="mt-2 inline-flex rounded-full bg-slate-100 px-2 py-1 text-[9px] font-semibold text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300">Responsável: <?= $sectionEscape($node['owner']) ?></span><?php endif; ?>
+                        </li>
+                        <?php if ($index < count($nodes) - 1): ?><li class="govdoc-flow-connector" aria-hidden="true"></li><?php endif; ?>
+                    <?php endforeach; ?>
+                </ol>
+            </article>
+        <?php endforeach; ?>
     </div>
 
-<?php elseif ($subjectSection === 'description'): ?>
-    <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-xs"><h2 class="text-sm font-bold">Descrição do processo</h2><?php if (trim((string)$subjectWorkspace['description']) === ''): ?><p class="mt-8 text-center text-xs text-slate-400">A descrição ainda não foi preenchida.</p><?php else: ?><div class="mt-4 whitespace-pre-line text-sm leading-7 text-slate-700"><?= $processEscape($subjectWorkspace['description']) ?></div><?php endif; ?></section>
-
-<?php elseif ($subjectSection === 'flow'): ?>
-    <section><div class="mb-4"><h2 class="text-sm font-bold">Fluxo do processo</h2><p class="mt-1 text-xs text-slate-500">Sequência operacional e resultado de cada etapa.</p></div><?php if (empty($subjectWorkspace['flow_steps'])): ?><div class="rounded-lg border border-dashed border-slate-200 bg-white p-10 text-center text-xs text-slate-400">Fluxo ainda não documentado.</div><?php else: ?><ol class="relative space-y-3 before:absolute before:bottom-5 before:left-5 before:top-5 before:w-px before:bg-slate-200"><?php foreach ($subjectWorkspace['flow_steps'] as $index=>$step): ?><li class="relative grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3"><span class="z-10 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-700"><?= $index + 1 ?></span><article class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs"><div class="flex flex-wrap items-start justify-between gap-2"><h3 class="text-xs font-bold text-slate-900"><?= $processEscape($step['title'] ?? '') ?></h3><?php if (!empty($step['owner'])): ?><span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500"><?= $processEscape($step['owner']) ?></span><?php endif; ?></div><?php if (!empty($step['description'])): ?><p class="mt-2 whitespace-pre-line text-xs leading-5 text-slate-600"><?= $processEscape($step['description']) ?></p><?php endif; ?><?php if (!empty($step['result'])): ?><div class="mt-3 border-t border-slate-100 pt-2 text-[11px] text-slate-500"><strong>Resultado:</strong> <?= $processEscape($step['result']) ?></div><?php endif; ?></article></li><?php endforeach; ?></ol><?php endif; ?></section>
-
-<?php elseif ($subjectSection === 'steps'): ?>
-    <section><div class="mb-4"><h2 class="text-sm font-bold">Passo a passo</h2><p class="mt-1 text-xs text-slate-500">Instruções detalhadas para executar o processo.</p></div><?php if (empty($subjectWorkspace['procedure_steps'])): ?><div class="rounded-lg border border-dashed border-slate-200 bg-white p-10 text-center text-xs text-slate-400">Procedimento ainda não documentado.</div><?php else: ?><div class="space-y-3"><?php foreach ($subjectWorkspace['procedure_steps'] as $index=>$step): ?><article class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs"><div class="flex items-start gap-3"><span class="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-slate-900 text-[11px] font-bold text-white"><?= $index + 1 ?></span><div class="min-w-0 flex-1"><div class="flex flex-wrap items-center justify-between gap-2"><h3 class="text-sm font-bold"><?= $processEscape($step['title'] ?? '') ?></h3><?php if (!empty($step['responsible'])): ?><span class="text-[10px] font-semibold text-slate-400">Responsável: <?= $processEscape($step['responsible']) ?></span><?php endif; ?></div><p class="mt-2 whitespace-pre-line text-xs leading-6 text-slate-600"><?= $processEscape($step['description'] ?? '') ?></p><?php if (!empty($step['warning'])): ?><div class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-[11px] leading-5 text-amber-800"><strong>Atenção:</strong> <?= $processEscape($step['warning']) ?></div><?php endif; ?></div></div></article><?php endforeach; ?></div><?php endif; ?></section>
-
-<?php elseif ($subjectSection === 'video'): ?>
-    <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xs"><div class="border-b border-slate-100 p-5"><h2 class="text-sm font-bold"><?= $processEscape($subjectWorkspace['video_title'] ?: 'Vídeo demonstrativo') ?></h2></div><?php if (in_array($subjectWorkspaceVideo['kind'] ?? '', ['youtube','vimeo'], true)): ?><iframe src="<?= $processEscape($subjectWorkspaceVideo['embed_url']) ?>" class="aspect-video w-full bg-black" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen title="Vídeo do processo"></iframe><?php elseif (($subjectWorkspaceVideo['kind'] ?? '') === 'direct'): ?><video controls class="aspect-video w-full bg-black"><source src="<?= $processEscape($subjectWorkspaceVideo['url']) ?>"></video><?php elseif (($subjectWorkspaceVideo['kind'] ?? '') === 'external'): ?><div class="flex aspect-video items-center justify-center bg-slate-950"><a href="<?= $processEscape($subjectWorkspaceVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="rounded-md bg-white px-4 py-2 text-xs font-semibold text-slate-900">Abrir vídeo externo</a></div><?php else: ?><div class="p-12 text-center text-xs text-slate-400">Nenhum vídeo foi vinculado a este processo.</div><?php endif; ?></section>
-
-<?php elseif ($subjectSection === 'evidence'): ?>
-    <div class="space-y-5">
-        <section><h2 class="text-sm font-bold">Evidências do processo</h2><div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3"><?php if (empty($subjectWorkspace['evidences'])): ?><div class="col-span-full rounded-lg border border-dashed border-slate-200 bg-white p-8 text-center text-xs text-slate-400">Nenhuma evidência destacada.</div><?php endif; ?><?php foreach ($subjectWorkspace['evidences'] as $evidence): ?><?php $linkedDocument = $processDocumentMap[(int)($evidence['document_id'] ?? 0)] ?? null; $evidenceHref = $linkedDocument ? 'ver_conteudo.php?id=' . (int)$linkedDocument['id'] : (string)($evidence['url'] ?? ''); ?><article class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs"><div class="flex items-start justify-between gap-2"><h3 class="text-xs font-bold"><?= $processEscape($evidence['title'] ?? '') ?></h3><span class="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-slate-500"><?= $processEscape($evidence['kind'] ?? 'registro') ?></span></div><?php if (!empty($evidence['description'])): ?><p class="mt-2 text-[11px] leading-5 text-slate-500"><?= $processEscape($evidence['description']) ?></p><?php endif; ?><?php if ($evidenceHref !== ''): ?><a href="<?= $processEscape($evidenceHref) ?>" <?= !$linkedDocument ? 'target="_blank" rel="noopener noreferrer"' : '' ?> class="mt-3 inline-block text-[11px] font-semibold text-slate-700 hover:underline">Abrir evidência →</a><?php endif; ?></article><?php endforeach; ?></div></section>
-        <section><h2 class="text-sm font-bold">Documentos publicados</h2><div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><?php if (empty($items)): ?><div class="col-span-full rounded-lg border border-dashed border-slate-200 bg-white p-8 text-center text-xs text-slate-400">Nenhum documento publicado neste assunto.</div><?php endif; ?><?php foreach ($items as $doc): ?><?php $isFavDoc = isset($favMapDocs[(int)$doc['id']]); ?><div class="group relative min-h-28 rounded-lg border <?= $isFavDoc ? 'border-amber-400' : 'border-slate-200' ?> bg-white p-4 shadow-xs transition hover:-translate-y-0.5 hover:border-slate-400"><a href="ver_conteudo.php?id=<?= (int)$doc['id'] ?>" class="absolute inset-0 z-0" aria-label="Abrir <?= $processEscape($doc['title']) ?>"></a><div class="relative z-[1] pointer-events-none flex items-start justify-between gap-2"><div><h3 class="text-xs font-bold"><?= $processEscape($doc['title']) ?></h3><p class="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-500"><?= $processEscape($doc['description'] ?: 'Documento oficial do processo.') ?></p></div><button type="button" onclick="toggleEntityFavorito(<?= (int)$doc['id'] ?>, 'document', this, event)" class="favorite-card-button pointer-events-auto"><svg class="favorite-card-button__icon<?= $isFavDoc ? ' is-saved' : '' ?>" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg></button></div><div class="relative z-[1] pointer-events-none mt-3 border-t border-slate-100 pt-2 text-[9px] text-slate-400"><?= $processEscape($doc['content_type']) ?> · Abrir →</div></div><?php endforeach; ?></div></section>
+<?php elseif ($editorKind === 'orgchart'): ?>
+    <div class="space-y-6">
+        <?php foreach ($activeSectionDocuments as $document): ?>
+            <?php
+            $structure = $decodeStructuredContent($document['structured_content'] ?? null);
+            $orgNodes = array_values((array)($structure['nodes'] ?? []));
+            $orgByParent = [];
+            $orgIds = [];
+            foreach ($orgNodes as $node) $orgIds[(string)($node['id'] ?? '')] = true;
+            foreach ($orgNodes as $node) {
+                $parent = (string)($node['parent_id'] ?? '');
+                if ($parent === '' || !isset($orgIds[$parent])) $parent = '__root__';
+                $orgByParent[$parent][] = $node;
+            }
+            $orgVisited = [];
+            $renderOrgBranch = function (array $node) use (&$renderOrgBranch, &$orgVisited, $orgByParent, $sectionEscape): void {
+                $id = (string)($node['id'] ?? '');
+                if ($id === '' || isset($orgVisited[$id])) return;
+                $orgVisited[$id] = true;
+                ?><li class="govdoc-orgchart-branch"><div class="govdoc-orgchart-card"><strong><?= $sectionEscape($node['name'] ?? '') ?></strong><?php if (!empty($node['role'])): ?><span><?= $sectionEscape($node['role']) ?></span><?php endif; ?><?php if (!empty($node['description'])): ?><span><?= $sectionEscape($node['description']) ?></span><?php endif; ?></div><?php if (!empty($orgByParent[$id])): ?><ul class="govdoc-orgchart-children"><?php foreach ($orgByParent[$id] as $child) $renderOrgBranch($child); ?></ul><?php endif; ?></li><?php
+            };
+            ?>
+            <article class="overflow-hidden rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] sm:p-6">
+                <div class="mb-5 flex items-start justify-between gap-3"><div><h3 class="text-sm font-bold"><?= $sectionEscape($document['title']) ?></h3><?php if (!empty($document['description'])): ?><p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description']) ?></p><?php endif; ?></div><a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="shrink-0 text-[11px] font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white">Detalhes →</a></div>
+                <div class="overflow-x-auto pb-2"><div class="govdoc-orgchart"><ul class="govdoc-orgchart-roots"><?php foreach (($orgByParent['__root__'] ?? []) as $rootNode) $renderOrgBranch($rootNode); ?></ul></div></div>
+            </article>
+        <?php endforeach; ?>
     </div>
 
-<?php elseif ($subjectSection === 'faq'): ?>
-    <section><h2 class="text-sm font-bold">Erros conhecidos e perguntas frequentes</h2><?php if (empty($subjectWorkspace['faq_items'])): ?><div class="mt-3 rounded-lg border border-dashed border-slate-200 bg-white p-10 text-center text-xs text-slate-400">Nenhum item registrado.</div><?php else: ?><div class="mt-3 space-y-2"><?php foreach ($subjectWorkspace['faq_items'] as $item): ?><details class="group rounded-lg border border-slate-200 bg-white shadow-xs"><summary class="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-xs font-bold"><span><span class="mr-2 rounded px-1.5 py-0.5 text-[9px] uppercase <?= ($item['kind'] ?? '') === 'error' ? 'bg-red-500/10 text-red-700' : 'bg-sky-500/10 text-sky-700' ?>"><?= ($item['kind'] ?? '') === 'error' ? 'Erro' : 'FAQ' ?></span><?= $processEscape($item['question'] ?? '') ?></span><span class="text-slate-400 transition group-open:rotate-45">+</span></summary><div class="border-t border-slate-100 px-4 py-4 whitespace-pre-line text-xs leading-6 text-slate-600"><?= $processEscape($item['answer'] ?? '') ?></div></details><?php endforeach; ?></div><?php endif; ?></section>
+<?php elseif ($editorKind === 'video'): ?>
+    <div class="grid gap-4 xl:grid-cols-2">
+        <?php foreach ($activeSectionDocuments as $document): ?>
+            <?php $video = !empty($document['external_url']) ? VideoEmbedService::resolve((string)$document['external_url']) : ['kind' => 'direct', 'url' => 'document-file.php?id=' . (int)$document['id']]; ?>
+            <article class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                <div class="flex items-start justify-between gap-3 p-4"><div><h3 class="text-xs font-bold"><?= $sectionEscape($document['title']) ?></h3><?php if (!empty($document['description'])): ?><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description']) ?></p><?php endif; ?></div><a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="text-[10px] font-semibold text-slate-500">Detalhes →</a></div>
+                <?php if (in_array($video['kind'] ?? '', ['youtube', 'vimeo'], true)): ?><iframe class="aspect-video w-full bg-black" src="<?= $sectionEscape($video['embed_url']) ?>" title="<?= $sectionEscape($document['title']) ?>" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><?php elseif (($video['kind'] ?? '') === 'direct'): ?><video controls preload="metadata" class="aspect-video w-full bg-black"><source src="<?= $sectionEscape($video['url']) ?>"></video><?php else: ?><div class="flex aspect-video items-center justify-center bg-slate-950"><a href="<?= $sectionEscape($video['url'] ?? $document['external_url']) ?>" target="_blank" rel="noopener noreferrer" class="rounded-md bg-white px-4 py-2 text-xs font-semibold text-slate-900">Abrir vídeo</a></div><?php endif; ?>
+            </article>
+        <?php endforeach; ?>
+    </div>
 
-<?php elseif ($subjectSection === 'permissions' && $canManageSubjectWorkspace): ?>
-    <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs"><h2 class="text-sm font-bold">Permissões do processo</h2><p class="mt-2 max-w-2xl text-xs leading-5 text-slate-500">Este processo herda as mesmas regras do assunto na árvore. Isso mantém documentos, visão geral e demais seções no mesmo escopo de acesso.</p><div class="mt-4 flex flex-wrap gap-2"><span class="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-700">Seu acesso: Administrador</span><a href="admin/index.php?tab=editar_estrutura&type=assunto&id=<?= (int)$assRes['id'] ?>&res_tab=permissions" class="rounded-md bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white">Gerenciar usuários e equipes</a></div></section>
-
-<?php elseif ($subjectSection === 'integrations'): ?>
-    <section><h2 class="text-sm font-bold">Integrações e dependências</h2><div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3"><?php if (empty($subjectWorkspace['integrations'])): ?><div class="col-span-full rounded-lg border border-dashed border-slate-200 bg-white p-10 text-center text-xs text-slate-400">Nenhuma integração documentada.</div><?php endif; ?><?php foreach ($subjectWorkspace['integrations'] as $integration): ?><article class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs"><div class="flex items-start justify-between gap-2"><h3 class="text-xs font-bold"><?= $processEscape($integration['name'] ?? '') ?></h3><span class="h-2 w-2 rounded-full <?= ($integration['status'] ?? '') === 'active' ? 'bg-emerald-500' : (($integration['status'] ?? '') === 'attention' ? 'bg-amber-500' : 'bg-slate-300') ?>"></span></div><?php if (!empty($integration['type'])): ?><p class="mt-1 text-[10px] font-semibold uppercase text-slate-400"><?= $processEscape($integration['type']) ?></p><?php endif; ?><?php if (!empty($integration['description'])): ?><p class="mt-2 text-[11px] leading-5 text-slate-500"><?= $processEscape($integration['description']) ?></p><?php endif; ?><?php if (!empty($integration['url'])): ?><a href="<?= $processEscape($integration['url']) ?>" target="_blank" rel="noopener noreferrer" class="mt-3 inline-block text-[11px] font-semibold hover:underline">Abrir integração →</a><?php endif; ?></article><?php endforeach; ?></div></section>
-
-<?php elseif ($subjectSection === 'history'): ?>
-    <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs"><h2 class="text-sm font-bold">Histórico da documentação</h2><?php if (empty($subjectWorkspaceHistory)): ?><div class="py-10 text-center text-xs text-slate-400">Nenhuma alteração registrada.</div><?php else: ?><div class="mt-3 divide-y divide-slate-100"><?php foreach ($subjectWorkspaceHistory as $entry): ?><div class="flex items-start justify-between gap-4 py-3"><div><strong class="block text-xs"><?= $processEscape($entry['summary']) ?></strong><span class="mt-0.5 block text-[10px] text-slate-400"><?= $processEscape($entry['actor_name'] ?: 'Sistema') ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m/Y H:i', strtotime((string)$entry['created_at'])) ?></time></div><?php endforeach; ?></div><?php endif; ?></section>
+<?php else: ?>
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <?php foreach ($activeSectionDocuments as $document): ?>
+            <?php $isFavorite = isset($favMapDocs[(int)$document['id']]); ?>
+            <article class="group relative min-h-32 rounded-lg border <?= $isFavorite ? 'border-amber-500/40' : 'border-slate-200' ?> bg-white p-4 shadow-xs transition hover:-translate-y-0.5 hover:border-slate-400 dark:border-[#454956] dark:bg-[#353842] dark:hover:border-slate-500">
+                <a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="absolute inset-0 z-0" aria-label="Abrir <?= $sectionEscape($document['title']) ?>"></a>
+                <div class="pointer-events-none relative z-[1] flex items-start justify-between gap-3"><div><span class="text-[9px] font-bold uppercase tracking-wider text-slate-400"><?= $sectionEscape($document['content_type']) ?></span><h3 class="mt-1 text-xs font-bold text-slate-900 dark:text-slate-100"><?= $sectionEscape($document['title']) ?></h3><p class="mt-1 line-clamp-3 text-[10px] leading-4 text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description'] ?: 'Conteúdo publicado neste assunto.') ?></p></div><button type="button" onclick="toggleEntityFavorito(<?= (int)$document['id'] ?>, 'document', this, event)" class="favorite-card-button pointer-events-auto" aria-label="<?= $isFavorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos' ?>"><svg class="favorite-card-button__icon<?= $isFavorite ? ' is-saved' : '' ?>" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg></button></div>
+                <div class="pointer-events-none relative z-[1] mt-4 border-t border-slate-100 pt-2 text-[9px] font-semibold text-slate-400 dark:border-[#454956]">Abrir conteúdo →</div>
+            </article>
+        <?php endforeach; ?>
+    </div>
 <?php endif; ?>

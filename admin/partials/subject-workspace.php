@@ -2,7 +2,7 @@
 /** @var array<string,mixed> $subjectWorkspace */
 $workspaceEscape = static fn(mixed $value): string => htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
 $workspaceBaseUrl = 'index.php?tab=editar_estrutura&type=assunto&id=' . (int)$resId . '&res_tab=';
-$workspaceTabs = [
+$workspaceSettingsTabs = [
     'overview' => 'Visão Geral',
     'description' => 'Descrição',
     'flow' => 'Fluxo do Processo',
@@ -10,12 +10,26 @@ $workspaceTabs = [
     'video' => 'Vídeo',
     'evidence' => 'Evidências',
     'faq' => 'Erros e FAQ',
-    'permissions' => 'Permissões',
     'integrations' => 'Integrações',
-    'history' => 'Histórico',
 ];
-if (!$canManageResourcePermissions) unset($workspaceTabs['permissions']);
-$workspaceStatusLabels = ['draft' => 'Em elaboração', 'review' => 'Em revisão', 'approved' => 'Homologado', 'deprecated' => 'Obsoleto'];
+$workspaceIsSettingsTab = isset($workspaceSettingsTabs[$resTab]);
+$workspaceDocumentSectionUrl = $workspaceBaseUrl . 'section&section=';
+$workspaceStatusLabels = ['draft' => 'Rascunho', 'review' => 'Em revisão', 'approved' => 'Homologado', 'deprecated' => 'Obsoleto'];
+$workspaceStatus = (string)($subjectWorkspace['documentation_status'] ?? 'draft');
+$workspaceIsEditable = $workspaceStatus === 'draft';
+$workspaceReadiness = $subjectWorkspaceService->readiness($subjectWorkspace);
+$workspaceStatusClasses = [
+    'draft' => 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200',
+    'review' => 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
+    'approved' => 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
+    'deprecated' => 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950/40 dark:text-rose-300',
+];
+$workspaceReviewDate = trim((string)($subjectWorkspace['next_review_on'] ?? ''));
+$workspaceReviewDue = $workspaceStatus === 'approved' && $workspaceReviewDate !== '' && $workspaceReviewDate <= date('Y-m-d');
+$workspaceWorkflowForm = static function () use ($csrfToken, $resId): void { ?>
+    <input type="hidden" name="subject_id" value="<?= (int)$resId ?>">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+<?php };
 $workspaceSectionForm = static function (string $section) use ($csrfToken, $resId): void { ?>
     <input type="hidden" name="save_subject_workspace" value="1">
     <input type="hidden" name="workspace_section" value="<?= htmlspecialchars($section) ?>">
@@ -24,18 +38,154 @@ $workspaceSectionForm = static function (string $section) use ($csrfToken, $resI
 <?php };
 ?>
 
-<nav class="overflow-x-auto border-b border-slate-200 dark:border-[#454956]" aria-label="Seções da documentação do processo">
+<nav class="overflow-x-auto border-b border-slate-200 dark:border-[#454956]" aria-label="Configurações e tipos de conteúdo do assunto">
     <div class="flex min-w-max items-center gap-1">
-        <?php foreach ($workspaceTabs as $workspaceTabKey => $workspaceTabLabel): ?>
-            <a href="<?= $workspaceBaseUrl . urlencode($workspaceTabKey) ?>"
-               class="border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $resTab === $workspaceTabKey ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>">
-                <?= htmlspecialchars($workspaceTabLabel) ?>
+        <a href="<?= $workspaceEscape($workspaceBaseUrl . 'overview') ?>"
+           class="flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $workspaceIsSettingsTab ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>"
+           <?= $workspaceIsSettingsTab ? 'aria-current="page"' : '' ?>>Configurações</a>
+        <?php foreach ($subjectDocumentSectionsAdmin as $sectionDefinition): ?>
+            <?php $sectionKey = (string)$sectionDefinition['section_key']; ?>
+            <a href="<?= $workspaceEscape($workspaceDocumentSectionUrl . urlencode($sectionKey)) ?>"
+               class="flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $resTab === 'section' && ($selectedAdminDocumentSection['section_key'] ?? '') === $sectionKey ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>"
+               <?= $resTab === 'section' && ($selectedAdminDocumentSection['section_key'] ?? '') === $sectionKey ? 'aria-current="page"' : '' ?>>
+                <?= $workspaceEscape($sectionDefinition['label']) ?>
+                <span class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300"><?= (int)$sectionDefinition['document_count'] ?></span>
             </a>
         <?php endforeach; ?>
+        <?php if ($canManageResourcePermissions): ?><a href="<?= $workspaceEscape($workspaceBaseUrl . 'permissions') ?>" class="border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $resTab === 'permissions' ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>" <?= $resTab === 'permissions' ? 'aria-current="page"' : '' ?>>Permissões</a><?php endif; ?>
+        <a href="<?= $workspaceEscape($workspaceBaseUrl . 'history') ?>" class="border-b-2 px-3 py-2.5 text-[11px] font-semibold transition <?= $resTab === 'history' ? 'border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200' ?>" <?= $resTab === 'history' ? 'aria-current="page"' : '' ?>>Histórico</a>
     </div>
 </nav>
 
-<?php if ($resTab === 'overview'): ?>
+<?php if ($workspaceIsSettingsTab): ?>
+    <details class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs dark:border-[#454956] dark:bg-[#353842]" <?= $resTab !== 'overview' ? 'open' : '' ?>>
+        <summary class="cursor-pointer font-semibold text-slate-700 dark:text-slate-200">Campos de configuração do assunto</summary>
+        <nav class="mt-3 flex flex-wrap gap-2" aria-label="Campos de configuração do assunto">
+            <?php foreach ($workspaceSettingsTabs as $settingsKey => $settingsLabel): ?>
+                <a href="<?= $workspaceEscape($workspaceBaseUrl . urlencode($settingsKey)) ?>" class="rounded-md border px-2.5 py-1.5 text-[11px] font-medium <?= $resTab === $settingsKey ? 'border-slate-900 bg-slate-900 text-white dark:border-white dark:bg-white dark:text-slate-900' : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-[#454956] dark:text-slate-300 dark:hover:bg-[#2c2e33]' ?>" <?= $resTab === $settingsKey ? 'aria-current="page"' : '' ?>><?= $workspaceEscape($settingsLabel) ?></a>
+            <?php endforeach; ?>
+        </nav>
+    </details>
+<?php endif; ?>
+<?php if ($subjectDocumentSectionsAdmin === []): ?>
+    <p class="text-[11px] text-slate-500 dark:text-slate-400">As abas de conteúdo aparecem aqui quando um documento do respectivo tipo é criado neste assunto.</p>
+<?php endif; ?>
+
+<section class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs dark:border-[#454956] dark:bg-[#353842]" aria-label="Fluxo editorial da documentação">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide <?= $workspaceStatusClasses[$workspaceStatus] ?? $workspaceStatusClasses['draft'] ?>"><?= $workspaceEscape($workspaceStatusLabels[$workspaceStatus] ?? 'Rascunho') ?></span>
+                <span class="text-[11px] font-semibold text-slate-500 dark:text-slate-400"><?= (int)$workspaceReadiness['percent'] ?>% dos requisitos editoriais</span>
+                <?php if ($workspaceReviewDue): ?><span class="rounded-full bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-700 dark:text-rose-300">Revisão vencida</span><?php endif; ?>
+            </div>
+            <p class="mt-2 max-w-3xl text-xs leading-5 text-slate-500 dark:text-slate-400">
+                <?php if ($workspaceStatus === 'draft'): ?>Conteúdo editável. Quando os requisitos estiverem completos, envie para revisão do gestor.
+                <?php elseif ($workspaceStatus === 'review'): ?>Versão congelada enquanto aguarda decisão de um administrador deste assunto.
+                <?php elseif ($workspaceStatus === 'approved'): ?>Versão homologada. Para alterar o conteúdo, um administrador precisa reabrir a edição.
+                <?php else: ?>Versão obsoleta e fora da visualização principal do portal. O histórico permanece preservado.<?php endif; ?>
+            </p>
+            <?php if (!empty($subjectWorkspace['return_reason']) && $workspaceStatus === 'draft'): ?>
+                <div class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"><strong>Ajustes solicitados:</strong> <?= $workspaceEscape($subjectWorkspace['return_reason']) ?></div>
+            <?php endif; ?>
+        </div>
+
+        <div class="w-full shrink-0 lg:max-w-md">
+            <?php if ($workspaceStatus === 'draft'): ?>
+                <?php if (!$workspaceReadiness['ready']): ?>
+                    <details class="mb-3 rounded-md border border-slate-200 px-3 py-2 dark:border-[#454956]">
+                        <summary class="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200"><?= count($workspaceReadiness['missing']) ?> pendência<?= count($workspaceReadiness['missing']) === 1 ? '' : 's' ?> antes da revisão</summary>
+                        <div class="mt-2 space-y-1.5"><?php foreach ($workspaceReadiness['missing'] as $missing): ?><a class="block text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white" href="<?= $workspaceBaseUrl . urlencode($missing['tab']) ?>">• <?= $workspaceEscape($missing['label']) ?></a><?php endforeach; ?></div>
+                    </details>
+                <?php endif; ?>
+                <form method="POST" class="flex justify-end">
+                    <?php $workspaceWorkflowForm(); ?>
+                    <input type="hidden" name="subject_workspace_action" value="submit_review">
+                    <button <?= !$workspaceReadiness['ready'] ? 'disabled' : '' ?> class="rounded-md bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-slate-900">Enviar para revisão</button>
+                </form>
+            <?php elseif ($workspaceStatus === 'review' && $canManageResourcePermissions): ?>
+                <div class="grid gap-2 sm:grid-cols-2">
+                    <form method="POST" class="rounded-md border border-emerald-200 p-3 dark:border-emerald-900/70">
+                        <?php $workspaceWorkflowForm(); ?>
+                        <input type="hidden" name="subject_workspace_action" value="approve">
+                        <label class="block text-[10px] font-semibold text-slate-500">Observação opcional</label>
+                        <textarea name="workflow_note" rows="2" maxlength="3000" class="input-minimal mt-1 w-full px-2 py-1.5 text-[11px]"></textarea>
+                        <button class="mt-2 w-full rounded-md bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-700">Revisar e homologar</button>
+                    </form>
+                    <form method="POST" class="rounded-md border border-amber-200 p-3 dark:border-amber-900/70">
+                        <?php $workspaceWorkflowForm(); ?>
+                        <input type="hidden" name="subject_workspace_action" value="return_changes">
+                        <label class="block text-[10px] font-semibold text-slate-500">Motivo dos ajustes *</label>
+                        <textarea name="workflow_note" required minlength="5" rows="2" maxlength="3000" class="input-minimal mt-1 w-full px-2 py-1.5 text-[11px]"></textarea>
+                        <button class="mt-2 w-full rounded-md border border-amber-400 px-3 py-2 text-[11px] font-bold text-amber-800 dark:text-amber-300">Devolver para ajustes</button>
+                    </form>
+                </div>
+            <?php elseif ($workspaceStatus === 'review'): ?>
+                <p class="text-right text-[11px] font-semibold text-amber-700 dark:text-amber-300">Aguardando revisão do gestor.</p>
+            <?php elseif (in_array($workspaceStatus, ['approved', 'deprecated'], true) && $canManageResourcePermissions): ?>
+                <div class="grid gap-2 sm:grid-cols-2">
+                    <form method="POST">
+                        <?php $workspaceWorkflowForm(); ?>
+                        <input type="hidden" name="subject_workspace_action" value="reopen">
+                        <input name="workflow_note" required minlength="5" maxlength="3000" class="input-minimal w-full px-2 py-2 text-[11px]" placeholder="Motivo para reabrir *">
+                        <button class="mt-2 w-full rounded-md bg-slate-900 px-3 py-2 text-[11px] font-bold text-white dark:bg-white dark:text-slate-900">Reabrir edição</button>
+                    </form>
+                    <?php if ($workspaceStatus === 'approved'): ?>
+                        <form method="POST">
+                            <?php $workspaceWorkflowForm(); ?>
+                            <input type="hidden" name="subject_workspace_action" value="deprecate">
+                            <input name="workflow_note" required minlength="5" maxlength="3000" class="input-minimal w-full px-2 py-2 text-[11px]" placeholder="Motivo da obsolescência *">
+                            <button class="mt-2 w-full rounded-md border border-rose-300 px-3 py-2 text-[11px] font-bold text-rose-700 dark:border-rose-800 dark:text-rose-300">Marcar obsoleto</button>
+                        </form>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</section>
+
+<?php if ($resTab === 'section' && $selectedAdminDocumentSection !== null): ?>
+    <?php
+        $selectedSectionKey = (string)$selectedAdminDocumentSection['section_key'];
+        $sectionDocuments = array_values(array_filter(
+            $subjectWorkspaceDocuments,
+            static fn(array $document): bool => (string)$document['section_key'] === $selectedSectionKey
+        ));
+        $newSectionDocumentUrl = 'index.php?' . http_build_query([
+            'tab' => 'novo_documento',
+            'subject_id' => (int)$resId,
+            'section' => $selectedSectionKey,
+        ]);
+    ?>
+    <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]" aria-labelledby="subject-section-title">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 id="subject-section-title" class="text-sm font-bold text-slate-900 dark:text-slate-100"><?= $workspaceEscape($selectedAdminDocumentSection['label']) ?></h2>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400"><?= $workspaceEscape($selectedAdminDocumentSection['description']) ?></p>
+                <p class="mt-2 text-[11px] text-slate-400"><?= count($sectionDocuments) ?> conteúdo<?= count($sectionDocuments) === 1 ? '' : 's' ?> neste assunto · <?= (int)$selectedAdminDocumentSection['published_count'] ?> publicado<?= (int)$selectedAdminDocumentSection['published_count'] === 1 ? '' : 's' ?></p>
+            </div>
+            <?php if ($permService->canCreateDocument($currentAdminUserId, (int)$resId)): ?>
+                <a href="<?= $workspaceEscape($newSectionDocumentUrl) ?>" class="rounded-md bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white dark:bg-white dark:text-slate-900">+ Adicionar conteúdo</a>
+            <?php endif; ?>
+        </div>
+        <div class="mt-4 divide-y divide-slate-100 border-t border-slate-100 dark:divide-[#454956] dark:border-[#454956]">
+            <?php foreach ($sectionDocuments as $document): ?>
+                <article class="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div class="min-w-0">
+                        <h3 class="text-xs font-semibold text-slate-800 dark:text-slate-100"><?= $workspaceEscape($document['title']) ?></h3>
+                        <?php if (trim((string)$document['description']) !== ''): ?><p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400"><?= $workspaceEscape($document['description']) ?></p><?php endif; ?>
+                        <span class="mt-1 inline-block text-[10px] font-semibold text-slate-400"><?= $workspaceEscape(DocumentWorkflowService::label((string)$document['status'])) ?></span>
+                    </div>
+                    <div class="flex items-center gap-3 text-[11px] font-semibold">
+                        <?php if ($permService->canEditDocument($currentAdminUserId, (int)$document['id'])): ?><a href="index.php?tab=novo_documento&amp;action=edit_doc&amp;id=<?= (int)$document['id'] ?>" class="text-slate-700 hover:underline dark:text-slate-200">Editar</a><?php endif; ?>
+                        <?php if ($document['status'] === 'published'): ?><a href="../ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="text-slate-500 hover:underline dark:text-slate-400">Visualizar</a><?php endif; ?>
+                    </div>
+                </article>
+            <?php endforeach; ?>
+        </div>
+    </section>
+
+<?php elseif ($resTab === 'overview'): ?>
     <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
         <div class="space-y-4">
             <form method="POST" action="index.php?tab=assuntos" class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
@@ -66,7 +216,7 @@ $workspaceSectionForm = static function (string $section) use ($csrfToken, $resI
                     <label class="block md:col-span-2"><span class="mb-1 block text-xs font-semibold">Objetivo</span><textarea name="objective" rows="3" maxlength="600" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Qual resultado este processo precisa garantir?"><?= $workspaceEscape($subjectWorkspace['objective']) ?></textarea></label>
                     <label class="block"><span class="mb-1 block text-xs font-semibold">Responsável</span><input name="owner_name" maxlength="255" value="<?= $workspaceEscape($subjectWorkspace['owner_name']) ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Equipe ou pessoa responsável"></label>
                     <label class="block"><span class="mb-1 block text-xs font-semibold">Público-alvo</span><input name="audience" maxlength="600" value="<?= $workspaceEscape($subjectWorkspace['audience']) ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Quem executa ou consulta"></label>
-                    <label class="block"><span class="mb-1 block text-xs font-semibold">Status da documentação</span><select name="documentation_status" class="input-minimal w-full px-3 py-2 text-xs"><?php foreach ($workspaceStatusLabels as $statusValue => $statusLabel): ?><option value="<?= $statusValue ?>" <?= $subjectWorkspace['documentation_status'] === $statusValue ? 'selected' : '' ?> <?= !$canManageResourcePermissions && in_array($statusValue, ['approved','deprecated'], true) ? 'disabled' : '' ?>><?= $statusLabel ?></option><?php endforeach; ?></select><?php if (!$canManageResourcePermissions): ?><small class="mt-1 block text-[10px] text-slate-400">A homologação é feita pelo administrador do assunto.</small><?php endif; ?></label>
+                    <div class="block"><span class="mb-1 block text-xs font-semibold">Status da documentação</span><div class="input-minimal flex min-h-[34px] w-full items-center px-3 py-2 text-xs"><span class="inline-flex rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase <?= $workspaceStatusClasses[$workspaceStatus] ?? $workspaceStatusClasses['draft'] ?>"><?= $workspaceEscape($workspaceStatusLabels[$workspaceStatus] ?? 'Rascunho') ?></span></div><small class="mt-1 block text-[10px] text-slate-400">O status muda somente pelas ações do fluxo editorial.</small></div>
                     <label class="block"><span class="mb-1 block text-xs font-semibold">Versão</span><input name="version_label" maxlength="30" value="<?= $workspaceEscape($subjectWorkspace['version_label']) ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="1.0"></label>
                     <label class="block"><span class="mb-1 block text-xs font-semibold">Próxima revisão</span><input type="date" name="next_review_on" value="<?= $workspaceEscape($subjectWorkspace['next_review_on']) ?>" class="input-minimal w-full px-3 py-2 text-xs"></label>
                 </div>
@@ -221,4 +371,15 @@ function removeWorkspaceRow(button) {
     renumberWorkspaceRows(list);
 }
 document.querySelectorAll('[data-workspace-list]').forEach(renumberWorkspaceRows);
+<?php if (!$workspaceIsEditable): ?>
+document.querySelectorAll('input[name="save_subject_workspace"]').forEach((marker) => {
+    const form = marker.form;
+    if (!form) return;
+    form.querySelectorAll('input:not([type="hidden"]), textarea, select, button').forEach((control) => {
+        control.disabled = true;
+        control.setAttribute('aria-disabled', 'true');
+    });
+    form.classList.add('opacity-75');
+});
+<?php endif; ?>
 </script>
