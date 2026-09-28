@@ -1,0 +1,13 @@
+<?php
+
+// Copie para config/local.php apenas em uma estação de desenvolvimento.
+// Em produção, prefira configurar estas chaves como variáveis de ambiente
+// do IIS/Apache/PHP-FPM e não mantenha senhas dentro da pasta publicada.
+return [
+    'app_environment' => 'development',
+    'db_host' => '127.0.0.1',
+    'db_port' => '5432',
+    'db_name' => 'docsec',
+    'db_user' => 'docgov_app',
+    'db_password' => 'SUBSTITUA_POR_UM_SEGREDO_LOCAL',
+];
