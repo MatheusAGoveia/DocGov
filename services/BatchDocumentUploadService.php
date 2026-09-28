@@ -4,6 +4,7 @@ require_once __DIR__ . '/PermissionService.php';
 require_once __DIR__ . '/DocumentWorkflowService.php';
 require_once __DIR__ . '/UsageAuditService.php';
 require_once __DIR__ . '/TagService.php';
+require_once __DIR__ . '/DocumentSlugService.php';
 
 /** Cria documentos a partir de uma fila de arquivos, com validação integral. */
 final class BatchDocumentUploadService
@@ -16,6 +17,7 @@ final class BatchDocumentUploadService
         'txt', 'log', 'csv', 'md', 'json', 'xml', 'doc', 'docx',
         'mp3', 'wav', 'ogg', 'mp4', 'webm', 'ogv', 'm4v', 'mov',
     ];
+    private DocumentSlugService $documentSlugService;
 
     public function __construct(
         private PDO $pdo,
@@ -25,6 +27,7 @@ final class BatchDocumentUploadService
         private TagService $tagService,
         private string $projectRoot,
     ) {
+        $this->documentSlugService = new DocumentSlugService($pdo);
     }
 
     /**
@@ -72,24 +75,26 @@ final class BatchDocumentUploadService
             $resolvedTagIds = $this->tagService->resolveForDocument($tagIds, $newTagNames, $actorId);
             $insert = $this->pdo->prepare('
                 INSERT INTO documents (
-                    subject_id, created_by, title, slug, description, content_type, status, published_at,
+                    subject_id, created_by, title, slug, description, content_type, section_key, status, published_at,
                     original_filename, stored_filename, file_path, mime_type, file_extension, file_size,
                     text_content, code_language, external_url
                 ) VALUES (
-                    :subject_id, :created_by, :title, :slug, :description, :content_type, :status, NULL,
+                    :subject_id, :created_by, :title, :slug, :description, :content_type, :section_key, :status, NULL,
                     :original_filename, :stored_filename, :file_path, :mime_type, :file_extension, :file_size,
                     NULL, :code_language, NULL
                 ) RETURNING id
             ');
 
             foreach ($files as $file) {
+                $documentSlug = $this->documentSlugService->reserve($subjectId, $file['title']);
                 $insert->execute([
                     ':subject_id' => $subjectId,
                     ':created_by' => $actorId,
                     ':title' => $file['title'],
-                    ':slug' => slugify($file['title']),
+                    ':slug' => $documentSlug,
                     ':description' => $description,
                     ':content_type' => $file['content_type'],
+                    ':section_key' => $file['content_type'] === 'video' ? 'videos' : 'attachments',
                     ':status' => $workflow['status'],
                     ':original_filename' => $file['original_filename'],
                     ':stored_filename' => $file['stored_filename'],
