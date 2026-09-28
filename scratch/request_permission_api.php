@@ -30,6 +30,11 @@ $allowedEndpoints = [
     'permissions' => __DIR__ . '/../api/permissions.php',
     'search' => __DIR__ . '/../api/search_principals.php',
     'documents' => __DIR__ . '/../api/documents.php',
+    'user' => __DIR__ . '/../api_user.php',
+    'categories' => __DIR__ . '/../api/categories.php',
+    'subcategories' => __DIR__ . '/../api/subcategories.php',
+    'subjects' => __DIR__ . '/../api/subjects.php',
+    'tree' => __DIR__ . '/../api/tree.php',
 ];
 if (!isset($allowedEndpoints[$endpoint])) {
     http_response_code(404);

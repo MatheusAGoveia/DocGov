@@ -1,7 +1,7 @@
 <?php
 // Teste de integração das equipes. As fixtures são removidas ao final.
 require __DIR__ . '/../config/db.php';
-require __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/PermissionService.php';
 
 function groupAssert(bool $condition, string $message): void {
     if (!$condition) throw new RuntimeException($message);

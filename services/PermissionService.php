@@ -47,7 +47,7 @@ class PermissionService {
             return false;
         }
 
-        $stmt = $this->pdo->prepare("SELECT username, email, role FROM users WHERE id = ?");
+        $stmt = $this->pdo->prepare("SELECT role, active FROM users WHERE id = ?");
         $stmt->execute([$userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -55,18 +55,12 @@ class PermissionService {
             return false;
         }
 
-        $username = strtolower(trim((string)($row['username'] ?? '')));
-        $email = strtolower(trim((string)($row['email'] ?? '')));
         $role = strtolower(trim((string)($row['role'] ?? '')));
+        $active = filter_var($row['active'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
-        // Em qualquer hipótese, contas principais são tratadas como Super Admin
-        if (in_array($username, ['matheus.damiao', 'marcuss', 'marcus_aurelio'], true) ||
-            str_contains($email, 'matheus.damiao') || 
-            str_contains($email, 'marcus_aurelio')) {
-            return true;
-        }
-
-        return $role === 'admin' || $role === 'super_admin';
+        // Não há bypass por nome, e-mail ou domínio. A sincronização do AD é
+        // responsável por manter `role = admin` para as identidades autorizadas.
+        return $active && ($role === 'admin' || $role === 'super_admin');
     }
 
     /**
@@ -1759,15 +1753,32 @@ class PermissionService {
      * Wrappers Explícitos de Conveniência
      */
     public function canViewCategory(?int $userId, int $categoryId): bool {
-        return $this->canView((int)$userId, 'category', $categoryId);
+        return $this->isActiveHierarchy('category', $categoryId)
+            && $this->canView((int)$userId, 'category', $categoryId);
     }
 
     public function canViewSubcategory(?int $userId, int $subcategoryId): bool {
-        return $this->canView((int)$userId, 'subcategory', $subcategoryId);
+        return $this->isActiveHierarchy('subcategory', $subcategoryId)
+            && $this->canView((int)$userId, 'subcategory', $subcategoryId);
     }
 
     public function canViewSubject(?int $userId, int $subjectId): bool {
-        return $this->canView((int)$userId, 'subject', $subjectId);
+        return $this->isActiveHierarchy('subject', $subjectId)
+            && $this->canView((int)$userId, 'subject', $subjectId);
+    }
+
+    private function isActiveHierarchy(string $type, int $id): bool {
+        if ($id <= 0) return false;
+        $sql = match ($type) {
+            'category' => 'SELECT 1 FROM categories c WHERE c.id = :id AND c.active = TRUE',
+            'subcategory' => 'SELECT 1 FROM subcategories sc JOIN categories c ON c.id = sc.category_id WHERE sc.id = :id AND sc.active = TRUE AND c.active = TRUE',
+            'subject' => 'SELECT 1 FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.id = :id AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE',
+            default => null,
+        };
+        if ($sql === null) return false;
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([':id' => $id]);
+        return (bool)$stmt->fetchColumn();
     }
 
     public function canViewDocument(?int $userId, int $documentId): bool {
@@ -1777,6 +1788,9 @@ class PermissionService {
         $doc = $stmtDoc->fetch(PDO::FETCH_ASSOC);
 
         if (!$doc) {
+            return false;
+        }
+        if (!$this->isActiveHierarchy('subject', (int)$doc['subject_id'])) {
             return false;
         }
 
