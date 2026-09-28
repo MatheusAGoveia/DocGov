@@ -93,7 +93,16 @@ if (typeof window.toggleThemeDropdown === 'undefined') {
         localStorage.setItem('portal_theme', themeKey);
         window.applyAppThemeUI(themeKey);
         document.querySelectorAll('.theme-dropdown-menu').forEach(m => m.classList.add('hidden'));
-        fetch('api_user.php?action=update_portal_theme&theme=' + themeKey).catch(() => {});
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        fetch('api_user.php', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'X-CSRF-Token': csrfToken,
+            },
+            body: new URLSearchParams({ action: 'update_portal_theme', theme: themeKey }),
+        }).catch(() => {});
     };
 
     document.addEventListener('click', function(e) {
