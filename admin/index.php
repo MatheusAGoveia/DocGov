@@ -12,6 +12,7 @@ if (!headers_sent()) {
 }
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/SystemAccessService.php';
 require_once __DIR__ . '/../services/ActiveDirectoryAuthService.php';
 require_once __DIR__ . '/../services/VideoEmbedService.php';
 require_once __DIR__ . '/../services/CategoryImageService.php';
@@ -22,16 +23,30 @@ require_once __DIR__ . '/../services/UsageAuditService.php';
 require_once __DIR__ . '/../services/CsrfService.php';
 require_once __DIR__ . '/../services/HierarchyService.php';
 require_once __DIR__ . '/../services/SubjectWorkspaceService.php';
+require_once __DIR__ . '/../services/DocumentSlugService.php';
+require_once __DIR__ . '/../services/DocumentSectionService.php';
+require_once __DIR__ . '/../services/RichTextSanitizer.php';
+require_once __DIR__ . '/../services/DocumentInlineMediaService.php';
+require_once __DIR__ . '/../services/StructuredContentService.php';
+require_once __DIR__ . '/../services/StructureArchiveService.php';
+require_once __DIR__ . '/../services/StructureDeletionService.php';
 $tagService = new TagService($pdo);
 $hierarchyService = new HierarchyService($pdo);
 $subjectWorkspaceService = new SubjectWorkspaceService($pdo);
+$documentSlugService = new DocumentSlugService($pdo);
+$documentSectionService = new DocumentSectionService($pdo);
+$inlineMediaService = new DocumentInlineMediaService($pdo, dirname(__DIR__));
 $permService = new PermissionService($pdo);
+$structureArchiveService = new StructureArchiveService($pdo, $permService);
+$structureDeletionService = new StructureDeletionService($pdo, $permService);
+$systemAccessService = new SystemAccessService($pdo, $permService);
 $adAuthService = new ActiveDirectoryAuthService($pdo);
 $categoryImageService = new CategoryImageService(dirname(__DIR__));
 $notificationService = new NotificationService($pdo);
 $workflowService = new DocumentWorkflowService($pdo, $permService);
 $usageAuditService = new UsageAuditService($pdo);
 $batchDocumentUploadService = new BatchDocumentUploadService($pdo, $permService, $workflowService, $usageAuditService, $tagService, dirname(__DIR__));
+$availableDocumentSections = $documentSectionService->activeSections();
 $csrfToken = CsrfService::token();
 $adConfig = require __DIR__ . '/../config/active_directory.php';
 $availableAdDomains = array_keys($adConfig['domains'] ?? []);
@@ -54,8 +69,15 @@ if (empty($_SESSION['user'])) {
 $loggedUser = $_SESSION['user'] ?? null;
 $accessDenied = false;
 $accessErrorReason = '';
+$initialAdminUserId = (int)($loggedUser['id'] ?? 0);
+$hasContentAdministrativeAccess = $loggedUser
+    ? $permService->canAccessAdminPanel($initialAdminUserId)
+    : false;
+$hasDelegatedSystemAccess = $loggedUser
+    ? $systemAccessService->hasAnyCapability($initialAdminUserId)
+    : false;
 
-if (!$loggedUser || !$permService->canAccessAdminPanel((int)($loggedUser['id'] ?? 0))) {
+if (!$loggedUser || (!$hasContentAdministrativeAccess && !$hasDelegatedSystemAccess)) {
     unset($_SESSION['admin_logged']);
     header('Location: ../index.php');
     exit;
@@ -65,7 +87,9 @@ if (!$loggedUser || !$permService->canAccessAdminPanel((int)($loggedUser['id'] ?
 
 $isLogged = isset($_SESSION['admin_logged']) && $_SESSION['admin_logged'] === true && !$accessDenied;
 $adminAccessLabel = $loggedUser
-    ? $permService->getAdminPanelAccessLabel((int)($loggedUser['id'] ?? 0))
+    ? ($hasContentAdministrativeAccess
+        ? $permService->getAdminPanelAccessLabel($initialAdminUserId)
+        : 'Administração delegada')
     : 'Usuário';
 
 $activeTab = trim($_GET['tab'] ?? 'visao_geral');
@@ -88,8 +112,49 @@ $editAss = null;
 $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
 $unreadNotificationCount = $isLogged ? $notificationService->unreadCount($currentAdminUserId) : 0;
 $isGlobalAdminCurrent = $isLogged && $permService->isGlobalAdmin($currentAdminUserId);
+$canManageSystemSettings = $isLogged && $systemAccessService->hasCapability($currentAdminUserId, SystemAccessService::SETTINGS_MANAGE);
+$canManageAuthentication = $isLogged && $systemAccessService->hasCapability($currentAdminUserId, SystemAccessService::AUTHENTICATION_MANAGE);
+$canManageDirectory = $isLogged && $systemAccessService->hasCapability($currentAdminUserId, SystemAccessService::DIRECTORY_MANAGE);
+$canViewGlobalAudit = $isLogged && $systemAccessService->hasCapability($currentAdminUserId, SystemAccessService::AUDIT_VIEW);
+$canManageTags = $isLogged && $systemAccessService->hasCapability($currentAdminUserId, SystemAccessService::TAGS_MANAGE);
+$canUseUsersArea = $hasContentAdministrativeAccess || $canManageDirectory;
 if ($isLogged && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET') {
     $usageAuditService->log('admin_page_view', $currentAdminUserId, 'ADMIN', null, ['tab' => $activeTab]);
+
+    // Lembretes idempotentes: uma notificação por data de revisão configurada.
+    try {
+        $dueWorkspaceStmt = $pdo->query("\n            SELECT sw.subject_id, sw.next_review_on, s.name\n            FROM subject_workspaces sw\n            JOIN subjects s ON s.id = sw.subject_id\n            WHERE sw.documentation_status = 'approved'\n              AND sw.next_review_on IS NOT NULL\n              AND sw.next_review_on <= CURRENT_DATE + 14\n              AND sw.review_reminder_sent_for IS DISTINCT FROM sw.next_review_on\n            ORDER BY sw.next_review_on, sw.subject_id\n            LIMIT 30\n        ");
+        $dueWorkspaces = $dueWorkspaceStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        if ($dueWorkspaces !== []) {
+            $activeUserIds = $pdo->query('SELECT id FROM users WHERE active = TRUE')->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($dueWorkspaces as $dueWorkspace) {
+                $dueSubjectId = (int)$dueWorkspace['subject_id'];
+                $reviewers = [];
+                foreach ($activeUserIds as $candidateId) {
+                    if ($permService->canAdminSubject((int)$candidateId, $dueSubjectId)) {
+                        $reviewers[] = (int)$candidateId;
+                    }
+                }
+                $markReminder = $pdo->prepare('UPDATE subject_workspaces SET review_reminder_sent_for = next_review_on WHERE subject_id = :subject_id AND review_reminder_sent_for IS DISTINCT FROM next_review_on RETURNING subject_id');
+                $markReminder->execute([':subject_id' => $dueSubjectId]);
+                if (!$markReminder->fetchColumn()) {
+                    continue;
+                }
+                $reviewDateLabel = date('d/m/Y', strtotime((string)$dueWorkspace['next_review_on']));
+                $isOverdue = (string)$dueWorkspace['next_review_on'] <= date('Y-m-d');
+                $notificationService->createForUsers(
+                    $reviewers,
+                    'subject_review_due',
+                    $isOverdue ? 'Revisão periódica vencida' : 'Revisão periódica próxima',
+                    '“' . $dueWorkspace['name'] . '” deve ser revisada em ' . $reviewDateLabel . '.',
+                    null
+                );
+            }
+            $unreadNotificationCount = $notificationService->unreadCount($currentAdminUserId);
+        }
+    } catch (Throwable $reminderException) {
+        error_log('DocGov lembrete de revisão: ' . $reminderException->getMessage());
+    }
 }
 $administrativeScope = $isLogged
     ? $permService->getAdministrativeScope($currentAdminUserId)
@@ -103,17 +168,28 @@ $administrativeScope = $isLogged
 $administrativeSubjectIds = array_values(array_unique(array_map('intval', $administrativeScope['subject_ids'])));
 $administrativeCategoryIds = array_values(array_unique(array_map('intval', $administrativeScope['coverage_category_ids'])));
 $administrativeSubcategoryIds = array_values(array_unique(array_map('intval', $administrativeScope['coverage_subcategory_ids'])));
-$administrativeDocumentScopeSql = $isGlobalAdminCurrent
+$administrativeDocumentScopeSql = $canViewGlobalAudit
     ? 'TRUE'
     : (!empty($administrativeSubjectIds)
         ? 'd.subject_id IN (' . implode(',', $administrativeSubjectIds) . ')'
         : 'FALSE');
 
-$globalOnlyTabs = ['grupos', 'editar_grupo', 'configuracoes', 'tags'];
-if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $globalOnlyTabs, true)) {
+$restrictedTabCapabilities = [
+    'configuracoes' => $canManageSystemSettings,
+    'servidores_ad' => $canManageAuthentication,
+    'tags' => $canManageTags,
+    'usuarios' => $canUseUsersArea,
+    'editar_usuario' => $canUseUsersArea,
+];
+$superAdminOnlyTabs = ['grupos', 'editar_grupo'];
+if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $superAdminOnlyTabs, true)) {
     http_response_code(403);
     $activeTab = 'visao_geral';
-    $errorMessage = 'Esta área contém dados globais e está disponível somente para o Super Admin.';
+    $errorMessage = 'A gestão de equipes e de poderes administrativos está disponível somente para o Super Admin.';
+} elseif ($isLogged && isset($restrictedTabCapabilities[$activeTab]) && !$restrictedTabCapabilities[$activeTab]) {
+    http_response_code(403);
+    $activeTab = 'visao_geral';
+    $errorMessage = 'Seu usuário não possui o módulo administrativo solicitado.';
 }
 
 // =============================================================================
@@ -121,10 +197,210 @@ if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $globalOnlyTabs,
 // =============================================================================
 if ($isLogged) {
 
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['structure_delete_action'])) {
+        $deleteType = strtolower(trim((string)($_POST['structure_type'] ?? '')));
+        $deleteId = (int)($_POST['structure_id'] ?? 0);
+        $confirmedName = (string)($_POST['confirmation_name'] ?? '');
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente Super Admins podem excluir itens da estrutura permanentemente.';
+        } elseif ($_POST['structure_delete_action'] !== 'permanent_delete') {
+            http_response_code(400);
+            $errorMessage = 'Ação de exclusão inválida.';
+        } else {
+            try {
+                $deletion = $structureDeletionService->deletePermanently($deleteType, $deleteId, $currentAdminUserId, $confirmedName);
+                $summary = $deletion['summary'];
+                $usageAuditService->log('admin_action', $currentAdminUserId, strtoupper($deleteType), $deleteId, [
+                    'action' => 'structure_permanently_deleted',
+                    'name' => $summary['name'],
+                    'subcategories' => $summary['subcategories'],
+                    'subjects' => $summary['subjects'],
+                    'documents' => $summary['documents'],
+                ]);
+
+                $cleanupWarning = false;
+                foreach ($deletion['document_files'] as $storedPath) {
+                    try {
+                        $stillUsed = $pdo->prepare('SELECT 1 FROM documents WHERE file_path = :path LIMIT 1');
+                        $stillUsed->execute([':path' => $storedPath]);
+                        if ($stillUsed->fetchColumn()) continue;
+                        $storageRoot = realpath(__DIR__ . '/../storage/documents');
+                        $candidate = realpath(__DIR__ . '/../' . ltrim(str_replace('\\', '/', $storedPath), '/'));
+                        if ($storageRoot !== false && $candidate !== false
+                            && str_starts_with($candidate, $storageRoot . DIRECTORY_SEPARATOR)
+                            && is_file($candidate) && !@unlink($candidate)) {
+                            $cleanupWarning = true;
+                            error_log('DocGov: arquivo de documento não removido após exclusão definitiva: ' . $candidate);
+                        }
+                    } catch (Throwable $cleanupException) {
+                        $cleanupWarning = true;
+                        error_log('DocGov: falha ao limpar arquivo de documento: ' . $cleanupException->getMessage());
+                    }
+                }
+                foreach ($deletion['inline_media_files'] as $storedName) {
+                    $inlineMediaService->removeStoredFile($storedName);
+                }
+                foreach ($deletion['image_files'] as $imagePath) {
+                    try {
+                        $stillUsed = $pdo->prepare('SELECT 1 WHERE EXISTS (SELECT 1 FROM categories WHERE image_path = :category_path) OR EXISTS (SELECT 1 FROM subcategories WHERE image_path = :subcategory_path)');
+                        $stillUsed->execute([':category_path' => $imagePath, ':subcategory_path' => $imagePath]);
+                        if ($stillUsed->fetchColumn()) continue;
+                        $categoryImageService->remove($imagePath);
+                        if ($categoryImageService->resolve($imagePath) !== null) {
+                            $cleanupWarning = true;
+                            error_log('DocGov: imagem da estrutura não removida após exclusão definitiva: ' . $imagePath);
+                        }
+                    } catch (Throwable $cleanupException) {
+                        $cleanupWarning = true;
+                        error_log('DocGov: falha ao limpar imagem da estrutura: ' . $cleanupException->getMessage());
+                    }
+                }
+                header('Location: index.php?tab=editar_estrutura&view=discarded&msg=structure_permanently_deleted' . ($cleanupWarning ? '&cleanup=partial' : ''));
+                exit;
+            } catch (Throwable $exception) {
+                http_response_code($exception instanceof InvalidArgumentException ? 400 : 403);
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['structure_action'])) {
+        $structureType = strtolower(trim((string)($_POST['structure_type'] ?? '')));
+        $structureId = (int)($_POST['structure_id'] ?? 0);
+        $structureAction = strtolower(trim((string)$_POST['structure_action']));
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!in_array($structureAction, ['discard', 'restore'], true)) {
+            http_response_code(400);
+            $errorMessage = 'Ação da estrutura inválida.';
+        } else {
+            try {
+                $result = $structureArchiveService->setActive($structureType, $structureId, $currentAdminUserId, $structureAction === 'restore');
+                if ($result['changed']) {
+                    $usageAuditService->logAdminAction($currentAdminUserId, $structureType . '_' . $structureAction, strtoupper($structureType), $structureId);
+                }
+                header('Location: index.php?tab=editar_estrutura&view=' . ($structureAction === 'restore' ? 'discarded' : 'active') . '&msg=structure_' . $structureAction . 'ed');
+                exit;
+            } catch (Throwable $exception) {
+                http_response_code($exception instanceof InvalidArgumentException ? 400 : 403);
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
     // DOCUMENTAÇÃO ESTRUTURADA DO PROCESSO (NÍVEL ASSUNTO)
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['subject_workspace_action'])) {
+        $workspaceSubjectId = (int)($_POST['subject_id'] ?? 0);
+        $workspaceAction = strtolower(trim((string)($_POST['subject_workspace_action'] ?? '')));
+        $workspaceNote = trim((string)($_POST['workflow_note'] ?? ''));
+        $canEditWorkspaceSubject = $workspaceSubjectId > 0
+            && $permService->canEditSubject($currentAdminUserId, $workspaceSubjectId);
+        $canAdminWorkspaceSubject = $workspaceSubjectId > 0
+            && $permService->canAdminSubject($currentAdminUserId, $workspaceSubjectId);
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$canEditWorkspaceSubject) {
+            http_response_code(403);
+            $errorMessage = 'Você não possui permissão para executar ações neste assunto.';
+        } elseif ($workspaceAction !== 'submit_review' && !$canAdminWorkspaceSubject) {
+            http_response_code(403);
+            $errorMessage = 'Somente um administrador deste assunto pode concluir a revisão.';
+        } else {
+            try {
+                $transition = $subjectWorkspaceService->transition(
+                    $workspaceSubjectId,
+                    $currentAdminUserId,
+                    $workspaceAction,
+                    $workspaceNote,
+                    $canAdminWorkspaceSubject
+                );
+
+                $subjectNameStmt = $pdo->prepare('SELECT name FROM subjects WHERE id = :id');
+                $subjectNameStmt->execute([':id' => $workspaceSubjectId]);
+                $subjectName = (string)($subjectNameStmt->fetchColumn() ?: 'Assunto');
+                try {
+                    if ($workspaceAction === 'submit_review') {
+                        $reviewers = [];
+                        $candidateIds = $pdo->query('SELECT id FROM users WHERE active = TRUE')->fetchAll(PDO::FETCH_COLUMN);
+                        foreach ($candidateIds as $candidateId) {
+                            if ($permService->canAdminSubject((int)$candidateId, $workspaceSubjectId)) {
+                                $reviewers[] = (int)$candidateId;
+                            }
+                        }
+                        $notificationService->createForUsers(
+                            $reviewers,
+                            'subject_review_requested',
+                            'Documentação aguardando revisão',
+                            '“' . $subjectName . '” foi enviada para sua homologação.',
+                            null,
+                            $currentAdminUserId
+                        );
+                    } else {
+                        $workspaceAfter = $transition['workspace'];
+                        $authors = [
+                            (int)($workspaceAfter['created_by'] ?? 0),
+                            (int)($workspaceAfter['submitted_by'] ?? 0),
+                        ];
+                        $notificationData = match ($workspaceAction) {
+                            'return_changes' => ['subject_changes_requested', 'Ajustes solicitados', '“' . $subjectName . '” voltou para elaboração. Motivo: ' . $workspaceNote],
+                            'approve' => ['subject_approved', 'Documentação homologada', '“' . $subjectName . '” foi homologada e está disponível no portal.'],
+                            'deprecate' => ['subject_deprecated', 'Documentação marcada como obsoleta', '“' . $subjectName . '” foi retirada da visualização principal.'],
+                            'reopen' => ['subject_reopened', 'Documentação reaberta', '“' . $subjectName . '” foi reaberta para edição.'],
+                            default => null,
+                        };
+                        if ($notificationData !== null) {
+                            $notificationService->createForUsers(
+                                $authors,
+                                $notificationData[0],
+                                $notificationData[1],
+                                $notificationData[2],
+                                null,
+                                $currentAdminUserId
+                            );
+                        }
+                    }
+                } catch (Throwable) {
+                    // A transição principal permanece válida mesmo se a notificação falhar.
+                }
+
+                $usageAuditService->logAdminAction(
+                    $currentAdminUserId,
+                    'subject_workspace_' . $workspaceAction,
+                    'SUBJECT',
+                    $workspaceSubjectId
+                );
+                $messageByAction = [
+                    'submit_review' => 'workspace_submitted',
+                    'return_changes' => 'workspace_returned',
+                    'approve' => 'workspace_approved',
+                    'deprecate' => 'workspace_deprecated',
+                    'reopen' => 'workspace_reopened',
+                ];
+                header('Location: index.php?' . http_build_query([
+                    'tab' => 'editar_estrutura',
+                    'type' => 'assunto',
+                    'id' => $workspaceSubjectId,
+                    'res_tab' => $workspaceAction === 'return_changes' || $workspaceAction === 'reopen' ? 'overview' : 'history',
+                    'msg' => $messageByAction[$workspaceAction] ?? 'workspace_saved',
+                ]));
+                exit;
+            } catch (Throwable $exception) {
+                $errorMessage = $exception->getMessage();
+            }
+        }
+    }
+
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_subject_workspace'])) {
         $workspaceSubjectId = (int)($_POST['subject_id'] ?? 0);
         $workspaceSection = strtolower(trim((string)($_POST['workspace_section'] ?? 'overview')));
+        $canAdminWorkspaceSubject = $workspaceSubjectId > 0
+            && $permService->canAdminSubject($currentAdminUserId, $workspaceSubjectId);
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
@@ -138,7 +414,7 @@ if ($isLogged) {
                     $currentAdminUserId,
                     $workspaceSection,
                     $_POST,
-                    $permService->canAdminSubject($currentAdminUserId, $workspaceSubjectId)
+                    $canAdminWorkspaceSubject
                 );
                 $usageAuditService->logAdminAction(
                     $currentAdminUserId,
@@ -167,8 +443,8 @@ if ($isLogged) {
             echo json_encode(['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
             exit;
         }
-        if (!$isGlobalAdminCurrent) {
-            echo json_encode(['success' => false, 'error' => 'Somente o Super Admin pode testar conexões do Active Directory.']);
+        if (!$canManageAuthentication) {
+            echo json_encode(['success' => false, 'error' => 'Seu usuário não possui acesso à administração do Active Directory.']);
             exit;
         }
         $testUri = trim((string)($_POST['test_uri'] ?? ''));
@@ -188,8 +464,8 @@ if ($isLogged) {
             echo json_encode(['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
             exit;
         }
-        if (!$isGlobalAdminCurrent) {
-            echo json_encode(['success' => false, 'error' => 'Somente o Super Admin pode executar a replicação de usuários do Active Directory.']);
+        if (!$canManageDirectory) {
+            echo json_encode(['success' => false, 'error' => 'Seu usuário não possui acesso à sincronização do diretório.']);
             exit;
         }
 
@@ -215,9 +491,9 @@ if ($isLogged) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
-        } elseif (!$isGlobalAdminCurrent) {
+        } elseif (!$canManageSystemSettings) {
             http_response_code(403);
-            $errorMessage = 'Somente o Super Admin pode alterar configurações globais.';
+            $errorMessage = 'Seu usuário não possui acesso às configurações gerais.';
         } else {
             try {
                 $portalName = trim((string)($_POST['portal_name'] ?? ''));
@@ -436,7 +712,7 @@ if ($isLogged) {
     // TESTAR CONEXÃO E AUTENTICAÇÃO DO SERVIDOR LDAP VIA AJAX
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_connection'])) {
         header('Content-Type: application/json; charset=UTF-8');
-        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$canManageAuthentication) {
             echo json_encode(['success' => false, 'error' => 'Acesso não autorizado ou sessão expirada.']);
             exit;
         }
@@ -454,7 +730,7 @@ if ($isLogged) {
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_health'])) {
         header('Content-Type: application/json; charset=UTF-8');
         try {
-            if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+            if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$canManageAuthentication) {
                 echo json_encode(['success' => false, 'error' => 'Sessão expirada ou sem permissão de administrador global.']);
                 exit;
             }
@@ -513,7 +789,7 @@ if ($isLogged) {
             $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
             $targetUserId = (int)($_POST['user_id'] ?? 0);
 
-            if ($targetUserId <= 0 || !$permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId)) {
+            if ($targetUserId <= 0 || (!$canManageDirectory && !$permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId))) {
                 echo json_encode(['success' => false, 'error' => 'Acesso negado ou usuário não localizado no seu escopo.']);
                 exit;
             }
@@ -586,7 +862,7 @@ if ($isLogged) {
 
     // EXPORTAR RELATÓRIO DE AUDITORIA AD EM CSV
     if (isset($_GET['export_ad_audit_logs'])) {
-        if (!$isGlobalAdminCurrent) {
+        if (!$canManageAuthentication) {
             http_response_code(403);
             exit('Acesso restrito.');
         }
@@ -638,7 +914,7 @@ if ($isLogged) {
     // REPLICAR USUÁRIOS DO AD VIA AJAX
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['replicate_ad_users'])) {
         header('Content-Type: application/json; charset=UTF-8');
-        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$isGlobalAdminCurrent) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null) || !$canManageDirectory) {
             echo json_encode(['success' => false, 'error' => 'Acesso não autorizado ou sessão expirada.']);
             exit;
         }
@@ -659,9 +935,9 @@ if ($isLogged) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
-        } elseif (!$isGlobalAdminCurrent) {
+        } elseif (!$canManageAuthentication) {
             http_response_code(403);
-            $errorMessage = 'Somente o Super Admin pode excluir domínios de autenticação.';
+            $errorMessage = 'Seu usuário não possui acesso à administração dos domínios.';
         } else {
             try {
                 $domainToDelete = strtoupper(trim((string)$_POST['delete_ad_domain']));
@@ -698,15 +974,27 @@ if ($isLogged) {
         }
     }
 
-    // CRIAÇÃO E CONFIGURAÇÃO DE NOVO DOMÍNIO AD VIA URL (GET: tab=servidores_ad&domain=KEY&new=1...)
-    if ($isGlobalAdminCurrent && isset($_GET['tab']) && $_GET['tab'] === 'servidores_ad' && isset($_GET['domain']) && (!empty($_GET['new']) || !empty($_GET['add_domain']) || !empty($_GET['uri']))) {
-        $rawDomainKey = strtoupper(trim((string)$_GET['domain']));
-        if ($rawDomainKey !== '') {
+    // CRIAÇÃO DE DOMÍNIO AD: operação mutável somente via POST + CSRF.
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['create_ad_domain'])) {
+        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
+            $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
+        } elseif (!$canManageAuthentication) {
+            http_response_code(403);
+            $errorMessage = 'Seu usuário não possui acesso à administração dos domínios.';
+        } else {
+            $rawDomainKey = strtoupper(trim((string)($_POST['domain_key'] ?? '')));
             try {
+                if (!preg_match('/^[A-Z0-9_-]{2,50}$/', $rawDomainKey)) {
+                    throw new InvalidArgumentException('A sigla do domínio deve ter de 2 a 50 letras, números, hífens ou sublinhados.');
+                }
                 $currentSettings = $systemSettingsService->all();
                 $domains = (array)($currentSettings['ad_domains'] ?? []);
+                if (isset($domains[$rawDomainKey])) {
+                    throw new InvalidArgumentException('Já existe um domínio com esta sigla.');
+                }
 
-                $rawUri = trim((string)($_GET['uri'] ?? ''));
+                $rawUri = trim((string)($_POST['domain_uri'] ?? ''));
                 // Sanitização automática de erros de digitação de protocolo na URL (ex.: ldasps:// ou ldaps//)
                 $rawUri = preg_replace('/^ldasps:\/\//i', 'ldaps://', $rawUri);
                 $rawUri = preg_replace('/^ldaps\/\//i', 'ldaps://', $rawUri);
@@ -714,9 +1002,15 @@ if ($isLogged) {
                     $rawUri = 'ldaps://diana.betim.pmb:636';
                 }
 
-                $domainName = trim((string)($_GET['name'] ?? $rawDomainKey));
-                $dnsDomain = trim((string)($_GET['dns_domain'] ?? (strtolower($rawDomainKey) . '.betim.pmb')));
-                $baseDn = trim((string)($_GET['base_dn'] ?? ('DC=' . strtolower($rawDomainKey) . ',DC=betim,DC=pmb')));
+                if (!preg_match('#^ldaps?://[a-z0-9._-]+(?::\d{1,5})?$#i', $rawUri)) {
+                    throw new InvalidArgumentException('Informe uma URI LDAP ou LDAPS válida.');
+                }
+                $domainName = trim((string)($_POST['domain_name'] ?? $rawDomainKey));
+                if (mb_strlen($domainName) < 2 || mb_strlen($domainName) > 100) {
+                    throw new InvalidArgumentException('O nome do domínio deve ter entre 2 e 100 caracteres.');
+                }
+                $dnsDomain = strtolower($rawDomainKey) . '.betim.pmb';
+                $baseDn = 'DC=' . strtolower($rawDomainKey) . ',DC=betim,DC=pmb';
 
                 $domains[$rawDomainKey] = [
                     'key' => $rawDomainKey,
@@ -725,18 +1019,18 @@ if ($isLogged) {
                     'base_dn' => $baseDn,
                     'dns_domain' => $dnsDomain,
                     'netbios_domain' => $rawDomainKey,
-                    'ca_certificate' => trim((string)($_GET['ca_certificate'] ?? '')),
-                    'service_bind_dn' => trim((string)($_GET['service_bind_dn'] ?? '')),
-                    'service_bind_password' => (string)($_GET['service_bind_password'] ?? ''),
+                    'ca_certificate' => '',
+                    'service_bind_dn' => '',
+                    'service_bind_password' => '',
                     'enabled' => true,
                     'replication_enabled' => true,
-                    'is_primary' => !empty($_GET['is_primary']) || count($domains) === 0,
+                    'is_primary' => count($domains) === 0,
                 ];
 
                 $systemSettingsService->saveMany(['ad_domains' => $domains], $currentAdminUserId);
 
                 $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
-                    'action' => 'ad_domain_created_via_url',
+                    'action' => 'ad_domain_created',
                     'domain_key' => $rawDomainKey,
                     'uri' => $rawUri,
                 ]);
@@ -744,7 +1038,7 @@ if ($isLogged) {
                 header("Location: index.php?tab=servidores_ad&domain={$rawDomainKey}&msg=domain_added");
                 exit;
             } catch (Throwable $ex) {
-                $errorMessage = 'Erro ao criar domínio via URL: ' . $ex->getMessage();
+                $errorMessage = 'Não foi possível criar o domínio: ' . $ex->getMessage();
             }
         }
     }
@@ -754,14 +1048,16 @@ if ($isLogged) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
-        } elseif (!$isGlobalAdminCurrent) {
+        } elseif (!$canManageAuthentication) {
             http_response_code(403);
-            $errorMessage = 'Somente o Super Admin pode alterar as configurações do Active Directory.';
+            $errorMessage = 'Seu usuário não possui acesso às configurações do Active Directory.';
         } else {
             try {
                 $adAuthEnabled = isset($_POST['ad_auth_enabled']);
                 $adDefaultDomain = strtoupper(trim((string)($_POST['ad_default_domain'] ?? 'BETIM')));
-                $adSuperAdminUsers = array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;\s]+/', (string)($_POST['ad_super_admin_users'] ?? '')) ?: []))));
+                $adSuperAdminUsers = $isGlobalAdminCurrent
+                    ? array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;\s]+/', (string)($_POST['ad_super_admin_users'] ?? '')) ?: []))))
+                    : array_values((array)($systemSettingsService->get('ad_super_admin_users', [])));
                 $adIntegratedWindows = isset($_POST['ad_integrated_windows_enabled']);
                 $adPrimaryDomainKey = strtoupper(trim((string)($_POST['ad_primary_domain'] ?? $adDefaultDomain)));
                 $adDomainsPosted = (array)($_POST['ad_domains'] ?? []);
@@ -867,9 +1163,9 @@ if ($isLogged) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
-        } elseif (!$isGlobalAdminCurrent) {
+        } elseif (!$canManageTags) {
             http_response_code(403);
-            $errorMessage = 'Somente o Super Admin pode organizar o catálogo de tags.';
+            $errorMessage = 'Seu usuário não possui acesso à curadoria de tags.';
         } else {
             try {
                 $tagAction = (string)$_POST['tag_admin_action'];
@@ -899,9 +1195,9 @@ if ($isLogged) {
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
-        } elseif (!$isGlobalAdminCurrent) {
+        } elseif (!$canManageDirectory) {
             http_response_code(403);
-            $errorMessage = 'Somente o Super Admin pode cadastrar usuários.';
+            $errorMessage = 'Seu usuário não possui acesso à importação do diretório.';
         } else {
             $adUserLogin = trim($_POST['ad_username'] ?? '');
             $importAdDomain = strtoupper(trim((string)($_POST['ad_domain'] ?? $selectedAdDomain)));
@@ -1030,11 +1326,58 @@ if ($isLogged) {
             $errorMessage = "Apenas administradores podem gerenciar equipes.";
         } else {
             $grpAction = strtolower(trim((string)$_POST['group_action']));
-            $allowedGroupActions = ['create_group', 'edit_group', 'toggle_status', 'delete_group', 'add_user', 'remove_user'];
+            $allowedGroupActions = ['create_group', 'edit_group', 'toggle_status', 'delete_group', 'add_user', 'remove_user', 'sync_system_capabilities'];
 
             if (!in_array($grpAction, $allowedGroupActions, true)) {
                 http_response_code(400);
                 $errorMessage = 'Ação de equipe inválida.';
+            } elseif ($grpAction === 'sync_system_capabilities') {
+                $gId = (int)($_POST['group_id'] ?? 0);
+                try {
+                    $capabilityChanges = $systemAccessService->syncGroupCapabilities(
+                        $gId,
+                        (array)($_POST['system_capabilities'] ?? []),
+                        $currentAdminUserId
+                    );
+                    $usageAuditService->log('admin_action', $currentAdminUserId, 'ADMIN', null, [
+                        'action' => 'team_system_capabilities_updated',
+                        'team_id' => $gId,
+                        'granted' => $capabilityChanges['granted'],
+                        'revoked' => $capabilityChanges['revoked'],
+                    ]);
+                    if ($capabilityChanges['granted'] !== [] || $capabilityChanges['revoked'] !== []) {
+                        try {
+                            $memberIdsStmt = $pdo->prepare('
+                                SELECT u.id
+                                FROM users u
+                                JOIN user_groups ug ON ug.user_id = u.id
+                                WHERE ug.group_id = :group_id AND u.active = TRUE
+                            ');
+                            $memberIdsStmt->execute([':group_id' => $gId]);
+                            $memberIds = array_map('intval', $memberIdsStmt->fetchAll(PDO::FETCH_COLUMN));
+                            $changeParts = [];
+                            if ($capabilityChanges['granted'] !== []) {
+                                $changeParts[] = count($capabilityChanges['granted']) . ' módulo(s) concedido(s)';
+                            }
+                            if ($capabilityChanges['revoked'] !== []) {
+                                $changeParts[] = count($capabilityChanges['revoked']) . ' módulo(s) removido(s)';
+                            }
+                            $notificationService->createForUsers(
+                                $memberIds,
+                                'system_access_updated',
+                                'Acessos administrativos atualizados',
+                                'Os acessos globais da sua equipe foram atualizados: ' . implode(' e ', $changeParts) . '.'
+                            );
+                        } catch (Throwable $notificationException) {
+                            error_log('DocGov: falha ao notificar capacidades administrativas: ' . $notificationException->getMessage());
+                        }
+                    }
+                    header('Location: index.php?tab=editar_grupo&id=' . $gId . '&group_tab=system&msg=team_system_access_saved');
+                    exit;
+                } catch (Throwable $exception) {
+                    http_response_code($exception instanceof InvalidArgumentException ? 422 : 403);
+                    $errorMessage = $exception->getMessage();
+                }
             } elseif ($grpAction === 'create_group') {
                 $gName = trim((string)($_POST['name'] ?? ''));
                 $gDesc = trim((string)($_POST['description'] ?? ''));
@@ -1113,6 +1456,9 @@ if ($isLogged) {
                             throw new RuntimeException('Falha ao auditar a remoção de uma permissão da equipe.');
                         }
                     }
+
+                    // Revoga e audita capacidades globais antes de excluir a equipe.
+                    $systemAccessService->syncGroupCapabilities($gId, [], $currentAdminUserId);
 
                     $deleteGroupStmt = $pdo->prepare('DELETE FROM groups WHERE id = :id');
                     $deleteGroupStmt->execute([':id' => $gId]);
@@ -1258,7 +1604,9 @@ if ($isLogged) {
         }
         $workflowNote = trim($_POST['workflow_note'] ?? '');
         $tipoConteudo = trim($_POST['tipo_conteudo'] ?? 'file');
+        $documentSectionKey = strtolower(trim((string)($_POST['section_key'] ?? '')));
         $conteudoHtmlRaw = trim($_POST['conteudo_html'] ?? '');
+        $structuredContentRaw = (string)($_POST['structured_content'] ?? '');
         $codigoFonteRaw = str_replace(["\r\n", "\r"], "\n", (string)($_POST['codigo_fonte'] ?? ''));
         $linguagemCodigo = strtolower(trim($_POST['linguagem_codigo'] ?? 'auto'));
         $linkExterno = trim($_POST['link_externo'] ?? '');
@@ -1268,18 +1616,28 @@ if ($isLogged) {
         $requestedTagIds = array_values(array_map('intval', (array)($_POST['tag_ids'] ?? [])));
         $requestedNewTagNames = array_values(array_map('strval', (array)($_POST['new_tags'] ?? [])));
         $previousDocumentStatus = null;
+        $previousDocumentSectionKey = null;
 
         if ($id && $id > 0) {
-            $stmtCurrentStatus = $pdo->prepare('SELECT status FROM documents WHERE id = :id');
+            $stmtCurrentStatus = $pdo->prepare('SELECT status, section_key FROM documents WHERE id = :id');
             $stmtCurrentStatus->execute([':id' => $id]);
-            $previousDocumentStatus = $stmtCurrentStatus->fetchColumn();
-            if ($previousDocumentStatus === false) {
+            $currentDocumentState = $stmtCurrentStatus->fetch(PDO::FETCH_ASSOC);
+            $previousDocumentStatus = $currentDocumentState['status'] ?? false;
+            $previousDocumentSectionKey = $currentDocumentState['section_key'] ?? null;
+            if (!$currentDocumentState) {
                 $errorMessage = 'Documento não encontrado.';
             }
         }
 
-        if (!in_array($tipoConteudo, ['file', 'text', 'link', 'code', 'video'], true)) {
-            $tipoConteudo = 'file';
+        if ($documentSectionKey === '') {
+            $documentSectionKey = $previousDocumentSectionKey
+                ?: $documentSectionService->defaultSectionForContentType($tipoConteudo);
+        }
+        try {
+            $documentSectionSelection = $documentSectionService->resolveSelection($documentSectionKey);
+            $tipoConteudo = $documentSectionSelection['content_type'];
+        } catch (Throwable $exception) {
+            $errorMessage = $exception->getMessage();
         }
         if (!in_array($videoSource, ['upload', 'url'], true)) {
             $videoSource = 'upload';
@@ -1296,8 +1654,20 @@ if ($isLogged) {
             $linguagemCodigo = 'auto';
         }
 
-        $conteudoHtml = strip_tags($conteudoHtmlRaw, '<h3><h4><p><b><i><strong><em><ul><ol><li><a><br>');
-        $conteudoArmazenado = $tipoConteudo === 'code' ? $codigoFonteRaw : $conteudoHtml;
+        $structuredContent = null;
+        try {
+            $conteudoArmazenado = match ($tipoConteudo) {
+                'text' => RichTextSanitizer::sanitize($conteudoHtmlRaw),
+                'code' => $codigoFonteRaw,
+                default => null,
+            };
+            if (in_array($tipoConteudo, ['flow', 'orgchart'], true)) {
+                $structuredContent = StructuredContentService::normalize($tipoConteudo, $structuredContentRaw);
+            }
+        } catch (Throwable $exception) {
+            $errorMessage = $exception->getMessage();
+            $conteudoArmazenado = null;
+        }
 
         // Resolver o ramo completo. IDs são usados pelo formulário; nomes/slugs antigos
         // continuam aceitos somente quando identificam um único ramo ativo.
@@ -1415,17 +1785,24 @@ if ($isLogged) {
             }
 
             if (empty($errorMessage)) {
-                $slug = slugify($titulo);
-                $publishedAt = $status === 'published' ? date(DATE_ATOM) : null;
-                if ($id) {
+                try {
+                    $pdo->beginTransaction();
+                    $slug = $documentSlugService->reserve($subjectId, $titulo, $id ?: null);
+                    $publishedAt = $status === 'published' ? date(DATE_ATOM) : null;
+                    $structuredContentJson = $structuredContent !== null
+                        ? json_encode($structuredContent, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
+                        : null;
+                    $staleInlineFiles = [];
+                    if ($id) {
                     if ($storedFilename) {
                         $stmt = $pdo->prepare("
                             UPDATE documents SET 
                                 subject_id = :sub_id, title = :title, slug = :slug, description = :desc, 
-                                content_type = :type, status = :status,
+                                content_type = :type, section_key = :section_key, status = :status,
                                 published_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN COALESCE(:published_at, published_at, CURRENT_TIMESTAMP) ELSE NULL END,
                                 approval_expires_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN NULL ELSE COALESCE(approval_expires_at, CURRENT_TIMESTAMP + INTERVAL '1 month') END,
                                 text_content = :text_content,
+                                structured_content = CAST(:structured_content AS JSONB),
                                 code_language = :code_language, external_url = :url,
                                 stored_filename = :stored_name, original_filename = :orig_name, mime_type = :mime, 
                                 file_extension = :ext, file_size = :size, file_path = :path
@@ -1433,8 +1810,9 @@ if ($isLogged) {
                         ");
                         $stmt->execute([
                             ':sub_id' => $subjectId, ':title' => $titulo, ':slug' => $slug, ':desc' => $descricao,
-                            ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
+                            ':type' => $tipoConteudo, ':section_key' => $documentSectionKey, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
                             ':text_content' => $conteudoArmazenado,
+                            ':structured_content' => $structuredContentJson,
                             ':code_language' => $linguagemCodigo, ':url' => $linkExterno,
                             ':stored_name' => $storedFilename, ':orig_name' => $originalFilename, ':mime' => $tipoMime,
                             ':ext' => $fileExt, ':size' => $tamanhoBytes, ':path' => $filePath, ':id' => $id
@@ -1443,10 +1821,11 @@ if ($isLogged) {
                         $stmt = $pdo->prepare("
                             UPDATE documents SET 
                                 subject_id = :sub_id, title = :title, slug = :slug, description = :desc, 
-                                content_type = :type, status = :status,
+                                content_type = :type, section_key = :section_key, status = :status,
                                 published_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN COALESCE(:published_at, published_at, CURRENT_TIMESTAMP) ELSE NULL END,
                                 approval_expires_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN NULL ELSE COALESCE(approval_expires_at, CURRENT_TIMESTAMP + INTERVAL '1 month') END,
                                 text_content = :text_content,
+                                structured_content = CAST(:structured_content AS JSONB),
                                 code_language = :code_language, external_url = :url
                                 " . ($tipoConteudo === 'video' && $videoSource === 'url'
                                     ? ', stored_filename = NULL, original_filename = NULL, mime_type = NULL, file_extension = NULL, file_size = NULL, file_path = NULL'
@@ -1455,12 +1834,17 @@ if ($isLogged) {
                         ");
                         $stmt->execute([
                             ':sub_id' => $subjectId, ':title' => $titulo, ':slug' => $slug, ':desc' => $descricao,
-                            ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
+                            ':type' => $tipoConteudo, ':section_key' => $documentSectionKey, ':status' => $status, ':published_at' => $publishedAt, ':is_published' => $status === 'published' ? 1 : 0,
                             ':text_content' => $conteudoArmazenado,
+                            ':structured_content' => $structuredContentJson,
                             ':code_language' => $linguagemCodigo, ':url' => $linkExterno,
                             ':id' => $id
                         ]);
                     }
+                    if ($tipoConteudo === 'text') {
+                        $inlineMediaService->bindReferenced($id, $editorUserId, (string)$conteudoArmazenado);
+                    }
+                    $staleInlineFiles = $inlineMediaService->removeUnreferenced($id, $tipoConteudo === 'text' ? (string)$conteudoArmazenado : '');
                     $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
                     $tagService->syncDocumentTags($id, $resolvedTagIds);
                     try {
@@ -1471,28 +1855,35 @@ if ($isLogged) {
                         error_log('DocGov workflow: falha ao registrar transição: ' . $exception->getMessage());
                     }
                     $usageAuditService->logAdminAction($editorUserId, 'document_updated', 'DOCUMENT', $id);
+                    $pdo->commit();
+                    foreach ($staleInlineFiles as $staleInlineFile) {
+                        $inlineMediaService->removeStoredFile($staleInlineFile);
+                    }
                     header('Location: index.php?tab=detalhes_documento&id=' . $id . '&msg=doc_updated');
                     exit;
-                } else {
+                    } else {
                     $stmt = $pdo->prepare("
                         INSERT INTO documents (
-                            subject_id, created_by, title, slug, description, content_type, status, published_at,
+                            subject_id, created_by, title, slug, description, content_type, section_key, status, published_at,
                             original_filename, stored_filename, file_path, mime_type, file_extension, file_size,
-                            text_content, code_language, external_url
+                            text_content, structured_content, code_language, external_url
                         ) VALUES (
-                            :sub_id, :created_by, :title, :slug, :desc, :type, :status, :published_at,
+                            :sub_id, :created_by, :title, :slug, :desc, :type, :section_key, :status, :published_at,
                             :orig_name, :stored_name, :path, :mime, :ext, :size,
-                            :text_content, :code_language, :url
+                            :text_content, CAST(:structured_content AS JSONB), :code_language, :url
                         ) RETURNING id
                     ");
                     $stmt->execute([
                         ':sub_id' => $subjectId, ':created_by' => (int)$loggedUser['id'], ':title' => $titulo, ':slug' => $slug,
-                        ':desc' => $descricao, ':type' => $tipoConteudo, ':status' => $status, ':published_at' => $publishedAt,
+                        ':desc' => $descricao, ':type' => $tipoConteudo, ':section_key' => $documentSectionKey, ':status' => $status, ':published_at' => $publishedAt,
                         ':orig_name' => $originalFilename, ':stored_name' => $storedFilename, ':path' => $filePath,
                         ':mime' => $tipoMime, ':ext' => $fileExt, ':size' => $tamanhoBytes,
-                        ':text_content' => $conteudoArmazenado, ':code_language' => $linguagemCodigo, ':url' => $linkExterno
+                        ':text_content' => $conteudoArmazenado, ':structured_content' => $structuredContentJson, ':code_language' => $linguagemCodigo, ':url' => $linkExterno
                     ]);
                     $newId = (int)$stmt->fetchColumn();
+                    if ($tipoConteudo === 'text') {
+                        $inlineMediaService->bindReferenced($newId, $editorUserId, (string)$conteudoArmazenado);
+                    }
                     $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
                     $tagService->syncDocumentTags($newId, $resolvedTagIds);
                     try {
@@ -1503,8 +1894,31 @@ if ($isLogged) {
                         error_log('DocGov workflow: falha ao registrar criação: ' . $exception->getMessage());
                     }
                     $usageAuditService->logAdminAction($editorUserId, 'document_created', 'DOCUMENT', $newId);
+                    $pdo->commit();
                     header('Location: index.php?tab=detalhes_documento&id=' . $newId . '&msg=doc_created');
                     exit;
+                    }
+                } catch (Throwable $exception) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    if ($storedFilename !== null) {
+                        $uploadedPath = __DIR__ . '/../storage/documents/' . basename($storedFilename);
+                        if (is_file($uploadedPath)) {
+                            @unlink($uploadedPath);
+                        }
+                    }
+                    $isDocumentSlugConflict = $exception instanceof PDOException
+                        && (string)$exception->getCode() === '23505'
+                        && str_contains((string)($exception->errorInfo[2] ?? ''), 'uk_documents_subject_slug');
+                    if ($isDocumentSlugConflict) {
+                        // Proteção de última linha caso outro processo externo grave
+                        // sem passar pelo serviço transacional de slugs.
+                        $errorMessage = 'Já existe um conteúdo com este endereço no assunto. Tente salvar novamente para gerar um novo endereço.';
+                    } else {
+                        error_log('DocGov: falha ao salvar documento: ' . $exception->getMessage());
+                        $errorMessage = 'Não foi possível salvar o documento. Nenhuma alteração parcial foi mantida.';
+                    }
                 }
             }
         }
@@ -1588,9 +2002,13 @@ if ($isLogged) {
                     throw new InvalidArgumentException('Somente documentos enviados à lixeira podem ser excluídos definitivamente.');
                 }
                 $filePath = (string)($currentDocument['file_path'] ?? '');
+                $inlineMediaFiles = $inlineMediaService->pathsForDocuments([$documentId]);
                 $deleteDocumentStmt = $pdo->prepare('DELETE FROM documents WHERE id = :id');
                 $deleteDocumentStmt->execute([':id' => $documentId]);
                 $pdo->commit();
+                foreach ($inlineMediaFiles as $inlineMediaFile) {
+                    $inlineMediaService->removeStoredFile($inlineMediaFile);
+                }
 
                 // Arquivos só são removidos depois da confirmação no banco e se
                 // pertencem inequivocamente ao diretório protegido de documentos.
@@ -1694,8 +2112,20 @@ if ($isLogged) {
         $canSaveCategory = $catId
             ? ($permService->canAdminCategory($userId, $catId) || $permService->isGlobalAdmin($userId))
             : $permService->canCreateCategory($userId);
+        $currentCategoryActive = null;
+        if ($catId) {
+            $statusStmt = $pdo->prepare('SELECT active FROM categories WHERE id = :id');
+            $statusStmt->execute([':id' => $catId]);
+            $storedStatus = $statusStmt->fetchColumn();
+            if ($storedStatus !== false) $currentCategoryActive = docgovDatabaseBoolean($storedStatus);
+        }
 
-        if (!$canSaveCategory) {
+        if ($catId && $currentCategoryActive === null) {
+            $errorMessage = 'Categoria não encontrada.';
+        } elseif ($catId && $currentCategoryActive !== $statusVal && !$isGlobalAdminCurrent) {
+            http_response_code(403);
+            $errorMessage = 'Somente Super Admins podem descartar ou restaurar categorias.';
+        } elseif (!$canSaveCategory) {
             http_response_code(403);
             $errorMessage = $catId
                 ? 'Acesso negado. É necessário privilégio Admin nesta Categoria (ou ser Administrador Global) para alterá-la.'
@@ -1764,24 +2194,6 @@ if ($isLogged) {
                     $redirectParams['tab'] = 'categorias';
                 }
                 header('Location: index.php?' . http_build_query($redirectParams));
-                exit;
-            }
-        }
-    }
-
-    if (isset($_GET['action']) && $_GET['action'] === 'delete_category' && isset($_GET['id'])) {
-        if (!$isGlobalAdminCurrent) {
-            $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Categorias.";
-        } else {
-            $catId = (int)$_GET['id'];
-            $countSub = $pdo->prepare("SELECT COUNT(*) FROM subcategories WHERE category_id = :id");
-            $countSub->execute([':id' => $catId]);
-            if ((int)$countSub->fetchColumn() > 0) {
-                $errorMessage = "Esta categoria possui subcategorias vinculadas. Desative-a em vez de excluir.";
-            } else {
-                $pdo->prepare("DELETE FROM categories WHERE id = :id")->execute([':id' => $catId]);
-                $usageAuditService->logAdminAction($currentAdminUserId, 'category_deleted', 'CATEGORY', $catId);
-                header('Location: index.php?tab=categorias&msg=category_deleted');
                 exit;
             }
         }
@@ -1899,24 +2311,6 @@ if ($isLogged) {
         }
     }
 
-    if (isset($_GET['action']) && $_GET['action'] === 'delete_subcategory' && isset($_GET['id'])) {
-        if (!$isGlobalAdminCurrent) {
-            $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Subcategorias.";
-        } else {
-            $subId = (int)$_GET['id'];
-            $countAss = $pdo->prepare("SELECT COUNT(*) FROM subjects WHERE subcategory_id = :id");
-            $countAss->execute([':id' => $subId]);
-            if ((int)$countAss->fetchColumn() > 0) {
-                $errorMessage = "Esta subcategoria possui assuntos vinculados. Desative-a em vez de excluir.";
-            } else {
-                $pdo->prepare("DELETE FROM subcategories WHERE id = :id")->execute([':id' => $subId]);
-                $usageAuditService->logAdminAction($currentAdminUserId, 'subcategory_deleted', 'SUBCATEGORY', $subId);
-                header('Location: index.php?tab=subcategorias&msg=subcategory_deleted');
-                exit;
-            }
-        }
-    }
-
     // 4. GESTÃO DE ASSUNTOS
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_subject'])) {
         $subId = (int)($_POST['subcategory_id'] ?? $_POST['subcategoria_id'] ?? 0);
@@ -1992,24 +2386,6 @@ if ($isLogged) {
         }
     }
 
-    if (isset($_GET['action']) && $_GET['action'] === 'delete_subject' && isset($_GET['id'])) {
-        if (!$isGlobalAdminCurrent) {
-            $errorMessage = "Usuários com perfil 'Editor' não possuem permissão para excluir Assuntos.";
-        } else {
-            $assId = (int)$_GET['id'];
-            $countDoc = $pdo->prepare("SELECT COUNT(*) FROM documents WHERE subject_id = :id");
-            $countDoc->execute([':id' => $assId]);
-            if ((int)$countDoc->fetchColumn() > 0) {
-                $errorMessage = "Este assunto possui documentos vinculados. Desative-o em vez de excluir.";
-            } else {
-                $pdo->prepare("DELETE FROM subjects WHERE id = :id")->execute([':id' => $assId]);
-                $usageAuditService->logAdminAction($currentAdminUserId, 'subject_deleted', 'SUBJECT', $assId);
-                header('Location: index.php?tab=assuntos&msg=subject_deleted');
-                exit;
-            }
-        }
-    }
-
     // CARREGAR EDICÃO DE ENTIDADES DA HIERARQUIA
     if (isset($_GET['action']) && $_GET['action'] === 'edit_category' && isset($_GET['id'])) {
         $requestedCategoryId = (int)$_GET['id'];
@@ -2060,8 +2436,8 @@ if ($isLogged) {
             $errorMessage = 'Acesso negado: documento fora do seu escopo administrativo.';
         } else {
             $stmt = $pdo->prepare("
-                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
-                       d.text_content AS conteudo_html, d.code_language AS linguagem_codigo, d.external_url AS link_externo,
+                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.section_key, d.status,
+                       d.text_content AS conteudo_html, d.structured_content, d.code_language AS linguagem_codigo, d.external_url AS link_externo,
                        s.id AS assunto_id, s.name AS assunto,
                        sc.id AS subcategoria_id, sc.name AS subcategoria,
                        c.id AS categoria_id, c.name AS categoria
@@ -2084,14 +2460,16 @@ if ($isLogged) {
             $errorMessage = 'Acesso negado: os detalhes deste documento pertencem a outra área.';
         } else {
             $stmt = $pdo->prepare("
-                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.status,
+                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.section_key, d.status,
                        d.original_filename AS nome_original, d.file_path AS caminho_arquivo, d.file_size AS tamanho_bytes,
                        d.mime_type AS tipo_mime, d.published_at, d.created_at, d.approval_expires_at,
                        d.reviewed_at, d.approved_at, d.rejected_at, d.rejection_reason,
                        s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
                        u.name AS autor_nome, reviewer.name AS revisor_nome,
-                       approver.name AS aprovador_nome, rejector.name AS recusador_nome
+                       approver.name AS aprovador_nome, rejector.name AS recusador_nome,
+                       ds.label AS section_label
                 FROM documents d
+                JOIN document_sections ds ON ds.section_key = d.section_key
                 JOIN subjects s ON d.subject_id = s.id
                 JOIN subcategories sc ON s.subcategory_id = sc.id
                 JOIN categories c ON sc.category_id = c.id
@@ -2172,11 +2550,13 @@ $totalDocsFiltered = (int)$countStmt->fetchColumn();
 $totalPages = max(1, ceil($totalDocsFiltered / $perPage));
 
 $sqlDocs = "
-    SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, 
+    SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo,
+           d.section_key, ds.label AS section_label,
            d.status, d.created_at, d.published_at, d.approval_expires_at,
            s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
            u.name AS autor_nome
     FROM documents d
+    JOIN document_sections ds ON ds.section_key = d.section_key
     JOIN subjects s ON d.subject_id = s.id
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
@@ -2223,7 +2603,7 @@ $ultimosDocumentos = $pdo->query("
 // Indicadores e auditoria globais: consultados somente para o Super Admin.
 // Gestores locais continuam recebendo apenas os dados do próprio escopo.
 $globalDashboard = null;
-if ($isGlobalAdminCurrent) {
+if ($canViewGlobalAudit) {
     $userStats = $pdo->query("
         SELECT
             COUNT(*) AS total,
@@ -2634,6 +3014,16 @@ if ($loggedUser && !$isGlobalAdminCurrent) {
     unset($scopedSubcategory);
 }
 
+// A árvore principal mostra apenas nós utilizáveis. Itens desativados continuam
+// disponíveis na visão de descartados para restauração sem perda de vínculos.
+$treeVisibleCategories = array_values(array_filter($listCategorias, static fn($item) => docgovDatabaseBoolean($item['active'])));
+$treeVisibleSubcategories = array_values(array_filter($listSubcategorias, static fn($item) => docgovDatabaseBoolean($item['active']) && docgovDatabaseBoolean($item['categoria_active'])));
+$treeVisibleSubjects = array_values(array_filter($listAssuntos, static fn($item) => docgovDatabaseBoolean($item['active']) && docgovDatabaseBoolean($item['subcategoria_active']) && docgovDatabaseBoolean($item['categoria_active'])));
+$treeDiscardedCategories = array_values(array_filter($listCategorias, static fn($item) => !docgovDatabaseBoolean($item['active'])));
+$treeDiscardedSubcategories = array_values(array_filter($listSubcategorias, static fn($item) => !docgovDatabaseBoolean($item['active'])));
+$treeDiscardedSubjects = array_values(array_filter($listAssuntos, static fn($item) => !docgovDatabaseBoolean($item['active'])));
+$showDiscardedTree = ($activeTab === 'editar_estrutura' && ($_GET['view'] ?? '') === 'discarded');
+
 $rawCategorias = array_column($listCategorias, 'nome');
 $categoriasAutorizadas = $rawCategorias;
 
@@ -2786,7 +3176,7 @@ foreach ($treeStructure as $cData) {
 // Tags podem ser criadas por quem publica conteúdo; o Super Admin apenas faz a curadoria.
 $tagCatalog = $tagService->allActive();
 $editDocumentTagIds = $editDoc ? $tagService->getDocumentTagIds((int)$editDoc['id']) : [];
-$tagCatalogDetails = $isGlobalAdminCurrent ? $tagService->allWithDetails() : [];
+$tagCatalogDetails = $canManageTags ? $tagService->allWithDetails() : [];
 
 // Define o status HTTP antes de iniciar a saída HTML. As telas abaixo ainda
 // exibem a mensagem contextual, mas não podem chamar http_response_code depois
@@ -2808,7 +3198,7 @@ if ($activeTab === 'editar_estrutura') {
 
 if ($activeTab === 'detalhes_usuario') {
     $preflightTargetUserId = (int)($_GET['id'] ?? 0);
-    if (!$permService->canViewUserInAdministrativeScope($currentAdminUserId, $preflightTargetUserId)) {
+    if (!$canManageDirectory && !$permService->canViewUserInAdministrativeScope($currentAdminUserId, $preflightTargetUserId)) {
         http_response_code(403);
     }
 }
@@ -2877,8 +3267,18 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
     <link rel="stylesheet" href="../assets/style.css">
     <link rel="stylesheet" href="../assets/permissions.css">
     <link rel="stylesheet" href="../assets/code-snippets.css">
+    <link rel="stylesheet" href="../assets/structured-content.css">
+    <?php if ($activeTab === 'novo_documento'): ?>
+        <link rel="stylesheet" href="../assets/vendor/quill/quill.snow.css">
+        <link rel="stylesheet" href="../assets/quill-editor.css?v=<?= filemtime(__DIR__ . '/../assets/quill-editor.css') ?>">
+    <?php endif; ?>
     <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
     <script defer src="../assets/code-snippets.js"></script>
+    <?php if ($activeTab === 'novo_documento'): ?>
+        <script defer src="../assets/vendor/quill/quill.js"></script>
+        <script defer src="../assets/article-media-layout.js?v=<?= filemtime(__DIR__ . '/../assets/article-media-layout.js') ?>"></script>
+        <script defer src="../assets/structured-editors.js?v=<?= filemtime(__DIR__ . '/../assets/structured-editors.js') ?>"></script>
+    <?php endif; ?>
     <!-- GridStack.js (Base para o Editor Visual) -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@7.3.0/dist/gridstack.min.css">
     <script src="https://cdn.jsdelivr.net/npm/gridstack@7.3.0/dist/gridstack-all.js"></script>
@@ -3166,20 +3566,24 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             </div>
 
                             <!-- SEÇÃO GESTÃO DE ACESSO -->
-                            <?php if ($isGlobalAdminCurrent): ?>
+                            <?php if ($isGlobalAdminCurrent || $canManageAuthentication): ?>
                                 <div class="pt-3 border-t border-slate-100 dark:border-[#454956]">
                                     <div class="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 menu-section-title">
                                         GESTÃO DE ACESSO
                                     </div>
                                     <div class="mt-1 space-y-1">
+                                        <?php if ($isGlobalAdminCurrent): ?>
                                         <a href="index.php?tab=grupos" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= in_array($activeTab, ['grupos', 'editar_grupo']) ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Equipes">
                                             <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                                             <span class="menu-label font-bold">Equipes</span>
                                         </a>
+                                        <?php endif; ?>
+                                        <?php if ($canManageAuthentication): ?>
                                         <a href="index.php?tab=servidores_ad" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'servidores_ad' ? 'bg-sky-600 text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Autenticação">
                                             <svg class="w-4 h-4 text-sky-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
                                             <span class="menu-label font-bold">Autenticação</span>
                                         </a>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                             <?php endif; ?>
@@ -3190,16 +3594,20 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     SISTEMA
                                 </div>
                                 <div class="mt-1 space-y-1">
-                                    <a href="index.php?tab=usuarios" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'usuarios' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Gestão de Usuários">
+                                    <?php if ($canUseUsersArea): ?>
+                                    <a href="index.php?tab=usuarios" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= in_array($activeTab, ['usuarios', 'editar_usuario'], true) ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Gestão de Usuários">
                                         <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
                                         <span class="menu-label font-bold">Usuários</span>
                                     </a>
+                                    <?php endif; ?>
 
-                                    <?php if ($isGlobalAdminCurrent): ?>
+                                    <?php if ($canManageTags): ?>
                                     <a href="index.php?tab=tags" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'tags' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Tags">
                                         <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
                                         <span class="menu-label font-bold">Tags</span>
                                     </a>
+                                    <?php endif; ?>
+                                    <?php if ($canManageSystemSettings): ?>
                                     <a href="index.php?tab=configuracoes" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'configuracoes' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Configurações">
                                         <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                                         <span class="menu-label font-bold">Configurações</span>
@@ -3235,6 +3643,35 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             <!-- ÁREA PRINCIPAL DA GESTÃO -->
             <main class="flex-1 min-w-0 p-4 sm:p-8 overflow-y-auto">
 
+                <?php
+                    $backHref = 'index.php?tab=visao_geral';
+                    $backLabel = 'Voltar à visão geral';
+                    $backUseHistory = false; // Formulários POST não devem retornar pelo histórico.
+                    if ($activeTab === 'visao_geral') {
+                        $backHref = '../index.php';
+                        $backLabel = 'Voltar ao acervo';
+                    } elseif (in_array($activeTab, ['novo_documento', 'detalhes_documento', 'lixeira'], true)) {
+                        $backHref = 'index.php?tab=documentos';
+                        $backLabel = 'Voltar aos documentos';
+                    } elseif ($activeTab === 'substituir_arquivo') {
+                        $backHref = 'index.php?tab=detalhes_documento&id=' . (int)($_GET['id'] ?? 0);
+                        $backLabel = 'Voltar ao documento';
+                    } elseif (in_array($activeTab, ['categorias', 'subcategorias', 'assuntos'], true)) {
+                        $backHref = 'index.php?tab=editar_estrutura';
+                        $backLabel = 'Voltar à árvore';
+                    } elseif ($activeTab === 'editar_estrutura' && (int)($_GET['id'] ?? 0) > 0) {
+                        $backHref = 'index.php?tab=editar_estrutura';
+                        $backLabel = 'Voltar à árvore';
+                    } elseif ($activeTab === 'editar_grupo') {
+                        $backHref = 'index.php?tab=grupos';
+                        $backLabel = 'Voltar às equipes';
+                    } elseif ($activeTab === 'editar_usuario') {
+                        $backHref = 'index.php?tab=usuarios';
+                        $backLabel = 'Voltar aos usuários';
+                    }
+                    require __DIR__ . '/../partials/back_navigation.php';
+                ?>
+
                 <div class="md:hidden flex items-center justify-between mb-4 pb-3 border-b border-slate-200 dark:border-[#454956]">
                     <button type="button" onclick="toggleMobileSidebar()" class="flex items-center gap-2 px-3 py-1.5 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-xs">
                         <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -3259,6 +3696,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'moved_to_trash') echo "Documento movido para a lixeira.";
                             if ($_GET['msg'] === 'restored') echo "✓ Documento restaurado da lixeira com sucesso!";
                             if ($_GET['msg'] === 'perm_deleted') echo "Documento excluído permanentemente.";
+                            if ($_GET['msg'] === 'structure_permanently_deleted') {
+                                echo "Item da estrutura e seus vínculos excluídos permanentemente.";
+                                if (($_GET['cleanup'] ?? '') === 'partial') echo " Alguns arquivos físicos não puderam ser removidos; consulte os logs do servidor.";
+                            }
                             if ($_GET['msg'] === 'category_saved') echo "✓ Categoria criada com sucesso!";
                             if ($_GET['msg'] === 'category_deleted') echo "Categoria removida com sucesso!";
                             if ($_GET['msg'] === 'subcategory_saved') echo "✓ Subcategoria criada com sucesso!";
@@ -3266,6 +3707,11 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'subject_saved') echo "✓ Assunto criado com sucesso!";
                             if ($_GET['msg'] === 'subject_deleted') echo "Assunto removido com sucesso!";
                             if ($_GET['msg'] === 'workspace_saved') echo "Documentação do processo atualizada com sucesso.";
+                            if ($_GET['msg'] === 'workspace_submitted') echo "Documentação enviada para revisão. Os gestores responsáveis foram notificados.";
+                            if ($_GET['msg'] === 'workspace_returned') echo "Documentação devolvida para ajustes com a justificativa registrada.";
+                            if ($_GET['msg'] === 'workspace_approved') echo "Documentação homologada e liberada no portal.";
+                            if ($_GET['msg'] === 'workspace_deprecated') echo "Documentação marcada como obsoleta.";
+                            if ($_GET['msg'] === 'workspace_reopened') echo "Documentação reaberta para edição.";
                             if ($_GET['msg'] === 'user_imported') echo "✓ Usuário localizado no Active Directory e importado para " . htmlspecialchars($appName) . ".";
                             if ($_GET['msg'] === 'settings_saved') echo "✓ Configurações do sistema atualizadas.";
                             if ($_GET['msg'] === 'tag_catalog_saved') echo "✓ Catálogo de tags atualizado.";
@@ -3277,6 +3723,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'team_deleted') echo "✓ Equipe excluída e suas permissões foram auditadas.";
                             if ($_GET['msg'] === 'team_member_added') echo "✓ Usuário adicionado à equipe.";
                             if ($_GET['msg'] === 'team_member_removed') echo "✓ Usuário removido da equipe sem excluir seu cadastro.";
+                            if ($_GET['msg'] === 'team_system_access_saved') echo "✓ Acessos administrativos da equipe atualizados e auditados.";
                         ?>
                     </div>
                 <?php endif; ?>
@@ -3288,7 +3735,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 <?php endif; ?>
 
                 <?php if ($activeTab === 'visao_geral'): ?>
-                    <?php if ($isGlobalAdminCurrent && $globalDashboard): ?>
+                    <?php if ($canViewGlobalAudit && $globalDashboard): ?>
                         <?php
                             $dashboardUsers = $globalDashboard['users'];
                             $dashboardStructure = $globalDashboard['structure'];
@@ -3473,7 +3920,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 </section>
 
                                 <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
-                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Governança de acesso</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Equipes e permissões</h2></div><a href="index.php?tab=grupos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Gerir equipes &rarr;</a></div>
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Governança de acesso</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Equipes e permissões</h2></div><?php if ($isGlobalAdminCurrent): ?><a href="index.php?tab=grupos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Gerir equipes &rarr;</a><?php endif; ?></div>
                                     <div class="mt-4 grid grid-cols-2 gap-2"><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Equipes ativas</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['teams_active'] ?>/<?= (int)$dashboardAccess['teams_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Vínculos</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['memberships_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Regras configuradas</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)$dashboardAccess['permission_rules_total'] ?></span></div><div class="rounded-md border border-slate-100 p-3 dark:border-[#454956]"><span class="block text-[10px] text-slate-400">Auditorias <?= (int)$globalDashboard['period_days'] ?>d</span><span class="mt-1 block font-mono text-xl font-bold text-slate-800 dark:text-slate-100"><?= (int)($dashboardAccess['permission_audit_in_period'] ?? 0) ?></span></div></div>
                                     <div class="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-4 text-[10px] font-semibold dark:border-[#454956]"><span class="rounded bg-violet-500/10 px-2 py-1 text-violet-700 dark:text-violet-300"><?= (int)$dashboardAccess['admin_rules'] ?> ADMIN</span><span class="rounded bg-amber-500/10 px-2 py-1 text-amber-700 dark:text-amber-300"><?= (int)$dashboardAccess['edit_rules'] ?> EDIT</span><span class="rounded bg-blue-500/10 px-2 py-1 text-blue-700 dark:text-blue-300"><?= (int)$dashboardAccess['view_rules'] ?> VIEW</span><span class="rounded bg-slate-100 px-2 py-1 text-slate-600 dark:bg-[#2c2e33] dark:text-slate-300"><?= (int)($dashboardAccess['permission_audit_total'] ?? 0) ?> eventos registrados</span></div>
                                 </section>
@@ -3623,7 +4070,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     <div class="space-y-6">
                         <div>
                             <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Visão Geral da Gestão de Documentos</h1>
-                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1"><?= $isGlobalAdminCurrent ? 'Resumo global e operações recentes de todo o acervo municipal.' : 'Resumo exclusivo das categorias em que você possui acesso de edição ou administração.' ?></p>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1"><?= $canViewGlobalAudit ? 'Resumo global e operações recentes de todo o acervo municipal.' : 'Resumo exclusivo das categorias em que você possui acesso de edição ou administração.' ?></p>
                         </div>
 
                         <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
@@ -3708,7 +4155,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
                             <div class="flex items-center gap-3">
                                 <div class="relative flex-1">
-                                    <input type="text" name="search" value="<?= htmlspecialchars($searchQuery) ?>" class="input-minimal w-full pl-9 pr-3 py-2 text-xs" placeholder="Pesquisar por título, resumo ou palavras-chave...">
+                                    <input type="text" name="search" value="<?= htmlspecialchars($searchQuery) ?>" aria-label="Pesquisar documentos" class="input-minimal w-full pl-9 pr-3 py-2 text-xs" placeholder="Pesquisar por título, resumo ou palavras-chave...">
                                     <span class="absolute left-3 top-2.5 text-slate-400 text-xs">
                                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                                     </span>
@@ -3723,7 +4170,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                             <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-2 border-t border-slate-100 dark:border-[#454956]">
                                 <div>
-                                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Categoria</label>
+                                    <label for="filter-cat" class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Categoria</label>
                                     <select id="filter-cat" name="filter_cat" onchange="onFilterCategoryChange()" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todas</option>
                                         <?php foreach ($rawCategorias as $c): ?>
@@ -3733,14 +4180,14 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 </div>
 
                                 <div>
-                                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Subcategoria</label>
+                                    <label for="filter-subcat" class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Subcategoria</label>
                                     <select id="filter-subcat" name="filter_subcat" onchange="onFilterSubcategoryChange()" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todas</option>
                                     </select>
                                 </div>
 
                                 <div>
-                                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Assunto</label>
+                                    <label for="filter-assunto" class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Assunto</label>
                                     <select id="filter-assunto" name="filter_assunto" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todos</option>
                                     </select>
@@ -3748,18 +4195,21 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                                 <div>
                                     <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Tipo</label>
-                                    <select name="filter_tipo" class="input-minimal w-full px-2 py-1.5 text-xs">
+                                    <select name="filter_tipo" aria-label="Filtrar por tipo" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todos</option>
                                         <option value="file" <?= $filterTipo === 'file' ? 'selected' : '' ?>>Arquivo</option>
                                         <option value="text" <?= $filterTipo === 'text' ? 'selected' : '' ?>>Texto</option>
                                         <option value="code" <?= $filterTipo === 'code' ? 'selected' : '' ?>>Código</option>
+                                        <option value="video" <?= $filterTipo === 'video' ? 'selected' : '' ?>>Vídeo</option>
                                         <option value="link" <?= $filterTipo === 'link' ? 'selected' : '' ?>>Link</option>
+                                        <option value="flow" <?= $filterTipo === 'flow' ? 'selected' : '' ?>>Fluxo do Processo</option>
+                                        <option value="orgchart" <?= $filterTipo === 'orgchart' ? 'selected' : '' ?>>Organograma</option>
                                     </select>
                                 </div>
 
                                 <div>
                                     <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Status</label>
-                                    <select name="filter_status" class="input-minimal w-full px-2 py-1.5 text-xs">
+                                    <select name="filter_status" aria-label="Filtrar por status" class="input-minimal w-full px-2 py-1.5 text-xs">
                                         <option value="">Todos</option>
                                         <option value="published" <?= $filterStatus === 'published' ? 'selected' : '' ?>>Publicado</option>
                                         <option value="draft" <?= $filterStatus === 'draft' ? 'selected' : '' ?>>Rascunho</option>
@@ -3808,7 +4258,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <thead class="bg-slate-50 dark:bg-[#2c2e33] text-slate-400 uppercase font-semibold text-[10px] border-b border-slate-200 dark:border-[#454956]">
                                             <tr>
                                                 <th class="p-3 w-8">
-                                                    <input type="checkbox" onclick="toggleSelectAll(this)">
+                                                    <input type="checkbox" onclick="toggleSelectAll(this)" aria-label="Selecionar todos os documentos">
                                                 </th>
                                                 <th class="p-3">Título</th>
                                                 <th class="p-3">Localização</th>
@@ -3823,7 +4273,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <?php $st = strtolower($doc['status'] ?: 'published'); ?>
                                                 <tr class="hover:bg-slate-50/70 dark:hover:bg-[#3e424e]/50 transition">
                                                     <td class="p-3">
-                                                        <input type="checkbox" name="selected_docs[]" value="<?= $doc['id'] ?>" class="batch-checkbox">
+                                                        <input type="checkbox" name="selected_docs[]" value="<?= $doc['id'] ?>" class="batch-checkbox" aria-label="Selecionar <?= htmlspecialchars($doc['titulo'], ENT_QUOTES, 'UTF-8') ?>">
                                                     </td>
                                                     <td class="p-3">
                                                         <a href="index.php?tab=detalhes_documento&id=<?= $doc['id'] ?>" class="font-bold text-slate-900 dark:text-slate-100 hover:underline block"><?= htmlspecialchars($doc['titulo']) ?></a>
@@ -3834,7 +4284,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     </td>
                                                     <td class="p-3">
                                                         <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-[#454956]">
-                                                            <?= strtoupper($doc['tipo_conteudo']) ?>
+                                                            <?= htmlspecialchars((string)($doc['section_label'] ?? strtoupper($doc['tipo_conteudo']))) ?>
                                                         </span>
                                                     </td>
                                                     <td class="p-3 font-mono text-[10px] uppercase text-slate-400">
@@ -3921,10 +4371,15 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 </div>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Status</label>
-                                    <select name="status" class="input-minimal w-full px-3 py-1.5 text-xs">
-                                        <option value="ativo" <?= ($editCat['status'] ?? 'ativo') === 'ativo' ? 'selected' : '' ?>>Ativo</option>
-                                        <option value="inativo" <?= ($editCat['status'] ?? '') === 'inativo' ? 'selected' : '' ?>>Inativo</option>
-                                    </select>
+                                    <?php if ($isGlobalAdminCurrent): ?>
+                                        <select name="status" class="input-minimal w-full px-3 py-1.5 text-xs">
+                                            <option value="ativo" <?= ($editCat['status'] ?? 'ativo') === 'ativo' ? 'selected' : '' ?>>Ativo</option>
+                                            <option value="inativo" <?= ($editCat['status'] ?? '') === 'inativo' ? 'selected' : '' ?>>Inativo</option>
+                                        </select>
+                                    <?php else: ?>
+                                        <input type="hidden" name="status" value="<?= htmlspecialchars($editCat['status'] ?? 'ativo', ENT_QUOTES, 'UTF-8') ?>">
+                                        <p class="text-xs text-slate-500"><?= ucfirst(htmlspecialchars($editCat['status'] ?? 'ativo')) ?> · somente Super Admins podem alterar.</p>
+                                    <?php endif; ?>
                                 </div>
                                 <button type="submit" class="w-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold py-2 rounded-md text-xs">
                                     <?= $editCat ? 'Salvar Categoria' : 'Cadastrar Categoria' ?>
@@ -3955,7 +4410,14 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 </td>
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=categoria&id=<?= $cat['id'] ?>" class="text-amber-600 font-semibold mr-2">Editar Estrutura &rarr;</a>
-                                                    <a href="index.php?tab=categorias&action=delete_category&id=<?= $cat['id'] ?>" onclick="return confirm('Excluir categoria?')" class="text-red-600 font-semibold">Excluir</a>
+                                                    <?php if ($isGlobalAdminCurrent): ?>
+                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $cat['status'] === 'ativo' ? 'Descartar esta categoria e ocultar todo o ramo? Os vínculos serão preservados.' : 'Restaurar esta categoria?' ?>')">
+                                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                            <input type="hidden" name="structure_type" value="category">
+                                                            <input type="hidden" name="structure_id" value="<?= (int)$cat['id'] ?>">
+                                                            <button type="submit" name="structure_action" value="<?= $cat['status'] === 'ativo' ? 'discard' : 'restore' ?>" class="font-semibold <?= $cat['status'] === 'ativo' ? 'text-red-600' : 'text-emerald-600' ?>"><?= $cat['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?></button>
+                                                        </form>
+                                                    <?php endif; ?>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -4045,7 +4507,14 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-2"><?= $sub['total_assuntos'] ?> assuntos</td>
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $sub['id'] ?>" class="text-amber-600 font-semibold mr-2">Editar Estrutura &rarr;</a>
-                                                    <a href="index.php?tab=subcategorias&action=delete_subcategory&id=<?= $sub['id'] ?>" onclick="return confirm('Excluir subcategoria?')" class="text-red-600 font-semibold">Excluir</a>
+                                                    <?php if ($permService->canAdmin($currentAdminUserId, 'subcategory', (int)$sub['id'])): ?>
+                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $sub['status'] === 'ativo' ? 'Descartar esta subcategoria e ocultar seus assuntos?' : 'Restaurar esta subcategoria?' ?>')">
+                                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                            <input type="hidden" name="structure_type" value="subcategory">
+                                                            <input type="hidden" name="structure_id" value="<?= (int)$sub['id'] ?>">
+                                                            <button type="submit" name="structure_action" value="<?= $sub['status'] === 'ativo' ? 'discard' : 'restore' ?>" class="font-semibold <?= $sub['status'] === 'ativo' ? 'text-red-600' : 'text-emerald-600' ?>"><?= $sub['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?></button>
+                                                        </form>
+                                                    <?php endif; ?>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -4118,7 +4587,14 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-2"><?= $ass['total_docs'] ?> docs</td>
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=assunto&id=<?= $ass['id'] ?>" class="text-amber-600 font-semibold mr-2">Disposição Visual &rarr;</a>
-                                                    <a href="index.php?tab=assuntos&action=delete_subject&id=<?= $ass['id'] ?>" onclick="return confirm('Excluir assunto?')" class="text-red-600 font-semibold">Excluir</a>
+                                                    <?php if ($permService->canAdmin($currentAdminUserId, 'subject', (int)$ass['id'])): ?>
+                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $ass['status'] === 'ativo' ? 'Descartar este assunto e ocultar seus documentos?' : 'Restaurar este assunto?' ?>')">
+                                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                            <input type="hidden" name="structure_type" value="subject">
+                                                            <input type="hidden" name="structure_id" value="<?= (int)$ass['id'] ?>">
+                                                            <button type="submit" name="structure_action" value="<?= $ass['status'] === 'ativo' ? 'discard' : 'restore' ?>" class="font-semibold <?= $ass['status'] === 'ativo' ? 'text-red-600' : 'text-emerald-600' ?>"><?= $ass['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?></button>
+                                                        </form>
+                                                    <?php endif; ?>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>
@@ -4269,11 +4745,11 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <div class="space-y-4">
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Informações Principais</h3>
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Título *</label>
+                                        <label for="document-title" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Título *</label>
                                         <input type="text" id="document-title" name="titulo" required value="<?= htmlspecialchars($editDoc['titulo'] ?? '') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex: Requerimento Padrão de Férias 2026">
                                     </div>
                                     <div>
-                                        <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
+                                        <label for="document-description" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descrição</label>
                                         <textarea id="document-description" name="descricao" rows="2" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Resumo do documento..."><?= htmlspecialchars($editDoc['descricao'] ?? '') ?></textarea>
                                     </div>
                                     <div class="rounded-md border border-slate-200 bg-slate-50/70 p-3 dark:border-[#454956] dark:bg-[#2c2e33]">
@@ -4303,7 +4779,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Organização</h3>
                                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-md bg-slate-50 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956]">
                                         <div>
-                                            <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Categoria *</label>
+                                            <label for="select-cat" class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Categoria *</label>
                                             <select id="select-cat" name="categoria" required onchange="onCategoryChange()" class="input-minimal w-full px-2.5 py-1.5 text-xs">
                                                 <option value="">-- Selecione ▾ --</option>
                                                 <?php foreach ($catsParaDocumento as $catDoc): ?>
@@ -4315,13 +4791,13 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                             </select>
                                         </div>
                                         <div>
-                                            <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Subcategoria *</label>
+                                            <label for="select-subcat" class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Subcategoria *</label>
                                             <select id="select-subcat" name="subcategoria" required onchange="onSubcategoryChange()" class="input-minimal w-full px-2.5 py-1.5 text-xs">
                                                 <option value="">-- Selecione ▾ --</option>
                                             </select>
                                         </div>
                                         <div>
-                                            <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Assunto *</label>
+                                            <label for="select-assunto" class="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">Assunto *</label>
                                             <select id="select-assunto" name="assunto" required class="input-minimal w-full px-2.5 py-1.5 text-xs">
                                                 <option value="">-- Selecione ▾ --</option>
                                             </select>
@@ -4331,45 +4807,78 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                                 <!-- Conteúdo -->
                                 <div class="space-y-3">
-                                    <?php $selectedVideoSource = (($editDoc['tipo_conteudo'] ?? '') === 'video' && !empty($editDoc['link_externo'])) ? 'url' : 'upload'; ?>
+                                    <?php
+                                    $selectedDocumentSectionKey = (string)($editDoc['section_key'] ?? ($_GET['section'] ?? 'documents'));
+                                    $selectedSectionDefinition = null;
+                                    foreach ($availableDocumentSections as $sectionDefinition) {
+                                        if (($sectionDefinition['section_key'] ?? '') === $selectedDocumentSectionKey) {
+                                            $selectedSectionDefinition = $sectionDefinition;
+                                            break;
+                                        }
+                                    }
+                                    if ($selectedSectionDefinition === null) {
+                                        $selectedSectionDefinition = $availableDocumentSections[0] ?? ['section_key' => 'documents', 'editor_kind' => 'richtext'];
+                                        $selectedDocumentSectionKey = (string)$selectedSectionDefinition['section_key'];
+                                    }
+                                    $selectedEditorKind = (string)($selectedSectionDefinition['editor_kind'] ?? 'richtext');
+                                    $selectedContentType = $documentSectionService->resolveSelection($selectedDocumentSectionKey)['content_type'];
+                                    $selectedVideoSource = ($selectedContentType === 'video' && !empty($editDoc['link_externo'])) ? 'url' : 'upload';
+                                    $initialStructuredContent = [];
+                                    if (!empty($editDoc['structured_content'])) {
+                                        $decodedStructuredContent = json_decode((string)$editDoc['structured_content'], true);
+                                        $initialStructuredContent = is_array($decodedStructuredContent) ? $decodedStructuredContent : [];
+                                    }
+                                    ?>
                                     <h3 class="text-[10px] font-bold uppercase tracking-wider text-slate-400 pb-1 border-b border-slate-100 dark:border-[#454956]">Conteúdo</h3>
-                                    <div class="inline-flex flex-wrap items-center bg-slate-100 dark:bg-[#2c2e33] rounded-md p-1 border border-slate-200 dark:border-[#454956] gap-1">
+                                    <div class="rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <label for="document-section" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Seção e formato *</label>
+                                        <p class="mt-0.5 text-[10px] text-slate-400">A seção aparecerá no assunto automaticamente depois que este conteúdo for publicado.</p>
+                                        <select id="document-section" name="section_key" required class="input-minimal mt-2 w-full px-3 py-2 text-xs" onchange="selectDocumentSection()">
+                                            <?php foreach ($availableDocumentSections as $sectionDefinition): ?>
+                                                <option value="<?= htmlspecialchars((string)$sectionDefinition['section_key']) ?>" data-editor-kind="<?= htmlspecialchars((string)$sectionDefinition['editor_kind']) ?>" <?= $selectedDocumentSectionKey === (string)$sectionDefinition['section_key'] ? 'selected' : '' ?>><?= htmlspecialchars((string)$sectionDefinition['label']) ?> — <?= htmlspecialchars((string)$sectionDefinition['description']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <input type="hidden" id="structured-content-input" name="structured_content" value="<?= htmlspecialchars(json_encode($initialStructuredContent, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8') ?>">
+                                    <div class="hidden" aria-hidden="true">
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="file" <?= ($editDoc['tipo_conteudo'] ?? 'file') === 'file' ? 'checked' : '' ?> onchange="toggleFormContent('file')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="file" <?= $selectedContentType === 'file' ? 'checked' : '' ?> onchange="toggleFormContent('file')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                             Arquivo
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="text" <?= ($editDoc['tipo_conteudo'] ?? '') === 'text' ? 'checked' : '' ?> onchange="toggleFormContent('text')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="text" <?= $selectedContentType === 'text' ? 'checked' : '' ?> onchange="toggleFormContent('text')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                                             Texto
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="code" <?= ($editDoc['tipo_conteudo'] ?? '') === 'code' ? 'checked' : '' ?> onchange="toggleFormContent('code')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="code" <?= $selectedContentType === 'code' ? 'checked' : '' ?> onchange="toggleFormContent('code')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l-3 3 3 3m8-6l3 3-3 3m-3-8l-2 10"/></svg>
                                             Código
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="video" <?= ($editDoc['tipo_conteudo'] ?? '') === 'video' ? 'checked' : '' ?> onchange="toggleFormContent('video')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="video" <?= $selectedContentType === 'video' ? 'checked' : '' ?> onchange="toggleFormContent('video')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
                                             Vídeo
                                         </label>
                                         <label class="doc-type-btn flex items-center gap-1.5 px-3 py-1.5 rounded cursor-pointer text-xs font-semibold transition-all">
-                                            <input type="radio" name="tipo_conteudo" value="link" <?= ($editDoc['tipo_conteudo'] ?? '') === 'link' ? 'checked' : '' ?> onchange="toggleFormContent('link')" class="sr-only">
+                                            <input type="radio" name="tipo_conteudo" value="link" <?= $selectedContentType === 'link' ? 'checked' : '' ?> onchange="toggleFormContent('link')" class="sr-only">
                                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
                                             Link
                                         </label>
+                                        <input type="radio" name="tipo_conteudo" value="flow" <?= $selectedContentType === 'flow' ? 'checked' : '' ?> class="sr-only">
+                                        <input type="radio" name="tipo_conteudo" value="orgchart" <?= $selectedContentType === 'orgchart' ? 'checked' : '' ?> class="sr-only">
                                     </div>
 
                                     <?php if (!$isEditMode): ?>
-                                        <div id="box-file" class="space-y-3">
+                                        <div id="box-file" class="<?= $selectedContentType === 'file' ? '' : 'hidden ' ?>space-y-3">
                                             <div id="batch-dropzone" tabindex="0" role="button" aria-controls="file-input" class="cursor-pointer rounded-md border-2 border-dashed border-slate-300 bg-slate-50/70 p-6 text-center outline-none transition hover:border-slate-500 hover:bg-slate-100/70 focus:border-slate-500 focus:ring-2 focus:ring-slate-400/40 dark:border-slate-600 dark:bg-[#2c2e33] dark:hover:border-slate-400 dark:hover:bg-[#353842]">
                                                 <div class="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white dark:bg-white dark:text-slate-900">
                                                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 16V4m0 0L8 8m4-4 4 4M4 16.5V19a2 2 0 002 2h12a2 2 0 002-2v-2.5"/></svg>
                                                 </div>
                                                 <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste arquivos aqui ou clique para selecionar</p>
                                                 <p class="mt-1 text-[11px] text-slate-400">Até 20 arquivos por vez · arquivos gerais até 25 MB · vídeos até 250 MB</p>
-                                                <input type="file" id="file-input" name="arquivo_file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden">
+                                                <input type="file" id="file-input" name="arquivo_file" multiple aria-label="Selecionar arquivos para envio" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden">
                                                 <button type="button" id="batch-select-files" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar arquivos</button>
                                             </div>
                                             <div id="batch-upload-error" class="hidden rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-700 dark:text-red-300" role="alert"></div>
@@ -4380,20 +4889,65 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                             <div id="batch-upload-progress-wrap" class="hidden" aria-live="polite"><div class="mb-1 flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-300"><span id="batch-upload-status">Preparando envio…</span><span id="batch-upload-percent">0%</span></div><div class="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-[#454956]"><div id="batch-upload-progress" class="h-full w-0 rounded-full bg-emerald-500 transition-[width] duration-150"></div></div></div>
                                         </div>
                                     <?php else: ?>
-                                        <div id="box-file" class="p-6 rounded-md border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-[#2c2e33] text-center">
+                                        <div id="box-file" class="<?= $selectedContentType === 'file' ? '' : 'hidden ' ?>p-6 rounded-md border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-[#2c2e33] text-center">
                                             <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste o arquivo aqui ou clique para selecionar</p>
                                             <p class="text-[11px] text-slate-400 mt-1 mb-3">PDF, imagens, textos, DOC/DOCX, áudio e vídeo (Máx: 25MB)</p>
-                                            <input type="file" id="file-input" name="arquivo_file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateFilePreview(this)">
+                                            <input type="file" id="file-input" name="arquivo_file" aria-label="Selecionar arquivo" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateFilePreview(this)">
                                             <button type="button" onclick="document.getElementById('file-input').click()" class="px-4 py-1.5 rounded bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold">Selecionar arquivo</button>
                                             <div id="file-preview-name" class="mt-2 text-xs text-slate-500"></div>
                                         </div>
                                     <?php endif; ?>
 
-                                    <div id="box-text" class="hidden p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
-                                        <textarea id="text-content-input" name="conteudo_html" rows="7" class="input-minimal w-full px-3 py-2 text-xs font-mono" placeholder="Conteúdo do artigo..."><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'text' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
+                                    <div id="box-text" class="<?= $selectedContentType === 'text' ? '' : 'hidden ' ?>rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <div class="mb-3"><h4 class="text-xs font-bold text-slate-800 dark:text-slate-100">Editor de artigo</h4><p class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Clique na imagem para selecioná-la. Arraste a alça superior para posicioná-la no texto e nas zonas laterais para definir onde o texto passa. Arraste os pontos nos cantos para redimensionar.</p></div>
+                                        <textarea id="text-content-input" name="conteudo_html" rows="14" aria-label="Conteúdo formatado do documento" class="input-minimal min-h-80 w-full px-3 py-2 text-sm" placeholder="Comece a escrever o conteúdo..."><?= htmlspecialchars($selectedContentType === 'text' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
+                                        <div id="quill-editor-container" class="govdoc-quill-editor hidden" aria-label="Conteúdo formatado do documento"></div>
+                                        <div id="article-selected-media" class="govdoc-media-inspector hidden mt-3" aria-label="Ajustar mídia selecionada">
+                                            <div class="govdoc-media-inspector__head">
+                                                <div><strong data-media-kind>Imagem selecionada</strong><span class="mt-1 block">Arraste no editor para escolher centro ou texto ao lado; use os controles abaixo para ajuste fino.</span></div>
+                                                <button type="button" data-media-remove class="govdoc-media-inspector__delete" aria-label="Excluir imagem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg><span data-media-remove-label>Excluir imagem</span></button>
+                                            </div>
+                                            <div class="govdoc-media-inspector__layouts" role="group" aria-label="Posição e contorno do texto">
+                                                <button type="button" data-media-layout="center" aria-pressed="true">Centro</button>
+                                                <button type="button" data-media-layout="wrap-left" aria-pressed="false">Texto à direita</button>
+                                                <button type="button" data-media-layout="wrap-right" aria-pressed="false">Texto à esquerda</button>
+                                            </div>
+                                            <div class="govdoc-media-inspector__fields">
+                                                <label class="govdoc-media-inspector__width">Largura <output data-media-width-output>80%</output><input data-media-width type="range" min="25" max="100" step="1" value="80" aria-label="Largura da mídia"></label>
+                                                <label data-media-alt-wrap>Descrição da imagem<input data-media-alt type="text" maxlength="200" placeholder="Descreva a imagem"></label>
+                                                <label>Legenda<input data-media-caption type="text" maxlength="300" placeholder="Legenda opcional"></label>
+                                            </div>
+                                            <div class="govdoc-media-inspector__actions"><button type="button" data-media-move="up">↑ Mover acima</button><button type="button" data-media-move="down">↓ Mover abaixo</button><span class="govdoc-media-inspector__hint">Dica: Delete ou Backspace exclui o bloco selecionado.</span></div>
+                                        </div>
+                                        <div id="article-media-tools" class="mt-3 hidden flex-wrap items-end gap-2 rounded-md border border-slate-200 bg-white p-3 dark:border-[#565b68] dark:bg-[#353842]">
+                                            <div class="min-w-36 flex-1"><label for="article-image-alt" class="mb-1 block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Descrição da imagem</label><input id="article-image-alt" type="text" maxlength="200" class="input-minimal w-full px-2 py-1.5 text-xs" placeholder="Ex.: Fachada da unidade"></div>
+                                            <div class="min-w-36 flex-1"><label for="article-image-caption" class="mb-1 block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Legenda (opcional)</label><input id="article-image-caption" type="text" maxlength="300" class="input-minimal w-full px-2 py-1.5 text-xs" placeholder="Fonte ou explicação breve"></div>
+                                            <input id="article-image-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp" class="sr-only" aria-label="Selecionar imagem para o artigo">
+                                            <button id="article-insert-image" type="button" class="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#565b68] dark:bg-[#2c2e33] dark:text-slate-100">Inserir imagem</button>
+                                            <div class="basis-full border-t border-slate-100 pt-2 dark:border-[#565b68]"><label for="article-video-url" class="mb-1 block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Vídeo no artigo</label><div class="flex flex-wrap gap-2"><input id="article-video-url" type="url" class="input-minimal min-w-48 flex-1 px-2 py-1.5 text-xs" placeholder="URL do YouTube ou Vimeo"><button id="article-insert-video" type="button" class="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#565b68] dark:bg-[#2c2e33] dark:text-slate-100">Inserir vídeo</button></div></div>
+                                            <p id="article-media-status" class="basis-full text-[11px] text-slate-500 dark:text-slate-400" role="status" aria-live="polite">JPEG, PNG, GIF ou WebP. Limite do servidor: <?= htmlspecialchars((string)ini_get('upload_max_filesize')) ?> por imagem.</p>
+                                        </div>
+                                        <div id="quill-table-tools" class="mt-2 hidden flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                                            <span class="font-semibold">Tabela:</span>
+                                            <label class="inline-flex items-center gap-1">Linhas <select id="quill-table-rows" class="input-minimal px-2 py-1 text-[11px]"><?php for ($tableSize = 2; $tableSize <= 10; $tableSize++): ?><option value="<?= $tableSize ?>" <?= $tableSize === 3 ? 'selected' : '' ?>><?= $tableSize ?></option><?php endfor; ?></select></label>
+                                            <label class="inline-flex items-center gap-1">Colunas <select id="quill-table-columns" class="input-minimal px-2 py-1 text-[11px]"><?php for ($tableSize = 2; $tableSize <= 10; $tableSize++): ?><option value="<?= $tableSize ?>" <?= $tableSize === 3 ? 'selected' : '' ?>><?= $tableSize ?></option><?php endfor; ?></select></label>
+                                            <button type="button" id="quill-insert-table" class="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-semibold text-slate-700 transition hover:bg-slate-50 dark:border-[#565b68] dark:bg-[#353842] dark:text-slate-200 dark:hover:bg-[#3e424e]">Inserir tabela</button>
+                                        </div>
                                     </div>
 
-                                    <div id="box-code" class="hidden space-y-3 p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
+                                    <div id="box-flow" class="<?= $selectedContentType === 'flow' ? '' : 'hidden ' ?>space-y-4 rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <div class="flex flex-wrap items-start justify-between gap-3"><div><h4 class="text-xs font-bold text-slate-800 dark:text-slate-100">Editor de Fluxo do Processo</h4><p class="mt-0.5 text-[11px] text-slate-400">Organize as etapas na ordem de execução. Use “Decisão” para destacar pontos de escolha.</p></div><button type="button" onclick="addFlowNode()" class="rounded-md bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white dark:bg-white dark:text-slate-900">Adicionar etapa</button></div>
+                                        <div id="flow-editor-list" class="space-y-2"></div>
+                                        <div><p class="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Pré-visualização</p><div id="flow-editor-preview" class="mx-auto max-w-2xl space-y-0"></div></div>
+                                    </div>
+
+                                    <div id="box-orgchart" class="<?= $selectedContentType === 'orgchart' ? '' : 'hidden ' ?>space-y-4 rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                        <div class="flex flex-wrap items-start justify-between gap-3"><div><h4 class="text-xs font-bold text-slate-800 dark:text-slate-100">Editor de Organograma</h4><p class="mt-0.5 text-[11px] text-slate-400">Cadastre unidades ou pessoas e selecione o nível superior de cada nó.</p></div><button type="button" onclick="addOrgNode()" class="rounded-md bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white dark:bg-white dark:text-slate-900">Adicionar nó</button></div>
+                                        <div id="orgchart-editor-list" class="space-y-2"></div>
+                                        <div><p class="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Pré-visualização hierárquica</p><div id="orgchart-editor-preview" class="overflow-x-auto rounded-md border border-slate-200 bg-white p-4 dark:border-[#454956] dark:bg-[#353842]"></div></div>
+                                    </div>
+
+                                    <div id="box-code" class="<?= $selectedContentType === 'code' ? '' : 'hidden ' ?>space-y-3 p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
                                         <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_13rem] gap-3 items-end">
                                             <div>
                                                 <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Trecho de código *</label>
@@ -4418,7 +4972,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 </select>
                                             </div>
                                         </div>
-                                        <textarea id="code-source-input" name="codigo_fonte" rows="11" spellcheck="false" class="input-minimal w-full px-3 py-2 text-xs font-mono leading-relaxed" placeholder="Cole seu código aqui..." oninput="updateCodePreview()"><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'code' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
+                                        <textarea id="code-source-input" name="codigo_fonte" rows="11" spellcheck="false" aria-label="Código-fonte" class="input-minimal w-full px-3 py-2 text-xs font-mono leading-relaxed" placeholder="Cole seu código aqui..." oninput="updateCodePreview()"><?= htmlspecialchars(($editDoc['tipo_conteudo'] ?? '') === 'code' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
 
                                         <div>
                                             <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Pré-visualização</p>
@@ -4435,7 +4989,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         </div>
                                     </div>
 
-                                    <div id="box-video" class="hidden space-y-4 rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
+                                    <div id="box-video" class="<?= $selectedContentType === 'video' ? '' : 'hidden ' ?>space-y-4 rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
                                         <div>
                                             <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Origem do vídeo *</p>
                                             <p class="mt-1 text-[11px] text-slate-400">Envie um arquivo local ou use um link do YouTube, Vimeo ou de um arquivo de vídeo externo.</p>
@@ -4451,7 +5005,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <div id="video-upload-fields" class="rounded-md border-2 border-dashed border-slate-300 bg-white p-5 text-center dark:border-slate-600 dark:bg-[#353842]">
                                             <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Selecione um vídeo do computador</p>
                                             <p class="mt-1 text-[11px] text-slate-400">MP4, WEBM, OGV, M4V ou MOV (máximo de 250MB)</p>
-                                            <input type="file" id="video-file-input" name="video_file" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateVideoFilePreview(this)">
+                                            <input type="file" id="video-file-input" name="video_file" aria-label="Selecionar vídeo" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateVideoFilePreview(this)">
                                             <button type="button" onclick="document.getElementById('video-file-input').click()" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar vídeo</button>
                                             <div id="video-file-preview-name" class="mt-2 text-xs text-slate-500"></div>
                                         </div>
@@ -4463,7 +5017,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <div id="video-url-preview" class="hidden overflow-hidden rounded-md border border-slate-200 bg-black dark:border-[#454956]"></div>
                                     </div>
 
-                                    <div id="box-link" class="hidden p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
+                                    <div id="box-link" class="<?= $selectedContentType === 'link' ? '' : 'hidden ' ?>p-4 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50/70 dark:bg-[#2c2e33]">
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">URL Externa *</label>
                                         <input type="url" name="link_externo" value="<?= htmlspecialchars($editDoc['link_externo'] ?? '') ?>" class="input-minimal w-full px-3 py-2 text-xs font-mono" placeholder="https://...">
                                     </div>
@@ -4692,7 +5246,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <div>
                                     <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($docDetails['titulo']) ?></h1>
                                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-1"><?= htmlspecialchars($docDetails['descricao']) ?></p>
-                                    <span class="mt-2 inline-flex rounded-full border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300"><?= htmlspecialchars(DocumentWorkflowService::label($docDetails['status'])) ?></span>
+                                    <div class="mt-2 flex flex-wrap gap-1.5"><span class="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:border-[#454956] dark:bg-[#2c2e33] dark:text-slate-300"><?= htmlspecialchars((string)($docDetails['section_label'] ?? 'Documento')) ?></span><span class="inline-flex rounded-full border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300"><?= htmlspecialchars(DocumentWorkflowService::label($docDetails['status'])) ?></span></div>
                                 </div>
                                 <div class="flex items-center gap-2">
                                     <a href="../ver_conteudo.php?id=<?= $docDetails['id'] ?>" target="_blank" class="px-3 py-1.5 rounded border text-xs font-semibold flex items-center gap-1.5">
@@ -4779,11 +5333,11 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     <?php require __DIR__ . '/partials/system-settings.php'; ?>
                 <?php endif; ?>
 
-                <?php if ($activeTab === 'servidores_ad' && $isGlobalAdminCurrent): ?>
+                <?php if ($activeTab === 'servidores_ad' && $canManageAuthentication): ?>
                     <?php require __DIR__ . '/partials/ad-servers-management.php'; ?>
                 <?php endif; ?>
 
-                <?php if ($activeTab === 'tags' && $isGlobalAdminCurrent): ?>
+                <?php if ($activeTab === 'tags' && $canManageTags): ?>
                     <section class="space-y-5">
                         <div class="flex flex-wrap items-end justify-between gap-3">
                             <div>
@@ -4859,7 +5413,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         }
                         if ($resType === 'subject') {
                             $resTab = ['info' => 'overview', 'content' => 'evidence'][$resTab] ?? $resTab;
-                            if (!in_array($resTab, ['overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'permissions', 'integrations', 'history'], true)) {
+                            if (!in_array($resTab, ['overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'permissions', 'integrations', 'history', 'section'], true)) {
                                 $resTab = 'overview';
                             }
                         } elseif (!in_array($resTab, ['info', 'content', 'permissions'], true)) {
@@ -4881,7 +5435,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         $subjectWorkspace = [];
                         $subjectWorkspaceHistory = [];
                         $subjectWorkspaceCompleteness = [];
+                        $subjectWorkspaceEnabledSections = [];
                         $subjectWorkspaceDocuments = [];
+                        $subjectDocumentSectionsAdmin = [];
+                        $selectedAdminDocumentSection = null;
                         $subjectVideoEmbed = ['kind' => 'invalid'];
 
                         if ($canAccessResource && $resType === 'category') {
@@ -4930,9 +5487,23 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     'name' => $resData['subcategory_name']
                                 ];
                                 $subjectWorkspace = $subjectWorkspaceService->get($resId);
+                                $subjectWorkspaceEnabledSections = $subjectWorkspaceService->enabledSections($subjectWorkspace);
                                 $subjectWorkspaceHistory = $subjectWorkspaceService->history($resId);
                                 $subjectWorkspaceCompleteness = $subjectWorkspaceService->completeness($subjectWorkspace);
-                                $stmtWorkspaceDocs = $pdo->prepare("SELECT id, title, status, content_type, external_url, stored_filename FROM documents WHERE subject_id = :subject_id AND status <> 'inactive' ORDER BY title");
+                                $subjectDocumentSectionsAdmin = $documentSectionService->existingSectionsForSubject($resId);
+                                if ($resTab === 'section') {
+                                    $requestedSectionKey = strtolower(trim((string)($_GET['section'] ?? '')));
+                                    foreach ($subjectDocumentSectionsAdmin as $sectionDefinition) {
+                                        if ($sectionDefinition['section_key'] === $requestedSectionKey) {
+                                            $selectedAdminDocumentSection = $sectionDefinition;
+                                            break;
+                                        }
+                                    }
+                                    if ($selectedAdminDocumentSection === null) {
+                                        $resTab = 'overview';
+                                    }
+                                }
+                                $stmtWorkspaceDocs = $pdo->prepare("SELECT id, title, description, status, content_type, section_key, external_url, stored_filename FROM documents WHERE subject_id = :subject_id AND status <> 'inactive' ORDER BY title, id");
                                 $stmtWorkspaceDocs->execute([':subject_id' => $resId]);
                                 $subjectWorkspaceDocuments = $stmtWorkspaceDocs->fetchAll(PDO::FETCH_ASSOC) ?: [];
                                 $workspaceVideoDocumentId = (int)($subjectWorkspace['video_document_id'] ?? 0);
@@ -4955,17 +5526,17 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                         if ($resId <= 0) {
                             $editableResourceCount = 0;
-                            foreach ($listCategorias as $treeCategory) {
+                            foreach ($treeVisibleCategories as $treeCategory) {
                                 if ($permService->canEdit($currentAdminUserId, 'category', (int)$treeCategory['id'])) {
                                     $editableResourceCount++;
                                 }
                             }
-                            foreach ($listSubcategorias as $treeSubcategory) {
+                            foreach ($treeVisibleSubcategories as $treeSubcategory) {
                                 if ($permService->canEdit($currentAdminUserId, 'subcategory', (int)$treeSubcategory['id'])) {
                                     $editableResourceCount++;
                                 }
                             }
-                            foreach ($listAssuntos as $treeSubject) {
+                            foreach ($treeVisibleSubjects as $treeSubject) {
                                 if ($permService->canEdit($currentAdminUserId, 'subject', (int)$treeSubject['id'])) {
                                     $editableResourceCount++;
                                 }
@@ -4977,13 +5548,68 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Organização do portal</p>
                                 <h1 class="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Editor da Árvore</h1>
                                 <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                                    Selecione uma categoria, subcategoria ou assunto dentro do seu escopo para editar.
+                                    Selecione um item para editar ou descartá-lo. Descartar preserva os vínculos e pode ser desfeito.
                                 </p>
                             </div>
                             <span class="inline-flex w-fit items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
                                 <?= $editableResourceCount ?> recurso<?= $editableResourceCount === 1 ? ' editável' : 's editáveis' ?>
                             </span>
                         </div>
+
+                        <div class="flex gap-2 border-b border-slate-200 dark:border-[#454956]">
+                            <a href="index.php?tab=editar_estrutura" class="px-3 py-2 text-xs font-semibold <?= !$showDiscardedTree ? 'border-b-2 border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white' ?>">Árvore ativa</a>
+                            <a href="index.php?tab=editar_estrutura&amp;view=discarded" class="px-3 py-2 text-xs font-semibold <?= $showDiscardedTree ? 'border-b-2 border-slate-900 text-slate-900 dark:border-white dark:text-white' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white' ?>">Descartados (<?= count($treeDiscardedCategories) + count($treeDiscardedSubcategories) + count($treeDiscardedSubjects) ?>)</a>
+                        </div>
+
+                        <?php if ($showDiscardedTree): ?>
+                            <div class="rounded-md border border-slate-200 bg-white p-4 dark:border-[#454956] dark:bg-[#353842]">
+                                <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">Restaure primeiro a categoria e depois a subcategoria para reativar um ramo completo. A exclusão permanente apaga também todos os itens abaixo do selecionado.</p>
+                                <?php foreach ([['category', 'Categoria', $treeDiscardedCategories], ['subcategory', 'Subcategoria', $treeDiscardedSubcategories], ['subject', 'Assunto', $treeDiscardedSubjects]] as [$discardedType, $discardedLabel, $discardedItems]): ?>
+                                    <?php foreach ($discardedItems as $discardedItem): ?>
+                                        <?php
+                                            $canRestoreDiscarded = $discardedType === 'category'
+                                                ? $isGlobalAdminCurrent
+                                                : $permService->canAdmin($currentAdminUserId, $discardedType, (int)$discardedItem['id']);
+                                            $deletePreview = $isGlobalAdminCurrent
+                                                ? $structureDeletionService->preview($discardedType, (int)$discardedItem['id'], $currentAdminUserId)
+                                                : null;
+                                            $deleteSummary = $deletePreview !== null
+                                                ? (int)$deletePreview['subcategories'] . ' subcategoria(s), ' . (int)$deletePreview['subjects'] . ' assunto(s) e ' . (int)$deletePreview['documents'] . ' documento(s)'
+                                                : '';
+                                        ?>
+                                        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 py-3 last:border-b-0 dark:border-[#454956]">
+                                            <div>
+                                                <p class="text-xs font-semibold text-slate-800 dark:text-slate-100"><?= htmlspecialchars($discardedItem['nome']) ?></p>
+                                                <p class="text-[11px] text-slate-500"><?= $discardedLabel ?><?php if ($discardedType !== 'category'): ?> · <?= htmlspecialchars($discardedItem['categoria_nome']) ?><?php endif; ?></p>
+                                                <?php if ($deletePreview !== null): ?><p class="mt-0.5 text-[10px] text-slate-400">Exclusão definitiva: <?= htmlspecialchars($deleteSummary) ?></p><?php endif; ?>
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <?php if ($canRestoreDiscarded): ?>
+                                                    <form method="post">
+                                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                        <input type="hidden" name="structure_type" value="<?= $discardedType ?>">
+                                                        <input type="hidden" name="structure_id" value="<?= (int)$discardedItem['id'] ?>">
+                                                        <button type="submit" name="structure_action" value="restore" class="rounded-md border border-emerald-500/30 px-3 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-400">Restaurar</button>
+                                                    </form>
+                                                <?php endif; ?>
+                                                <?php if ($deletePreview !== null): ?>
+                                                    <form method="post" data-delete-name="<?= htmlspecialchars((string)$discardedItem['nome'], ENT_QUOTES, 'UTF-8') ?>" data-delete-summary="<?= htmlspecialchars($deleteSummary, ENT_QUOTES, 'UTF-8') ?>" onsubmit="return confirmPermanentStructureDeletion(this)">
+                                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                                        <input type="hidden" name="structure_type" value="<?= $discardedType ?>">
+                                                        <input type="hidden" name="structure_id" value="<?= (int)$discardedItem['id'] ?>">
+                                                        <input type="hidden" name="confirmation_name" value="">
+                                                        <button type="submit" name="structure_delete_action" value="permanent_delete" class="rounded-md border border-red-500/30 px-3 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-500/10 dark:text-red-400">Excluir permanentemente</button>
+                                                    </form>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endforeach; ?>
+                                <?php if ($treeDiscardedCategories === [] && $treeDiscardedSubcategories === [] && $treeDiscardedSubjects === []): ?>
+                                    <p class="py-5 text-center text-xs text-slate-500">Nenhum item descartado no seu escopo.</p>
+                                <?php endif; ?>
+                            </div>
+                        <?php else: ?>
 
                         <div class="rounded-md border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
                             <div class="flex flex-col gap-3 border-b border-slate-100 p-4 dark:border-[#454956] sm:flex-row sm:items-center sm:justify-between">
@@ -4998,19 +5624,19 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             </div>
 
                             <div class="space-y-2 p-4" id="administrative-tree">
-                                <?php if (empty($listCategorias)): ?>
+                                <?php if (empty($treeVisibleCategories)): ?>
                                     <div class="rounded-md border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500 dark:border-[#454956]">
                                         Nenhum recurso editável foi encontrado no seu escopo.
                                     </div>
                                 <?php endif; ?>
 
-                                <?php foreach ($listCategorias as $treeCategory): ?>
+                                <?php foreach ($treeVisibleCategories as $treeCategory): ?>
                                     <?php
                                         $treeCategoryId = (int)$treeCategory['id'];
                                         $treeCategoryEditable = $permService->canEdit($currentAdminUserId, 'category', $treeCategoryId);
                                         $treeCategoryAdmin = $treeCategoryEditable && $permService->canAdmin($currentAdminUserId, 'category', $treeCategoryId);
                                         $treeSubcategories = array_values(array_filter(
-                                            $listSubcategorias,
+                                            $treeVisibleSubcategories,
                                             static fn($item) => (int)$item['category_id'] === $treeCategoryId
                                         ));
                                     ?>
@@ -5051,7 +5677,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                         $treeSubcategoryEditable = $permService->canEdit($currentAdminUserId, 'subcategory', $treeSubcategoryId);
                                                         $treeSubcategoryAdmin = $treeSubcategoryEditable && $permService->canAdmin($currentAdminUserId, 'subcategory', $treeSubcategoryId);
                                                         $treeSubjects = array_values(array_filter(
-                                                            $listAssuntos,
+                                                            $treeVisibleSubjects,
                                                             static fn($item) => (int)$item['subcategory_id'] === $treeSubcategoryId
                                                         ));
                                                     ?>
@@ -5114,6 +5740,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <?php endforeach; ?>
                             </div>
                         </div>
+                        <?php endif; ?>
                     </div>
                     <?php
                         } elseif (!$resData) {
@@ -5510,7 +6137,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         if ($groupTab === 'permissions') {
                             $groupTab = 'access'; // compatibilidade com links antigos
                         }
-                        if (!in_array($groupTab, ['info', 'users', 'access'], true)) {
+                        if (!in_array($groupTab, ['info', 'users', 'access', 'system'], true)) {
                             $groupTab = 'info';
                         }
 
@@ -5553,7 +6180,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 Membros
                             </a>
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=access" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'access' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
-                                Acessos
+                                Conteúdo
+                            </a>
+                            <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=system" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'system' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
+                                Sistema
                             </a>
                         </div>
 
@@ -5776,6 +6406,91 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             </section>
                         <?php endif; ?>
 
+                        <!-- ABA SISTEMA: capacidades administrativas globais, delegadas somente pelo Super Admin -->
+                        <?php if ($groupTab === 'system'): ?>
+                            <?php
+                                $systemCapabilityCatalog = SystemAccessService::catalog();
+                                $groupSystemCapabilities = $systemAccessService->getGroupCapabilities($groupId);
+                                $systemCapabilityAuditStmt = $pdo->prepare('
+                                    SELECT sca.capability, sca.action, sca.ip_address, sca.created_at,
+                                           COALESCE(u.name, \'Usuário removido\') AS actor_name
+                                    FROM system_capability_audit sca
+                                    LEFT JOIN users u ON u.id = sca.actor_id
+                                    WHERE sca.group_id = :group_id
+                                    ORDER BY sca.created_at DESC, sca.id DESC
+                                    LIMIT 12
+                                ');
+                                $systemCapabilityAuditStmt->execute([':group_id' => $groupId]);
+                                $groupSystemCapabilityAudit = $systemCapabilityAuditStmt->fetchAll(PDO::FETCH_ASSOC);
+                            ?>
+                            <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                <div class="border-b border-slate-100 p-5 dark:border-[#454956]">
+                                    <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                        <div>
+                                            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Administração delegada</p>
+                                            <h3 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Módulos globais do sistema</h3>
+                                            <p class="mt-1 max-w-2xl text-xs leading-5 text-slate-500 dark:text-slate-400">Esses poderes não alteram o acesso da equipe a categorias ou documentos. Somente o Super Admin pode concedê-los ou removê-los.</p>
+                                        </div>
+                                        <span class="w-fit rounded-full bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold text-amber-700 dark:text-amber-300">Acesso sensível</span>
+                                    </div>
+                                    <?php if (!$grpData['active']): ?>
+                                        <p class="mt-3 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] font-medium text-amber-700 dark:text-amber-300">A equipe está inativa. As escolhas permanecem salvas, mas nenhum membro recebe esses acessos até a reativação.</p>
+                                    <?php endif; ?>
+                                </div>
+
+                                <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=system" class="p-5">
+                                    <input type="hidden" name="group_action" value="sync_system_capabilities">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                    <input type="hidden" name="group_id" value="<?= $groupId ?>">
+
+                                    <div class="grid gap-3 md:grid-cols-2">
+                                        <?php foreach ($systemCapabilityCatalog as $capabilityKey => $capabilityDefinition): ?>
+                                            <?php
+                                                $capabilityInputId = 'system-capability-' . substr(hash('sha256', $capabilityKey), 0, 12);
+                                                $isCriticalCapability = ($capabilityDefinition['sensitivity'] ?? '') === 'critical';
+                                            ?>
+                                            <label for="<?= htmlspecialchars($capabilityInputId, ENT_QUOTES, 'UTF-8') ?>" class="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-4 transition hover:border-slate-400 hover:bg-slate-50/70 dark:border-[#565b68] dark:hover:bg-[#2c2e33]">
+                                                <input id="<?= htmlspecialchars($capabilityInputId, ENT_QUOTES, 'UTF-8') ?>" type="checkbox" name="system_capabilities[]" value="<?= htmlspecialchars($capabilityKey, ENT_QUOTES, 'UTF-8') ?>" class="mt-0.5 h-4 w-4 rounded" <?= in_array($capabilityKey, $groupSystemCapabilities, true) ? 'checked' : '' ?>>
+                                                <span class="min-w-0">
+                                                    <span class="flex flex-wrap items-center gap-2">
+                                                        <strong class="text-xs text-slate-900 dark:text-slate-100"><?= htmlspecialchars($capabilityDefinition['label']) ?></strong>
+                                                        <?php if ($isCriticalCapability): ?><small class="rounded bg-red-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-red-600 dark:text-red-300">Crítico</small><?php endif; ?>
+                                                    </span>
+                                                    <small class="mt-1 block text-[11px] leading-4 text-slate-500 dark:text-slate-400"><?= htmlspecialchars($capabilityDefinition['description']) ?></small>
+                                                </span>
+                                            </label>
+                                        <?php endforeach; ?>
+                                    </div>
+
+                                    <div class="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-[#454956]">
+                                        <p class="text-[10px] leading-4 text-slate-400">A desativação da equipe ou do usuário revoga o acesso efetivo imediatamente. Toda alteração fica na auditoria.</p>
+                                        <button type="submit" class="inline-flex shrink-0 items-center justify-center rounded-md bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-white dark:text-slate-900">Salvar acessos do sistema</button>
+                                    </div>
+                                </form>
+
+                                <div class="border-t border-slate-100 p-5 dark:border-[#454956]">
+                                    <h4 class="text-xs font-bold text-slate-900 dark:text-slate-100">Histórico recente</h4>
+                                    <?php if (empty($groupSystemCapabilityAudit)): ?>
+                                        <p class="py-4 text-xs text-slate-400">Ainda não houve alteração nos módulos administrativos desta equipe.</p>
+                                    <?php else: ?>
+                                        <div class="mt-3 divide-y divide-slate-100 dark:divide-[#454956]">
+                                            <?php foreach ($groupSystemCapabilityAudit as $capabilityAuditEvent): ?>
+                                                <?php $auditDefinition = $systemCapabilityCatalog[$capabilityAuditEvent['capability']] ?? ['label' => $capabilityAuditEvent['capability']]; ?>
+                                                <div class="flex flex-col gap-1 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
+                                                    <div class="min-w-0">
+                                                        <span class="font-semibold <?= $capabilityAuditEvent['action'] === 'GRANTED' ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-300' ?>"><?= $capabilityAuditEvent['action'] === 'GRANTED' ? 'Concedido' : 'Removido' ?></span>
+                                                        <span class="text-slate-600 dark:text-slate-300"> · <?= htmlspecialchars($auditDefinition['label']) ?></span>
+                                                        <small class="ml-1 text-[10px] text-slate-400">por <?= htmlspecialchars($capabilityAuditEvent['actor_name']) ?></small>
+                                                    </div>
+                                                    <time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m/Y H:i', strtotime($capabilityAuditEvent['created_at'])) ?></time>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            </section>
+                        <?php endif; ?>
+
                     </div>
                     <?php } ?>
                 <?php endif; ?>
@@ -5784,8 +6499,19 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 <?php if ($activeTab === 'usuarios'): ?>
                     <?php
                         $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
-                        $isGlobalAdminCurrent = $permService->isGlobalAdmin($currentAdminUserId);
-                        $usersList = $permService->getUsersForAdministrativeScope($currentAdminUserId);
+                        if ($canManageDirectory) {
+                            $usersListStmt = $pdo->query('
+                                SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
+                                       COUNT(DISTINCT ug.group_id) AS total_grupos
+                                FROM users u
+                                LEFT JOIN user_groups ug ON ug.user_id = u.id
+                                GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
+                                ORDER BY u.name ASC
+                            ');
+                            $usersList = $usersListStmt->fetchAll(PDO::FETCH_ASSOC);
+                        } else {
+                            $usersList = $permService->getUsersForAdministrativeScope($currentAdminUserId);
+                        }
                     ?>
                     <div class="space-y-4">
                         <div class="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-[#454956]">
@@ -5795,16 +6521,16 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <span>/</span>
                                     <span class="font-bold text-slate-900 dark:text-slate-100">Usuários</span>
                                 </nav>
-                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100"><?= $isGlobalAdminCurrent ? 'Usuários do Sistema' : 'Usuários da sua área' ?></h1>
+                                <h1 class="text-xl font-bold text-slate-900 dark:text-slate-100"><?= $canManageDirectory ? 'Usuários do Sistema' : 'Usuários da sua área' ?></h1>
                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    <?= $isGlobalAdminCurrent
-                                        ? 'Diagnóstico de permissões e controle de acesso individual.'
+                                    <?= $canManageDirectory
+                                        ? 'Diretório corporativo, vínculos e diagnóstico de acesso.'
                                         : 'Somente pessoas com acesso direto ou via equipe no seu ramo autorizado são exibidas.' ?>
                                 </p>
                             </div>
                         </div>
 
-                        <?php if ($isGlobalAdminCurrent): ?>
+                        <?php if ($canManageDirectory): ?>
                             <section class="rounded-lg border border-slate-200 bg-white p-4 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
                                 <div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                                     <div>
@@ -5927,18 +6653,31 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         }
 
                         $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
-                        $canInspectTargetUser = $permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId);
+                        $canInspectTargetUser = $canManageDirectory
+                            || $permService->canViewUserInAdministrativeScope($currentAdminUserId, $targetUserId);
                         $diagnosis = $canInspectTargetUser
                             ? $permService->getUserEffectiveAccessDiagnosis($targetUserId, $accessFilter)
                             : ['user' => null, 'is_global_admin' => false, 'active_groups' => [], 'resources' => []];
-                        if ($canInspectTargetUser) {
+                        if ($canInspectTargetUser && !$canManageDirectory) {
                             $diagnosis = $permService->filterDiagnosisToAdministrativeScope($currentAdminUserId, $diagnosis);
                         }
                         $uData = $diagnosis['user'];
                         $userTeams = [];
                         $directUserPermissions = [];
                         if ($uData) {
-                            $userTeams = $permService->getUserTeamsForAdministrativeScope($currentAdminUserId, $targetUserId);
+                            if ($canManageDirectory) {
+                                $userTeamsStmt = $pdo->prepare('
+                                    SELECT g.id, g.name, g.description, g.active, ug.created_at
+                                    FROM user_groups ug
+                                    JOIN groups g ON g.id = ug.group_id
+                                    WHERE ug.user_id = :user_id
+                                    ORDER BY g.name ASC
+                                ');
+                                $userTeamsStmt->execute([':user_id' => $targetUserId]);
+                                $userTeams = $userTeamsStmt->fetchAll(PDO::FETCH_ASSOC);
+                            } else {
+                                $userTeams = $permService->getUserTeamsForAdministrativeScope($currentAdminUserId, $targetUserId);
+                            }
                             if ($isGlobalAdminCurrent) {
                                 $directPermissionsStmt = $pdo->prepare('
                                     SELECT
@@ -6026,7 +6765,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <?php foreach ($userTeams as $userTeam): ?>
                                             <div class="py-3 flex items-center justify-between gap-4 text-xs">
                                                 <div>
-                                                    <a href="index.php?tab=editar_grupo&id=<?= (int)$userTeam['id'] ?>&group_tab=users" class="font-semibold text-slate-900 dark:text-slate-100 hover:underline"><?= htmlspecialchars($userTeam['name']) ?></a>
+                                                    <?php if ($isGlobalAdminCurrent): ?><a href="index.php?tab=editar_grupo&id=<?= (int)$userTeam['id'] ?>&group_tab=users" class="font-semibold text-slate-900 dark:text-slate-100 hover:underline"><?= htmlspecialchars($userTeam['name']) ?></a><?php else: ?><span class="font-semibold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($userTeam['name']) ?></span><?php endif; ?>
                                                     <p class="text-[10px] text-slate-400 mt-0.5"><?= htmlspecialchars($userTeam['description'] ?: 'Sem descrição') ?></p>
                                                 </div>
                                                 <span class="text-[10px] font-semibold <?= $userTeam['active'] ? 'text-emerald-600' : 'text-amber-600' ?>"><?= $userTeam['active'] ? 'ATIVA' : 'INATIVA' ?></span>
@@ -6429,7 +7168,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             }
 
             function toggleFormContent(type) {
-                const boxes = ['file', 'text', 'code', 'video', 'link'];
+                const boxes = ['file', 'text', 'code', 'video', 'link', 'flow', 'orgchart'];
                 boxes.forEach(b => {
                     const el = document.getElementById('box-' + b);
                     if (el) el.classList.add('hidden');
@@ -6986,8 +7725,15 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             let gridInstance = null;
 
             document.addEventListener('DOMContentLoaded', function() {
-                const selectedContentType = document.querySelector('input[name="tipo_conteudo"]:checked');
-                if (selectedContentType) toggleFormContent(selectedContentType.value);
+                if (window.GovDocStructuredEditors) {
+                    window.GovDocStructuredEditors.init({
+                        initialType: <?= json_encode($selectedContentType ?? 'text') ?>,
+                        initialContent: <?= json_encode($initialStructuredContent ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>
+                    });
+                } else {
+                    const selectedContentType = document.querySelector('input[name="tipo_conteudo"]:checked');
+                    if (selectedContentType) toggleFormContent(selectedContentType.value);
+                }
                 initDocumentTags();
                 initBatchFileUpload();
 
@@ -7092,6 +7838,23 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             // =========================================================================
             // CONTROLE DA ÁRVORE HIERÁRQUICA (EXPANDIR/RECOLHER NOS 4 NÍVEIS)
             // =========================================================================
+            function confirmPermanentStructureDeletion(form) {
+                const name = form.dataset.deleteName || '';
+                const summary = form.dataset.deleteSummary || '';
+                const typed = window.prompt(
+                    'Exclusão permanente de "' + name + '".\n' +
+                    'Serão apagados: ' + summary + '.\n' +
+                    'Esta ação não pode ser desfeita. Digite exatamente "' + name + '" para confirmar:'
+                );
+                if (typed === null) return false;
+                if (typed.trim() !== name) {
+                    window.alert('Nome diferente. Nada foi excluído.');
+                    return false;
+                }
+                form.querySelector('input[name="confirmation_name"]').value = typed.trim();
+                return true;
+            }
+
             function toggleTreeNode(btn) {
                 const group = btn.closest('.tree-node-group');
                 if (!group) return;

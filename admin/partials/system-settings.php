@@ -15,13 +15,13 @@ $settingsMaintenanceEndLocal = !empty($currentSystemSettings['maintenance_end_at
 <div class="mx-auto max-w-6xl space-y-4">
     <header class="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] sm:flex-row sm:items-center sm:justify-between">
         <div>
-            <p class="text-[10px] font-bold uppercase tracking-[.18em] text-slate-400">Administração global</p>
+            <p class="text-[10px] font-bold uppercase tracking-[.18em] text-slate-400">Configuração autorizada</p>
             <h1 class="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Configurações do Sistema</h1>
             <p class="mt-1 max-w-2xl text-xs text-slate-500 dark:text-slate-400">Identidade do portal, tema de apresentação, segurança de sessão, políticas de CORS e janela de manutenção.</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
             <span class="rounded-full px-3 py-1.5 text-[11px] font-bold <?= $maintenanceBadgeClass ?>"><?= htmlspecialchars($maintenanceBadge) ?></span>
-            <?php if ($isGlobalAdminCurrent): ?>
+            <?php if ($canManageAuthentication): ?>
                 <a href="index.php?tab=servidores_ad" class="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-sky-700 text-decoration-none">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 012-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
                     Servidores AD & SSO &rarr;
@@ -54,7 +54,7 @@ $settingsMaintenanceEndLocal = !empty($currentSystemSettings['maintenance_end_at
                             <?php endif; ?>
                         </div>
                         <div class="min-w-0 flex-1">
-                            <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Logo do sistema</span>
+                            <label for="system-logo-input" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Logo do sistema</label>
                             <p class="mt-0.5 text-[10px] leading-4 text-slate-400">Exibida no portal, login e painel. Use JPG, PNG ou WebP de até 3 MB.</p>
                             <div class="mt-2 flex flex-wrap items-center gap-3">
                                 <input id="system-logo-input" type="file" name="system_logo" accept="image/jpeg,image/png,image/webp" class="block max-w-full text-[11px] text-slate-500 file:mr-2 file:rounded-md file:border-0 file:bg-slate-900 file:px-2.5 file:py-1.5 file:text-[10px] file:font-bold file:text-white hover:file:bg-slate-800 dark:text-slate-300 dark:file:bg-white dark:file:text-slate-900">

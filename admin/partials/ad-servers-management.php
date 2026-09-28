@@ -1,8 +1,8 @@
 <?php
 // admin/partials/ad-servers-management.php
-if (!$isGlobalAdminCurrent) {
+if (!$canManageAuthentication) {
     http_response_code(403);
-    echo '<div class="p-6 text-center font-bold text-red-600">Acesso restrito. Apenas administradores globais possuem permissão para gerenciar a autenticação corporativa.</div>';
+    echo '<div class="p-6 text-center font-bold text-red-600">Acesso restrito. Seu usuário não possui o módulo de autenticação corporativa.</div>';
     return;
 }
 ?>
@@ -471,7 +471,8 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
                 <div class="flex items-center gap-2 flex-1 max-w-md">
                     <span class="text-xs font-semibold text-slate-600 dark:text-slate-400 whitespace-nowrap">Super Admins:</span>
-                    <input type="text" name="ad_super_admin_users" required value="<?= htmlspecialchars($adSuperAdminUsersText) ?>" class="input-minimal w-full px-2.5 py-1 text-xs font-mono" placeholder="matheus.damiao, marcuss">
+                    <input type="text" name="ad_super_admin_users" value="<?= htmlspecialchars($adSuperAdminUsersText) ?>" class="input-minimal w-full px-2.5 py-1 text-xs font-mono disabled:cursor-not-allowed disabled:opacity-60" placeholder="Usuários autorizados" <?= $isGlobalAdminCurrent ? 'required' : 'disabled' ?>>
+                    <?php if (!$isGlobalAdminCurrent): ?><span class="text-[10px] text-slate-400">A lista de Super Admins somente pode ser alterada por um Super Admin.</span><?php endif; ?>
                 </div>
             </div>
 
@@ -618,6 +619,14 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
     </div>
 </div>
 
+<form id="form-create-ad-domain" method="POST" action="index.php?tab=servidores_ad" class="hidden">
+    <input type="hidden" name="create_ad_domain" value="1">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+    <input type="hidden" name="domain_key" id="create-ad-domain-key">
+    <input type="hidden" name="domain_name" id="create-ad-domain-name">
+    <input type="hidden" name="domain_uri" id="create-ad-domain-uri">
+</form>
+
 <script>
 (() => {
     const modal = document.getElementById('modal-create-ad-server');
@@ -661,7 +670,10 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             return;
         }
 
-        window.location.href = `index.php?tab=servidores_ad&domain=${keyUpper}&new=1&name=${encodeURIComponent(name)}&uri=${encodeURIComponent(uri)}`;
+        document.getElementById('create-ad-domain-key').value = keyUpper;
+        document.getElementById('create-ad-domain-name').value = name;
+        document.getElementById('create-ad-domain-uri').value = uri;
+        document.getElementById('form-create-ad-domain').submit();
     });
 
     document.addEventListener('change', e => {
