@@ -18,12 +18,29 @@ foreach ($checks as $label => $sql) {
     $failed = $failed || $count !== 0;
 }
 
+$configuredRaw = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'ad_super_admin_users'")->fetchColumn();
+$configuredAdmins = is_string($configuredRaw) ? json_decode($configuredRaw, true) : [];
+$configuredAdmins = array_values(array_filter(array_map(
+    static function (mixed $identity): string {
+        $identity = strtolower(trim((string)$identity));
+        $parts = preg_split('/[\\\\\/]/', $identity) ?: [];
+        return (string)end($parts);
+    },
+    is_array($configuredAdmins) ? $configuredAdmins : []
+)));
 $admins = $pdo->query("SELECT username, auth_source FROM users WHERE role = 'admin' AND active = TRUE ORDER BY username")->fetchAll(PDO::FETCH_ASSOC);
-if ($admins !== [['username' => 'matheus.damiao', 'auth_source' => 'ad']]) {
-    fwrite(STDERR, '[FALHA] Administradores globais ativos inesperados: ' . json_encode($admins, JSON_UNESCAPED_UNICODE) . "\n");
+$unexpectedAdmins = array_values(array_filter($admins, static fn(array $admin): bool =>
+    strtolower((string)$admin['auth_source']) !== 'ad'
+    || !in_array(strtolower((string)$admin['username']), $configuredAdmins, true)
+));
+if ($unexpectedAdmins !== []) {
+    fwrite(STDERR, '[FALHA] Há Super Admin ativo fora da lista corporativa configurada: ' . json_encode($unexpectedAdmins, JSON_UNESCAPED_UNICODE) . "\n");
+    $failed = true;
+} elseif ($admins === []) {
+    fwrite(STDERR, "[FALHA] Nenhum Super Admin ativo foi encontrado.\n");
     $failed = true;
 } else {
-    echo "[OK] Único Super Admin ativo: matheus.damiao [AD]\n";
+    echo '[OK] Super Admins ativos são contas AD presentes na configuração corporativa (' . count($admins) . ").\n";
 }
 
 exit($failed ? 1 : 0);

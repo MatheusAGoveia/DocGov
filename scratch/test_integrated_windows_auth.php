@@ -39,6 +39,9 @@ try {
     $saude = $service->authenticateIntegrated('integrated.saude.' . $suffix . '@saude.pmb');
     integratedAssert($saude['success'] && (int)$saude['user']['id'] === $saudeId, 'UPN SAÚDE não foi associado ao usuário importado.');
 
+    $unqualified = $service->authenticateIntegrated('integrated.betim.' . $suffix);
+    integratedAssert($unqualified['success'] && (int)$unqualified['user']['id'] === $betimId, 'Login sem domínio não usou o domínio padrão controlado.');
+
     $automatic = $service->authenticateIntegrated('BETIM\\integrated.auto.' . $suffix);
     integratedAssert($automatic['success'], 'Usuário do AD não foi provisionado automaticamente no login integrado.');
     integratedAssert(($automatic['user']['role'] ?? '') === 'reader', 'Novo usuário do AD deve iniciar como leitor.');
@@ -49,12 +52,27 @@ try {
     $unknown = $service->authenticateIntegrated('OUTRO\\integrated.betim.' . $suffix);
     integratedAssert(!$unknown['success'] && $unknown['code'] === 'integrated_identity_missing', 'Domínio não configurado foi aceito no login integrado.');
 
+    $unknownUpn = $service->authenticateIntegrated('integrated.unknown.' . $suffix . '@dominio-nao-configurado.invalid');
+    integratedAssert(!$unknownUpn['success'] && $unknownUpn['code'] === 'integrated_identity_missing', 'UPN não configurado foi aceito no login integrado.');
+
+    $malformed = $service->authenticateIntegrated('BETIM\\SAUDE\\integrated.betim.' . $suffix);
+    integratedAssert(!$malformed['success'] && $malformed['code'] === 'integrated_identity_missing', 'Identidade com domínios aninhados foi aceita.');
+
+    $disabledDomainConfig = $config;
+    $disabledDomainConfig['domains']['SAUDE']['enabled'] = false;
+    $disabledDomain = (new ActiveDirectoryAuthService($pdo, $disabledDomainConfig))->authenticateIntegrated('SAUDE\\integrated.saude.' . $suffix);
+    integratedAssert(!$disabledDomain['success'] && $disabledDomain['code'] === 'integrated_identity_missing', 'Domínio desativado foi aceito no login integrado.');
+
+    $unexpectedUser = $pdo->prepare('SELECT COUNT(*) FROM users WHERE username = ?');
+    $unexpectedUser->execute(['integrated.unknown.' . $suffix]);
+    integratedAssert((int)$unexpectedUser->fetchColumn() === 0, 'Uma identidade de domínio desconhecido criou usuário local.');
+
     $disabledConfig = $config;
     $disabledConfig['integrated_windows_enabled'] = false;
     $disabled = (new ActiveDirectoryAuthService($pdo, $disabledConfig))->authenticateIntegrated('BETIM\\integrated.betim.' . $suffix);
     integratedAssert(!$disabled['success'] && $disabled['code'] === 'integrated_disabled', 'Login integrado foi aceito sem habilitação explícita.');
 
-    echo "[OK] Login integrado BETIM/SAÚDE, UPN, domínio desconhecido e bloqueio por configuração validados.\n";
+    echo "[OK] Login integrado BETIM/SAÚDE, fallback controlado, domínios inválidos/desativados e provisionamento seguro validados.\n";
 } finally {
     foreach (array_reverse($ids) as $id) {
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$id]);

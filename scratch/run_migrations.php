@@ -25,6 +25,11 @@ $migrationFiles = [
     __DIR__ . '/../database/migrations/018_document_approval_workflow.sql',
     __DIR__ . '/../database/migrations/019_document_trash.sql',
     __DIR__ . '/../database/migrations/020_subject_process_documentation.sql',
+    __DIR__ . '/../database/migrations/021_subject_workspace_visibility.sql',
+    __DIR__ . '/../database/migrations/022_group_system_capabilities.sql',
+    __DIR__ . '/../database/migrations/023_subject_workspace_workflow.sql',
+    __DIR__ . '/../database/migrations/024_dynamic_document_sections.sql',
+    __DIR__ . '/../database/migrations/025_document_inline_media.sql',
 ];
 
 foreach ($migrationFiles as $file) {

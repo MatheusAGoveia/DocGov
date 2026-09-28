@@ -1,7 +1,7 @@
 <?php
 // Testa que a interface administrativa não mistura dados entre categorias.
 require __DIR__ . '/../config/db.php';
-require __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/PermissionService.php';
 
 function scopedAssert(bool $condition, string $message): void {
     if (!$condition) {
