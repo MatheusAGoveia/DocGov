@@ -6,6 +6,11 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
 require_once __DIR__ . '/../services/VideoEmbedService.php';
 require_once __DIR__ . '/../services/DocumentWorkflowService.php';
+require_once __DIR__ . '/../services/DocumentSectionService.php';
+require_once __DIR__ . '/../services/DocumentSlugService.php';
+require_once __DIR__ . '/../services/RichTextSanitizer.php';
+require_once __DIR__ . '/../services/StructuredContentService.php';
+require_once __DIR__ . '/../services/CsrfService.php';
 
 if (!headers_sent()) {
     header('Content-Type: application/json');
@@ -17,8 +22,24 @@ $loggedUser = $_SESSION['user'] ?? null;
 $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
 $permService = new PermissionService($pdo);
 $workflowService = new DocumentWorkflowService($pdo, $permService);
+$documentSectionService = new DocumentSectionService($pdo);
+$documentSlugService = new DocumentSlugService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
+
+if ($userId <= 0) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+    exit;
+}
+if ($method === 'POST') {
+    $csrfCandidate = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf_token'] ?? '');
+    if (!CsrfService::isValid($csrfCandidate)) {
+        http_response_code(419);
+        echo json_encode(['success' => false, 'error' => 'Sessão de segurança expirada. Atualize a página e tente novamente.']);
+        exit;
+    }
+}
 
 if ($method === 'GET') {
     // Este endpoint expõe metadados administrativos (autor, rascunhos e inativos),
@@ -47,11 +68,14 @@ if ($method === 'GET') {
         }
 
         $stmt = $pdo->prepare("
-            SELECT d.id, d.title, d.slug, d.description, d.content_type, d.code_language, d.status, d.published_at,
+            SELECT d.id, d.title, d.slug, d.description, d.content_type, d.section_key, d.structured_content,
+                   d.code_language, d.status, d.published_at,
                    d.original_filename, d.file_size, d.external_url, d.created_at,
+                   ds.label AS section_label, ds.editor_kind AS section_editor_kind,
                    s.name AS subject_name, sc.name AS subcategory_name, c.name AS category_name,
                    u.name AS author_name
             FROM documents d
+            JOIN document_sections ds ON ds.section_key = d.section_key
             JOIN subjects s ON d.subject_id = s.id
             JOIN subcategories sc ON s.subcategory_id = sc.id
             JOIN categories c ON sc.category_id = c.id
@@ -63,10 +87,13 @@ if ($method === 'GET') {
         $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
     } else {
         $stmt = $pdo->prepare("
-            SELECT d.id, d.title, d.slug, d.description, d.content_type, d.code_language, d.status, d.published_at,
+            SELECT d.id, d.title, d.slug, d.description, d.content_type, d.section_key, d.structured_content,
+                   d.code_language, d.status, d.published_at,
+                   ds.label AS section_label, ds.editor_kind AS section_editor_kind,
                    s.name AS subject_name, sc.name AS subcategory_name, c.name AS category_name,
                    u.name AS author_name
             FROM documents d
+            JOIN document_sections ds ON ds.section_key = d.section_key
             JOIN subjects s ON d.subject_id = s.id
             JOIN subcategories sc ON s.subcategory_id = sc.id
             JOIN categories c ON sc.category_id = c.id
@@ -106,15 +133,32 @@ if ($method === 'POST') {
     }
 
     $previousStatus = null;
+    $previousDocument = null;
     if ($docId > 0) {
-        $stmtPrevious = $pdo->prepare('SELECT status FROM documents WHERE id = :id');
+        $stmtPrevious = $pdo->prepare('SELECT status, subject_id, section_key, content_type FROM documents WHERE id = :id');
         $stmtPrevious->execute([':id' => $docId]);
-        $previousStatus = $stmtPrevious->fetchColumn();
+        $previousDocument = $stmtPrevious->fetch(PDO::FETCH_ASSOC) ?: null;
+        $previousStatus = $previousDocument['status'] ?? null;
+        if ($subjectId <= 0 && $previousDocument) {
+            $subjectId = (int)$previousDocument['subject_id'];
+        }
     }
 
     $title = trim($_POST['title'] ?? $_POST['titulo'] ?? '');
     $description = trim($_POST['description'] ?? $_POST['descricao'] ?? '');
-    $contentType = trim($_POST['content_type'] ?? $_POST['tipo_conteudo'] ?? 'file');
+    $legacyContentType = trim($_POST['content_type'] ?? $_POST['tipo_conteudo'] ?? ($previousDocument['content_type'] ?? 'file'));
+    $sectionKey = strtolower(trim((string)($_POST['section_key'] ?? ($previousDocument['section_key'] ?? ''))));
+    if ($sectionKey === '') {
+        $sectionKey = $documentSectionService->defaultSectionForContentType($legacyContentType);
+    }
+    try {
+        $sectionSelection = $documentSectionService->resolveSelection($sectionKey);
+        $contentType = $sectionSelection['content_type'];
+    } catch (Throwable $exception) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => $exception->getMessage()]);
+        exit;
+    }
     $legacyStatus = trim($_POST['status'] ?? 'draft');
     $workflowAction = trim($_POST['workflow_action'] ?? '');
     if ($workflowAction === '') {
@@ -126,14 +170,12 @@ if ($method === 'POST') {
     }
     $workflowNote = trim($_POST['workflow_note'] ?? '');
     $textContent = str_replace(["\r\n", "\r"], "\n", (string)($_POST['text_content'] ?? $_POST['conteudo_html'] ?? $_POST['codigo_fonte'] ?? ''));
+    $structuredContent = null;
     $codeLanguage = strtolower(trim($_POST['code_language'] ?? $_POST['linguagem_codigo'] ?? 'auto'));
     $externalUrl = trim($_POST['external_url'] ?? $_POST['link_externo'] ?? '');
     $videoSource = trim($_POST['video_source'] ?? 'upload');
     $videoUrl = trim($_POST['video_url'] ?? '');
 
-    if (!in_array($contentType, ['file', 'text', 'link', 'code', 'video'], true)) {
-        $contentType = 'file';
-    }
     if (!in_array($videoSource, ['upload', 'url'], true)) {
         $videoSource = 'upload';
     }
@@ -175,7 +217,25 @@ if ($method === 'POST') {
         $codeLanguage = 'auto';
     }
     if ($contentType === 'text') {
-        $textContent = strip_tags($textContent, '<h3><h4><p><b><i><strong><em><ul><ol><li><a><br>');
+        try {
+            $textContent = RichTextSanitizer::sanitize($textContent);
+        } catch (Throwable $exception) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => $exception->getMessage()]);
+            exit;
+        }
+    } elseif (in_array($contentType, ['flow', 'orgchart'], true)) {
+        try {
+            $structuredContent = json_encode(
+                StructuredContentService::normalize($contentType, $_POST['structured_content'] ?? ''),
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+        } catch (Throwable $exception) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => $exception->getMessage()]);
+            exit;
+        }
+        $textContent = '';
     }
 
     try {
@@ -187,7 +247,7 @@ if ($method === 'POST') {
         exit;
     }
 
-    $slug = slugify($title);
+    $slug = '';
     $publishedAt = $status === 'published' ? date(DATE_ATOM) : null;
     $originalFilename = null;
     $storedFilename = null;
@@ -240,6 +300,8 @@ if ($method === 'POST') {
             ':slug' => $slug,
             ':description' => $description,
             ':content_type' => $contentType,
+            ':section_key' => $sectionKey,
+            ':structured_content' => $structuredContent,
             ':status' => $status,
             ':published_at' => $publishedAt,
             ':is_published' => $status === 'published' ? 1 : 0,
@@ -255,13 +317,6 @@ if ($method === 'POST') {
         ];
 
         if ($docId > 0) {
-            if ($subjectId <= 0) {
-                $stmtSubject = $pdo->prepare('SELECT subject_id FROM documents WHERE id = :id');
-                $stmtSubject->execute([':id' => $docId]);
-                $subjectId = (int)$stmtSubject->fetchColumn();
-                $params[':subject_id'] = $subjectId;
-            }
-
             $fileAssignments = '';
             if ($storedFilename !== null) {
                 $fileAssignments = ', original_filename = :original_filename, stored_filename = :stored_filename,
@@ -282,7 +337,8 @@ if ($method === 'POST') {
             $stmt = $pdo->prepare("
                 UPDATE documents SET
                     subject_id = :subject_id, title = :title, slug = :slug, description = :description,
-                    content_type = :content_type, status = :status,
+                    content_type = :content_type, section_key = :section_key,
+                    structured_content = CAST(:structured_content AS JSONB), status = :status,
                     published_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN COALESCE(:published_at, published_at, CURRENT_TIMESTAMP) ELSE NULL END,
                     approval_expires_at = CASE WHEN CAST(:is_published AS BOOLEAN) THEN NULL ELSE COALESCE(approval_expires_at, CURRENT_TIMESTAMP + INTERVAL '1 month') END,
                     text_content = :text_content, code_language = :code_language, external_url = :external_url
@@ -294,19 +350,25 @@ if ($method === 'POST') {
             unset($params[':is_published']);
             $stmt = $pdo->prepare("
                 INSERT INTO documents (
-                    subject_id, created_by, title, slug, description, content_type, status, published_at,
+                    subject_id, created_by, title, slug, description, content_type, section_key, structured_content,
+                    status, published_at,
                     original_filename, stored_filename, file_path, mime_type, file_extension, file_size,
                     text_content, code_language, external_url
                 ) VALUES (
-                    :subject_id, :created_by, :title, :slug, :description, :content_type, :status, :published_at,
+                    :subject_id, :created_by, :title, :slug, :description, :content_type, :section_key,
+                    CAST(:structured_content AS JSONB), :status, :published_at,
                     :original_filename, :stored_filename, :file_path, :mime_type, :file_extension, :file_size,
                     :text_content, :code_language, :external_url
                 ) RETURNING id
             ");
         }
 
+        $pdo->beginTransaction();
+        $slug = $documentSlugService->reserve($subjectId, $title, $docId > 0 ? $docId : null);
+        $params[':slug'] = $slug;
         $stmt->execute($params);
         $newId = (int)$stmt->fetchColumn();
+        $pdo->commit();
         try {
             $workflowService->applyTransitionMetadata($newId, $userId, $workflowTransition['action'], $workflowTransition['note']);
             $workflowService->record($newId, $userId, $workflowTransition['action'], $previousStatus ?: 'draft', $status, $workflowTransition['note']);
@@ -316,8 +378,14 @@ if ($method === 'POST') {
         }
 
         echo json_encode(['success' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'status' => $status]);
-    } catch (PDOException $e) {
-        error_log('DocGov documents API: erro ao cadastrar documento: ' . $e->getMessage());
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($filePath !== null && is_file(__DIR__ . '/../' . $filePath)) {
+            unlink(__DIR__ . '/../' . $filePath);
+        }
+        error_log('DocGov documents API: erro ao salvar documento: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Não foi possível salvar o documento.']);
     }
