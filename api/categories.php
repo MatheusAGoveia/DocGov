@@ -4,9 +4,12 @@ require_once __DIR__ . '/../config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/CsrfService.php';
 
 if (!headers_sent()) {
-    header('Content-Type: application/json');
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, private');
+    header('X-Content-Type-Options: nosniff');
 }
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -14,6 +17,20 @@ $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
 $permService = new PermissionService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
+
+if ($userId <= 0) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+    exit;
+}
+if ($method === 'POST') {
+    $csrfCandidate = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf_token'] ?? '');
+    if (!CsrfService::isValid($csrfCandidate)) {
+        http_response_code(419);
+        echo json_encode(['success' => false, 'error' => 'Sessão de segurança expirada. Atualize a página e tente novamente.']);
+        exit;
+    }
+}
 
 if ($method === 'GET') {
     $allowedCatIds = $permService->getAllowedCategoryIds($userId);
@@ -62,4 +79,6 @@ if ($method === 'POST') {
     exit;
 }
 
+http_response_code(405);
+header('Allow: GET, POST');
 echo json_encode(['success' => false, 'error' => 'Método HTTP não suportado.']);

@@ -4,9 +4,12 @@ require_once __DIR__ . '/../config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
+require_once __DIR__ . '/../services/CsrfService.php';
 
 if (!headers_sent()) {
-    header('Content-Type: application/json');
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, private');
+    header('X-Content-Type-Options: nosniff');
 }
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -14,6 +17,20 @@ $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
 $permService = new PermissionService($pdo);
 
 $method = $_SERVER['REQUEST_METHOD'];
+
+if ($userId <= 0) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'error' => 'Sessão expirada ou usuário não autenticado.']);
+    exit;
+}
+if ($method === 'POST') {
+    $csrfCandidate = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf_token'] ?? '');
+    if (!CsrfService::isValid($csrfCandidate)) {
+        http_response_code(419);
+        echo json_encode(['success' => false, 'error' => 'Sessão de segurança expirada. Atualize a página e tente novamente.']);
+        exit;
+    }
+}
 
 if ($method === 'GET') {
     $allowedSubjectIds = $permService->getAllowedSubjectIds($userId);
@@ -26,7 +43,7 @@ if ($method === 'GET') {
     if ($subcategoryId <= 0) {
         $subSlug = trim($_GET['subcategory_slug'] ?? $_GET['subcat'] ?? '');
         if (!empty($subSlug)) {
-            $stmtSub = $pdo->prepare("SELECT id FROM subcategories WHERE (slug = :s OR id::text = :s) AND active = TRUE");
+            $stmtSub = $pdo->prepare("SELECT sc.id FROM subcategories sc JOIN categories c ON c.id = sc.category_id WHERE (sc.slug = :s OR sc.id::text = :s) AND sc.active = TRUE AND c.active = TRUE");
             $stmtSub->execute([':s' => $subSlug]);
             $subcategoryId = (int)$stmtSub->fetchColumn();
         }
@@ -35,12 +52,12 @@ if ($method === 'GET') {
     $inSql = implode(',', array_map('intval', $allowedSubjectIds));
 
     if ($subcategoryId <= 0) {
-        $stmt = $pdo->query("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE active = TRUE AND id IN ($inSql) ORDER BY name ASC");
+        $stmt = $pdo->query("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
         exit;
     }
 
-    $stmt = $pdo->prepare("SELECT id, subcategory_id, name, slug, description FROM subjects WHERE subcategory_id = :sub_id AND active = TRUE AND id IN ($inSql) ORDER BY name ASC");
+    $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.subcategory_id = :sub_id AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
     $stmt->execute([':sub_id' => $subcategoryId]);
     $subjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -82,4 +99,6 @@ if ($method === 'POST') {
     exit;
 }
 
+http_response_code(405);
+header('Allow: GET, POST');
 echo json_encode(['success' => false, 'error' => 'Método HTTP não suportado.']);
