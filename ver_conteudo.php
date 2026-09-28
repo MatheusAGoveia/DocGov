@@ -6,7 +6,10 @@ if (!headers_sent()) {
     header('Referrer-Policy: strict-origin-when-cross-origin');
 }
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/services/CsrfService.php';
 require_once __DIR__ . '/services/VideoEmbedService.php';
+require_once __DIR__ . '/services/RichTextSanitizer.php';
+$csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
 $docId = (int)($_GET['id'] ?? 0);
@@ -20,14 +23,15 @@ if ($docId <= 0) {
 $stmt = $pdo->prepare("
     SELECT 
         d.id, d.subject_id, d.created_by, d.title, d.slug, d.description, 
-        d.content_type, d.status, d.published_at, d.original_filename, 
+        d.content_type, d.section_key, d.structured_content, d.status, d.published_at, d.original_filename,
         d.stored_filename, d.file_path, d.mime_type, d.file_extension, 
         d.file_size, d.text_content, d.code_language, d.external_url, d.created_at, d.updated_at,
         s.name AS subject_name, s.slug AS subject_slug,
         sc.name AS subcategory_name, sc.slug AS subcategory_slug,
         c.name AS category_name, c.slug AS category_slug,
-        u.name AS autor_nome
+        u.name AS autor_nome, ds.label AS section_label, ds.editor_kind AS section_editor_kind
     FROM documents d
+    JOIN document_sections ds ON ds.section_key = d.section_key
     JOIN subjects s ON d.subject_id = s.id
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
@@ -122,7 +126,17 @@ $externalVideo = !empty($doc['external_url']) && in_array($contentType, ['video'
     ? VideoEmbedService::resolve((string)$doc['external_url'])
     : ['kind' => 'invalid'];
 $isExternalVideo = in_array($externalVideo['kind'], ['youtube', 'vimeo', 'direct', 'external'], true);
-$displayTypeLabel = $contentType === 'file' ? ($fileExt ?: 'arquivo') : ($contentType === 'video' ? 'vídeo' : $contentType);
+$displayTypeLabel = (string)($doc['section_label'] ?? ($contentType === 'file' ? ($fileExt ?: 'arquivo') : ($contentType === 'video' ? 'vídeo' : $contentType)));
+$structuredContent = json_decode((string)($doc['structured_content'] ?? ''), true);
+$structuredContent = is_array($structuredContent) ? $structuredContent : [];
+$safeRichTextContent = '';
+if ($contentType === 'text') {
+    try {
+        $safeRichTextContent = RichTextSanitizer::sanitize((string)($doc['text_content'] ?? ''));
+    } catch (Throwable) {
+        $safeRichTextContent = '';
+    }
+}
 
 $streamUrl = 'document-file.php?id=' . $docId;
 $downloadUrl = 'download.php?id=' . $docId;
@@ -147,12 +161,16 @@ $navigationTrail = [
     ],
     ['kind' => 'Documento', 'label' => $doc['title'], 'url' => null],
 ];
+$backHref = (string)$navigationTrail[3]['url'];
+$backLabel = 'Voltar para o assunto';
+$backUseHistory = true;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR" class="<?= $userThemeClass ?>" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title><?= htmlspecialchars($doc['title']) ?> - <?= htmlspecialchars($appName) ?></title>
     
     <script src="https://cdn.tailwindcss.com"></script>
@@ -195,6 +213,7 @@ $navigationTrail = [
     </script>
     
     <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/structured-content.css">
     <?php if ($isPdf): ?>
         <!-- Biblioteca PDF.js Local -->
         <script src="assets/pdfjs/pdf.min.js"></script>
@@ -250,9 +269,6 @@ $navigationTrail = [
 
                     <div class="flex items-center gap-2">
                         <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
-                        <a href="index.php" class="text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-3 py-1.5 rounded-xl hover:bg-slate-200 transition">
-                            &larr; Voltar ao Acervo
-                        </a>
                     </div>
                 </div>
             </header>
@@ -263,6 +279,8 @@ $navigationTrail = [
             <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[10.5rem_minmax(0,1fr)] lg:gap-6">
                 <?php require __DIR__ . '/partials/vertical_navigation.php'; ?>
                 <section class="min-w-0">
+
+            <?php require __DIR__ . '/partials/back_navigation.php'; ?>
 
             <!-- CARD DE CONTEÚDO -->
             <div class="bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs p-4 sm:p-5 md:p-6">
@@ -727,6 +745,42 @@ $navigationTrail = [
                         </div>
                     <?php endif; ?>
 
+                <?php elseif ($contentType === 'flow'): ?>
+                    <?php $flowNodes = array_values((array)($structuredContent['nodes'] ?? [])); ?>
+                    <ol class="govdoc-flow" aria-label="Fluxo do processo">
+                        <?php foreach ($flowNodes as $flowIndex => $flowNode): ?>
+                            <?php $flowType = (string)($flowNode['type'] ?? 'process'); ?>
+                            <li class="govdoc-flow-node <?= in_array($flowType, ['start', 'end'], true) ? 'govdoc-flow-node--terminal' : ($flowType === 'decision' ? 'govdoc-flow-node--decision' : '') ?>">
+                                <span class="text-[9px] font-bold uppercase tracking-wider text-slate-400"><?= htmlspecialchars(['start' => 'Início', 'process' => 'Etapa', 'decision' => 'Decisão', 'end' => 'Fim'][$flowType] ?? 'Etapa') ?> <?= $flowIndex + 1 ?></span>
+                                <strong class="mt-1 block text-sm text-slate-900 dark:text-slate-100"><?= htmlspecialchars((string)($flowNode['title'] ?? '')) ?></strong>
+                                <?php if (!empty($flowNode['description'])): ?><p class="mt-1 whitespace-pre-line text-xs leading-5 text-slate-500 dark:text-slate-400"><?= htmlspecialchars((string)$flowNode['description']) ?></p><?php endif; ?>
+                                <?php if (!empty($flowNode['owner'])): ?><span class="mt-2 inline-flex rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-500 dark:bg-[#2c2e33] dark:text-slate-300">Responsável: <?= htmlspecialchars((string)$flowNode['owner']) ?></span><?php endif; ?>
+                            </li>
+                            <?php if ($flowIndex < count($flowNodes) - 1): ?><li class="govdoc-flow-connector" aria-hidden="true"></li><?php endif; ?>
+                        <?php endforeach; ?>
+                    </ol>
+
+                <?php elseif ($contentType === 'orgchart'): ?>
+                    <?php
+                    $orgNodes = array_values((array)($structuredContent['nodes'] ?? []));
+                    $orgIds = [];
+                    $orgByParent = [];
+                    foreach ($orgNodes as $orgNode) $orgIds[(string)($orgNode['id'] ?? '')] = true;
+                    foreach ($orgNodes as $orgNode) {
+                        $parentId = (string)($orgNode['parent_id'] ?? '');
+                        if ($parentId === '' || !isset($orgIds[$parentId])) $parentId = '__root__';
+                        $orgByParent[$parentId][] = $orgNode;
+                    }
+                    $orgVisited = [];
+                    $renderViewerOrgBranch = function (array $orgNode) use (&$renderViewerOrgBranch, &$orgVisited, $orgByParent): void {
+                        $nodeId = (string)($orgNode['id'] ?? '');
+                        if ($nodeId === '' || isset($orgVisited[$nodeId])) return;
+                        $orgVisited[$nodeId] = true;
+                        ?><li class="govdoc-orgchart-branch"><div class="govdoc-orgchart-card"><strong><?= htmlspecialchars((string)($orgNode['name'] ?? '')) ?></strong><?php if (!empty($orgNode['role'])): ?><span><?= htmlspecialchars((string)$orgNode['role']) ?></span><?php endif; ?><?php if (!empty($orgNode['description'])): ?><span><?= htmlspecialchars((string)$orgNode['description']) ?></span><?php endif; ?></div><?php if (!empty($orgByParent[$nodeId])): ?><ul class="govdoc-orgchart-children"><?php foreach ($orgByParent[$nodeId] as $orgChild) $renderViewerOrgBranch($orgChild); ?></ul><?php endif; ?></li><?php
+                    };
+                    ?>
+                    <div class="overflow-x-auto pb-3"><div class="govdoc-orgchart"><ul class="govdoc-orgchart-roots"><?php foreach (($orgByParent['__root__'] ?? []) as $orgRoot) $renderViewerOrgBranch($orgRoot); ?></ul></div></div>
+
                 <?php elseif ($contentType === 'code'): ?>
                     <?php $codeLanguage = $doc['code_language'] ?: 'auto'; ?>
                     <div class="code-snippet" data-code-snippet data-code-language="<?= htmlspecialchars($codeLanguage) ?>">
@@ -743,8 +797,8 @@ $navigationTrail = [
                     </div>
 
                 <?php elseif ($contentType === 'text'): ?>
-                    <div class="prose max-w-none text-slate-800 dark:text-slate-200 text-sm leading-relaxed">
-                        <?= $doc['text_content'] ?: '<p>Nenhum conteúdo textual fornecido.</p>' ?>
+                    <div class="govdoc-rich-content text-slate-800 dark:text-slate-200">
+                        <?= $safeRichTextContent !== '' ? $safeRichTextContent : '<p>Nenhum conteúdo textual fornecido.</p>' ?>
                     </div>
 
                 <?php elseif ($contentType === 'link'): ?>
@@ -801,7 +855,16 @@ $navigationTrail = [
         function toggleFavorito(docId) {
             const btn = document.getElementById('btn-fav');
             if (btn) btn.disabled = true;
-            fetch('api_user.php?action=toggle_favorito&doc_id=' + docId)
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+            fetch('api_user.php', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    'X-CSRF-Token': csrfToken,
+                },
+                body: new URLSearchParams({ action: 'toggle_favorito', doc_id: docId }),
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (btn) btn.disabled = false;

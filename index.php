@@ -7,6 +7,8 @@ if (!headers_sent()) {
     header('Referrer-Policy: strict-origin-when-cross-origin');
 }
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/services/CsrfService.php';
+$csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
 $isPortalLoginRequired = !$loggedUser;
@@ -30,6 +32,10 @@ require_once __DIR__ . '/services/TagService.php';
 $tagService = new TagService($pdo);
 require_once __DIR__ . '/services/SubjectWorkspaceService.php';
 $subjectWorkspaceService = new SubjectWorkspaceService($pdo);
+require_once __DIR__ . '/services/DocumentSectionService.php';
+$documentSectionService = new DocumentSectionService($pdo);
+require_once __DIR__ . '/services/RichTextSanitizer.php';
+require_once __DIR__ . '/services/VideoEmbedService.php';
 
 $allowedCatIds = $accessService->getAllowedCategoryIds($userId);
 $allowedSubcatIds = $accessService->getAllowedSubcategoryIds($userId);
@@ -39,10 +45,7 @@ $allowedSubjectIds = $accessService->getAllowedSubjectIds($userId);
 $selectedCat = trim($_GET['cat'] ?? '');
 $selectedSubcat = trim($_GET['subcat'] ?? '');
 $selectedAssunto = trim($_GET['assunto'] ?? '');
-$subjectSection = strtolower(trim((string)($_GET['section'] ?? 'overview')));
-if (!in_array($subjectSection, ['overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'permissions', 'integrations', 'history'], true)) {
-    $subjectSection = 'overview';
-}
+$subjectSection = strtolower(trim((string)($_GET['section'] ?? '')));
 $currentView = trim($_GET['view'] ?? '');
 $searchQuery = trim($_GET['q'] ?? '');
 $searchCategory = trim($_GET['search_category'] ?? '');
@@ -52,7 +55,7 @@ $searchDateFrom = trim($_GET['date_from'] ?? '');
 $searchDateTo = trim($_GET['date_to'] ?? '');
 $requestedTag = trim($_GET['tag'] ?? '');
 $selectedTag = $requestedTag !== '' ? $tagService->resolveName($requestedTag) : null;
-if (!in_array($searchType, ['', 'file', 'text', 'link', 'code', 'video'], true)) {
+if (!in_array($searchType, ['', 'file', 'text', 'link', 'code', 'video', 'flow', 'orgchart'], true)) {
     $searchType = '';
 }
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $searchDateFrom)) {
@@ -97,8 +100,12 @@ $pageDesc = "Encontre rapidamente documentos, normas, manuais e orientações de
 $subjectWorkspace = [];
 $subjectWorkspaceHistory = [];
 $subjectWorkspaceCompleteness = [];
+$subjectWorkspaceEnabledSections = [];
 $subjectWorkspaceVideo = ['kind' => 'invalid'];
+$isShowingPublishedWorkspaceSnapshot = false;
 $canManageSubjectWorkspace = false;
+$subjectDocumentSections = [];
+$subjectDocumentsBySection = [];
 $searchCategoryOptions = [];
 $searchTagOptions = $tagService->allActive();
 if (!empty($allowedCatIds)) {
@@ -342,14 +349,18 @@ if ($searchMode) {
         } else {
             $stmt = $pdo->prepare("
                 SELECT 
-                    d.id, d.title, d.slug, d.description, d.content_type, d.status, d.published_at,
+                    d.id, d.title, d.slug, d.description, d.content_type, d.section_key,
+                    d.structured_content, d.text_content, d.status, d.published_at,
                     d.original_filename, d.file_size, d.external_url, d.created_at,
+                    ds.label AS section_label, ds.description AS section_description,
+                    ds.editor_kind AS section_editor_kind, ds.sort_order AS section_sort_order,
                     s.name AS subject_name, s.slug AS subject_slug,
                     sc.name AS subcategory_name, sc.slug AS subcategory_slug,
                     c.name AS category_name, c.slug AS category_slug,
                     u.name AS author_name,
                     CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorited
                 FROM documents d
+                JOIN document_sections ds ON ds.section_key = d.section_key AND ds.active = TRUE
                 JOIN subjects s ON d.subject_id = s.id
                 JOIN subcategories sc ON s.subcategory_id = sc.id
                 JOIN categories c ON sc.category_id = c.id
@@ -359,20 +370,48 @@ if ($searchMode) {
                   AND (sc.slug = :subcat OR sc.id::text = :subcat)
                   AND (c.slug = :cat OR c.id::text = :cat)
                   AND d.status = 'published' AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE
-                ORDER BY is_favorited DESC, d.title ASC
+                ORDER BY ds.sort_order ASC, is_favorited DESC, d.title ASC
             ");
             $stmt->execute([':cat' => $selectedCat, ':subcat' => $selectedSubcat, ':assunto' => $selectedAssunto, ':uid' => $userId]);
             $items = $stmt->fetchAll();
 
+            $subjectDocumentSections = $documentSectionService->publishedSectionsForSubject((int)$assRes['id']);
+            foreach ($items as $subjectDocument) {
+                $subjectDocumentsBySection[(string)$subjectDocument['section_key']][] = $subjectDocument;
+            }
+            $availableSubjectSectionKeys = array_column($subjectDocumentSections, 'section_key');
+            if (!in_array($subjectSection, $availableSubjectSectionKeys, true)) {
+                $subjectSection = (string)($availableSubjectSectionKeys[0] ?? '');
+            }
+
             $assuntoName = $items[0]['subject_name'] ?? $assRes['name'];
             $pageTitle = $assuntoName;
             $subjectWorkspace = $subjectWorkspaceService->get((int)$assRes['id']);
+            $canPreviewSubjectDraft = $permissionService->canEditSubject($userId, (int)$assRes['id']);
+            $workspaceWasDeprecatedAfterApproval = !empty($subjectWorkspace['deprecated_at'])
+                && (empty($subjectWorkspace['approved_at'])
+                    || strtotime((string)$subjectWorkspace['deprecated_at']) >= strtotime((string)$subjectWorkspace['approved_at']));
+            if (in_array(($subjectWorkspace['documentation_status'] ?? 'draft'), ['draft', 'review'], true)
+                && !$canPreviewSubjectDraft
+                && !$workspaceWasDeprecatedAfterApproval) {
+                $approvedSnapshot = $subjectWorkspaceService->latestApprovedSnapshot((int)$assRes['id']);
+                if ($approvedSnapshot !== null) {
+                    $subjectWorkspace = $approvedSnapshot;
+                    $isShowingPublishedWorkspaceSnapshot = true;
+                }
+            }
             $subjectWorkspaceHistory = $subjectWorkspaceService->history((int)$assRes['id'], 60);
+            if ($isShowingPublishedWorkspaceSnapshot) {
+                foreach ($subjectWorkspaceHistory as $historyIndex => $historyEntry) {
+                    if (($historyEntry['action'] ?? '') === 'approve') {
+                        $subjectWorkspaceHistory = array_slice($subjectWorkspaceHistory, $historyIndex);
+                        break;
+                    }
+                }
+            }
             $subjectWorkspaceCompleteness = $subjectWorkspaceService->completeness($subjectWorkspace);
             $canManageSubjectWorkspace = $permissionService->canAdminSubject($userId, (int)$assRes['id']);
-            if (!$canManageSubjectWorkspace && $subjectSection === 'permissions') {
-                $subjectSection = 'overview';
-            }
+            $subjectWorkspaceEnabledSections = $subjectWorkspaceService->enabledSections($subjectWorkspace);
             $workspaceVideoDocumentId = (int)($subjectWorkspace['video_document_id'] ?? 0);
             $workspaceVideoDocument = null;
             foreach ($items as $workspaceDocument) {
@@ -441,6 +480,36 @@ if ($searchMode) {
 $lastTrailIndex = array_key_last($navigationTrail);
 $navigationTrail[$lastTrailIndex]['url'] = null;
 
+// Retorno contextual: cada nível volta ao seu pai, sem depender do navegador.
+$backHref = '';
+$backLabel = 'Voltar';
+$backUseHistory = true;
+if ($searchMode) {
+    $backHref = 'index.php';
+    $backLabel = 'Voltar para categorias';
+    if ($selectedCat !== '') {
+        $backHref = 'index.php?cat=' . urlencode($selectedCat);
+        $backLabel = 'Voltar para a categoria';
+    }
+    if ($selectedCat !== '' && $selectedSubcat !== '') {
+        $backHref .= '&subcat=' . urlencode($selectedSubcat);
+        $backLabel = 'Voltar para a subcategoria';
+    }
+    if ($selectedCat !== '' && $selectedSubcat !== '' && $selectedAssunto !== '') {
+        $backHref .= '&assunto=' . urlencode($selectedAssunto);
+        $backLabel = 'Voltar para o assunto';
+    }
+} elseif ($currentLevel === 2) {
+    $backHref = 'index.php';
+    $backLabel = 'Voltar para categorias';
+} elseif ($currentLevel === 3) {
+    $backHref = 'index.php?cat=' . urlencode($selectedCat);
+    $backLabel = 'Voltar para a categoria';
+} elseif ($currentLevel === 4) {
+    $backHref = 'index.php?cat=' . urlencode($selectedCat) . '&subcat=' . urlencode($selectedSubcat);
+    $backLabel = 'Voltar para a subcategoria';
+}
+
 if ($userId > 0) {
     if ($searchMode) {
         $usageAuditService->log('search', $userId, 'PORTAL', null, [
@@ -471,6 +540,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title><?= htmlspecialchars($pageTitle) ?> - <?= htmlspecialchars($appName) ?></title>
     <meta name="description" content="<?= htmlspecialchars($appDescription) ?> — <?= htmlspecialchars($organizationName) ?>.">
     
@@ -506,6 +576,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
     </script>
     
     <link rel="stylesheet" href="assets/style.css">
+    <link rel="stylesheet" href="assets/structured-content.css">
 </head>
 <body class="bg-[#f8f9fa] dark:bg-[#111318] text-slate-900 dark:text-[#d7dbe1] min-h-screen flex flex-col selection:bg-slate-800 selection:text-white dark:selection:bg-slate-200 dark:selection:text-slate-900">
     <?php require __DIR__ . '/partials/maintenance-banner.php'; ?>
@@ -553,7 +624,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                         <form id="navbar-search-form" action="index.php" method="GET" class="relative hidden sm:block">
                             <div class="flex items-center rounded-xl border border-slate-200/80 bg-slate-100/70 transition-all duration-200 focus-within:ring-1 focus-within:ring-slate-400 dark:border-slate-700/80 dark:bg-slate-800/70">
                                 <svg class="ml-2.5 h-3.5 w-3.5 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                                <input type="search" name="q" value="<?= htmlspecialchars($searchQuery) ?>" placeholder="Pesquisar..." class="w-28 bg-transparent px-2 py-1.5 text-xs text-slate-900 outline-none transition-all duration-200 focus:w-48 dark:text-slate-100">
+                                <input type="search" name="q" value="<?= htmlspecialchars($searchQuery) ?>" placeholder="Pesquisar..." aria-label="Pesquisar no acervo" class="w-28 bg-transparent px-2 py-1.5 text-xs text-slate-900 outline-none transition-all duration-200 focus:w-48 dark:text-slate-100">
                                 <button id="navbar-search-filter-toggle" type="button" onclick="toggleNavbarSearchFilters(event)" class="relative mr-1 inline-flex h-6 w-6 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white" title="Filtros de busca" aria-label="Abrir filtros de busca" aria-expanded="<?= $hasAdvancedSearchFilters ? 'true' : 'false' ?>">
                                     <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L15 12.414V18a1 1 0 01-.553.894l-4 2A1 1 0 019 20v-7.586L3.293 6.707A1 1 0 013 6V4z"/></svg>
                                     <?php if ($hasAdvancedSearchFilters): ?><span class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full nav-trail-active-dot"></span><?php endif; ?>
@@ -563,7 +634,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                                 <div class="mb-2 flex items-center justify-between"><span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Refinar busca</span><span class="text-[10px] text-slate-400">Conteúdos publicados</span></div>
                                 <div class="grid grid-cols-2 gap-2">
                                     <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Categoria</span><select name="search_category" class="input-minimal w-full px-2 py-1.5 text-xs"><option value="">Todas</option><?php foreach ($searchCategoryOptions as $categoryOption): ?><option value="<?= htmlspecialchars($categoryOption['slug']) ?>" <?= $searchCategory === $categoryOption['slug'] ? 'selected' : '' ?>><?= htmlspecialchars($categoryOption['name']) ?></option><?php endforeach; ?></select></label>
-                                    <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Tipo</span><select name="search_type" class="input-minimal w-full px-2 py-1.5 text-xs"><option value="">Todos</option><option value="file" <?= $searchType === 'file' ? 'selected' : '' ?>>Arquivo</option><option value="text" <?= $searchType === 'text' ? 'selected' : '' ?>>Texto</option><option value="code" <?= $searchType === 'code' ? 'selected' : '' ?>>Código</option><option value="video" <?= $searchType === 'video' ? 'selected' : '' ?>>Vídeo</option><option value="link" <?= $searchType === 'link' ? 'selected' : '' ?>>Link</option></select></label>
+                                    <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Tipo</span><select name="search_type" class="input-minimal w-full px-2 py-1.5 text-xs"><option value="">Todos</option><option value="file" <?= $searchType === 'file' ? 'selected' : '' ?>>Arquivo</option><option value="text" <?= $searchType === 'text' ? 'selected' : '' ?>>Texto</option><option value="code" <?= $searchType === 'code' ? 'selected' : '' ?>>Código</option><option value="video" <?= $searchType === 'video' ? 'selected' : '' ?>>Vídeo</option><option value="link" <?= $searchType === 'link' ? 'selected' : '' ?>>Link</option><option value="flow" <?= $searchType === 'flow' ? 'selected' : '' ?>>Fluxo do Processo</option><option value="orgchart" <?= $searchType === 'orgchart' ? 'selected' : '' ?>>Organograma</option></select></label>
                                     <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Tag</span><select name="tag" class="input-minimal w-full px-2 py-1.5 text-xs"><option value="">Todas</option><?php foreach ($searchTagOptions as $tagOption): ?><option value="<?= htmlspecialchars($tagOption['name']) ?>" <?= $selectedTag !== null && (int)$selectedTag['id'] === (int)$tagOption['id'] ? 'selected' : '' ?>><?= htmlspecialchars($tagOption['name']) ?></option><?php endforeach; ?></select></label>
                                     <label class="col-span-2"><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">Autor</span><input type="search" name="search_author" value="<?= htmlspecialchars($searchAuthor) ?>" class="input-minimal w-full px-2 py-1.5 text-xs" placeholder="Nome do autor"></label>
                                     <label><span class="mb-1 block text-[10px] font-semibold text-slate-500 dark:text-slate-400">De</span><input type="date" name="date_from" value="<?= htmlspecialchars($searchDateFrom) ?>" class="input-minimal w-full px-2 py-1.5 text-xs"></label>
@@ -634,6 +705,8 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
             <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-[10.5rem_minmax(0,1fr)] lg:gap-6">
                 <?php require __DIR__ . '/partials/vertical_navigation.php'; ?>
                 <section class="min-w-0">
+
+            <?php require __DIR__ . '/partials/back_navigation.php'; ?>
 
             <!-- TÍTULO DA SEÇÃO PRINCIPAL -->
             <div class="mb-8 flex items-center justify-between">
@@ -855,7 +928,16 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
             if (event) event.stopPropagation();
             if (btnElem) btnElem.disabled = true;
 
-            fetch('api_user.php?action=toggle_favorito&type=' + targetType + '&target_id=' + targetId)
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+            fetch('api_user.php', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    'X-CSRF-Token': csrfToken,
+                },
+                body: new URLSearchParams({ action: 'toggle_favorito', type: targetType, target_id: targetId }),
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (btnElem) btnElem.disabled = false;

@@ -74,7 +74,7 @@ try {
     $realFilePath = realpath($fullPath);
 
     // Validação estrita de Traversal Path
-    if (!$realFilePath || !file_exists($realFilePath) || strpos($realFilePath, $storageDir) !== 0) {
+    if (!$realFilePath || !file_exists($realFilePath) || !str_starts_with($realFilePath, $storageDir . DIRECTORY_SEPARATOR)) {
         while (ob_get_level()) ob_end_clean();
         http_response_code(404);
         header('Content-Type: text/plain; charset=utf-8');
@@ -116,6 +116,7 @@ try {
     header('Content-Type: ' . $responseMime);
     header('Content-Disposition: inline; filename="' . $origName . '"');
     header('X-Content-Type-Options: nosniff');
+    header("Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' data:");
     header('Cache-Control: private, max-age=3600');
     header('Pragma: public');
     header('Accept-Ranges: bytes');

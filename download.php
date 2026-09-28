@@ -51,8 +51,10 @@ $usageAuditService->log($usageEventType, $userId, 'DOCUMENT', $docId, [
 
 // 1. CONTEÚDO DO TIPO LINK
 if (in_array($doc['content_type'], ['link', 'video'], true) && empty($doc['stored_filename'])) {
-    if (!empty($doc['external_url'])) {
-        header('Location: ' . $doc['external_url']);
+    $externalUrl = trim((string)($doc['external_url'] ?? ''));
+    $externalScheme = strtolower((string)parse_url($externalUrl, PHP_URL_SCHEME));
+    if ($externalUrl !== '' && filter_var($externalUrl, FILTER_VALIDATE_URL) && in_array($externalScheme, ['http', 'https'], true)) {
+        header('Location: ' . $externalUrl);
         exit;
     } else {
         die("Link externo não configurado.");
@@ -61,24 +63,34 @@ if (in_array($doc['content_type'], ['link', 'video'], true) && empty($doc['store
 
 // 2. CONTEÚDO DO TIPO ARQUIVO (FILE)
 if (in_array($doc['content_type'], ['file', 'video'], true)) {
-    $filename = $doc['stored_filename'] ?: ($doc['file_path'] ? basename($doc['file_path']) : '');
-    
-    // Tenta primeiro no storage/documents/ depois em uploads/docs/
-    $filePath = __DIR__ . '/storage/documents/' . $filename;
-    if (!file_exists($filePath)) {
-        $filePath = __DIR__ . '/uploads/docs/' . $filename;
+    $filename = basename((string)($doc['stored_filename'] ?: ($doc['file_path'] ? basename($doc['file_path']) : '')));
+    $filePath = null;
+
+    // Aceita somente um arquivo real contido em uma das duas raízes permitidas.
+    foreach ([__DIR__ . '/storage/documents', __DIR__ . '/uploads/docs'] as $candidateRoot) {
+        $root = realpath($candidateRoot);
+        if ($root === false || $filename === '') continue;
+        $candidate = realpath($root . DIRECTORY_SEPARATOR . $filename);
+        if ($candidate !== false && str_starts_with($candidate, $root . DIRECTORY_SEPARATOR) && is_file($candidate)) {
+            $filePath = $candidate;
+            break;
+        }
     }
 
-    if (!file_exists($filePath) || is_dir($filePath)) {
+    if ($filePath === null) {
         http_response_code(404);
         die("Arquivo físico não encontrado no servidor.");
     }
 
     $mimeType = $doc['mime_type'] ?: mime_content_type($filePath) ?: 'application/octet-stream';
-    $originalName = $doc['original_filename'] ?: basename($filePath);
+    $originalName = preg_replace('/[^a-zA-Z0-9._-]/', '_', basename((string)($doc['original_filename'] ?: basename($filePath))));
 
     header('Content-Type: ' . $mimeType);
     header('Content-Length: ' . filesize($filePath));
+    header('X-Content-Type-Options: nosniff');
+    if ($inline) {
+        header("Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; media-src 'self'; img-src 'self' data:");
+    }
 
     if ($inline) {
         header('Content-Disposition: inline; filename="' . rawurlencode($originalName) . '"');
