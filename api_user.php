@@ -3,20 +3,38 @@
 require_once __DIR__ . '/config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/services/CsrfService.php';
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, private');
+header('X-Content-Type-Options: nosniff');
 
 $loggedUser = $_SESSION['user'] ?? null;
 if (!$loggedUser) {
+    http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Usuário não autenticado.']);
     exit;
 }
 
-$action = $_REQUEST['action'] ?? '';
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+    http_response_code(405);
+    header('Allow: POST');
+    echo json_encode(['success' => false, 'error' => 'Método não permitido.']);
+    exit;
+}
+
+$csrfToken = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($_POST['csrf_token'] ?? null);
+if (!CsrfService::isValid(is_string($csrfToken) ? $csrfToken : null)) {
+    http_response_code(419);
+    echo json_encode(['success' => false, 'error' => 'Sessão de segurança expirada.']);
+    exit;
+}
+
+$action = trim((string)($_POST['action'] ?? ''));
 $userId = (int)$loggedUser['id'];
 
 if ($action === 'set_theme' || $action === 'update_theme') {
-    $theme = trim($_REQUEST['theme'] ?? 'light');
+    $theme = trim((string)($_POST['theme'] ?? 'light'));
     if (!in_array($theme, ['light', 'dark', 'system'], true)) {
         $theme = 'light';
     }
@@ -32,7 +50,7 @@ if ($action === 'set_theme' || $action === 'update_theme') {
 
 if ($action === 'update_portal_theme') {
     require_once __DIR__ . '/services/SystemSettingsService.php';
-    $portalTheme = SystemSettingsService::normalizePortalTheme($_REQUEST['theme'] ?? 'emerald');
+    $portalTheme = SystemSettingsService::normalizePortalTheme($_POST['theme'] ?? 'emerald');
     try {
         $stmt = $pdo->prepare("UPDATE users SET portal_theme = :theme WHERE id = :id");
         $stmt->execute([':theme' => $portalTheme, ':id' => $userId]);
@@ -45,12 +63,12 @@ if ($action === 'update_portal_theme') {
 }
 
 if ($action === 'toggle_favorito') {
-    $targetType = trim($_REQUEST['target_type'] ?? $_REQUEST['type'] ?? 'document');
+    $targetType = trim((string)($_POST['target_type'] ?? $_POST['type'] ?? 'document'));
     if (!in_array($targetType, ['document', 'subcategory', 'subject'])) {
         $targetType = 'document';
     }
 
-    $targetId = (int)($_REQUEST['target_id'] ?? $_REQUEST['doc_id'] ?? $_REQUEST['subcat_id'] ?? $_REQUEST['subject_id'] ?? 0);
+    $targetId = (int)($_POST['target_id'] ?? $_POST['doc_id'] ?? $_POST['subcat_id'] ?? $_POST['subject_id'] ?? 0);
     if ($targetId <= 0) {
         echo json_encode(['success' => false, 'error' => 'ID de elemento inválido.']);
         exit;
@@ -96,6 +114,28 @@ if ($action === 'toggle_favorito') {
     exit;
 }
 
+if ($action === 'record_view') {
+    $documentId = (int)($_POST['doc_id'] ?? 0);
+    if ($documentId <= 0) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Documento inválido.']);
+        exit;
+    }
+
+    require_once __DIR__ . '/services/AccessService.php';
+    $accessService = new AccessService($pdo);
+    if (!$accessService->canAccessDocument($userId, $documentId)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Sem permissão de acesso a este documento.']);
+        exit;
+    }
+
+    require_once __DIR__ . '/services/UsageAuditService.php';
+    (new UsageAuditService($pdo))->log('document_view', $userId, 'DOCUMENT', $documentId, ['source' => 'portal_card']);
+    echo json_encode(['success' => true]);
+    exit;
+}
+
 if ($action === 'upload_avatar' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!isset($_FILES['avatar_file']) || $_FILES['avatar_file']['error'] !== UPLOAD_ERR_OK) {
         header('Location: minha_conta.php?msg=err_upload');
@@ -103,10 +143,16 @@ if ($action === 'upload_avatar' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $file = $_FILES['avatar_file'];
-    $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
-    $fileExt = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    if (!isset($file['tmp_name'], $file['size']) || !is_uploaded_file((string)$file['tmp_name'])) {
+        header('Location: minha_conta.php?msg=err_upload');
+        exit;
+    }
 
-    if (!in_array($fileExt, $allowedExts)) {
+    $allowedMimes = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+    $fileInfo = finfo_open(FILEINFO_MIME_TYPE);
+    $detectedMime = $fileInfo ? (finfo_file($fileInfo, (string)$file['tmp_name']) ?: '') : '';
+    if ($fileInfo) finfo_close($fileInfo);
+    if (!isset($allowedMimes[$detectedMime]) || @getimagesize((string)$file['tmp_name']) === false) {
         header('Location: minha_conta.php?msg=err_ext');
         exit;
     }
@@ -121,7 +167,7 @@ if ($action === 'upload_avatar' && $_SERVER['REQUEST_METHOD'] === 'POST') {
         mkdir($uploadDir, 0755, true);
     }
 
-    $newFileName = 'user_' . $userId . '_' . time() . '.' . $fileExt;
+    $newFileName = 'user_' . $userId . '_' . bin2hex(random_bytes(12)) . '.' . $allowedMimes[$detectedMime];
     $targetPath = $uploadDir . '/' . $newFileName;
 
     if (move_uploaded_file($file['tmp_name'], $targetPath)) {
@@ -137,4 +183,25 @@ if ($action === 'upload_avatar' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     exit;
 }
 
+if ($action === 'remove_avatar') {
+    $avatarStmt = $pdo->prepare('SELECT avatar FROM users WHERE id = :id');
+    $avatarStmt->execute([':id' => $userId]);
+    $avatarPath = str_replace('\\', '/', (string)$avatarStmt->fetchColumn());
+
+    $pdo->prepare('UPDATE users SET avatar = NULL WHERE id = :id')->execute([':id' => $userId]);
+    $_SESSION['user']['avatar'] = null;
+
+    if (preg_match('#^uploads/avatars/user_' . preg_quote((string)$userId, '#') . '_[a-f0-9]{24}\.(jpg|png|webp)$#', $avatarPath) === 1) {
+        $avatarRoot = realpath(__DIR__ . '/uploads/avatars');
+        $candidate = realpath(__DIR__ . '/' . $avatarPath);
+        if ($avatarRoot && $candidate && str_starts_with($candidate, $avatarRoot . DIRECTORY_SEPARATOR) && is_file($candidate)) {
+            unlink($candidate);
+        }
+    }
+
+    header('Location: minha_conta.php?msg=avatar_removed');
+    exit;
+}
+
+http_response_code(400);
 echo json_encode(['success' => false, 'error' => 'Ação não reconhecida.']);

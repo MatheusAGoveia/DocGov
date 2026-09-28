@@ -10,8 +10,10 @@ if (!headers_sent()) {
     header('Referrer-Policy: same-origin');
 }
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/services/CsrfService.php';
 require_once __DIR__ . '/services/PermissionService.php';
 require_once __DIR__ . '/services/NotificationService.php';
+$csrfToken = CsrfService::token();
 $permService = new PermissionService($pdo);
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -182,6 +184,7 @@ $userThemeClass = 'light';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title>Minha Conta - <?= htmlspecialchars($appName) ?></title>
     
     <script src="https://cdn.tailwindcss.com"></script>
@@ -271,6 +274,8 @@ $userThemeClass = 'light';
 
     <div class="max-container pb-10 pt-20 sm:pt-24">
 
+        <?php $backHref = 'index.php'; $backLabel = 'Voltar ao acervo'; $backUseHistory = true; require __DIR__ . '/partials/back_navigation.php'; ?>
+
         <!-- CABEÇALHO DO PERFIL -->
         <div class="bg-white dark:bg-[#353842] p-6 rounded-md border border-slate-200 dark:border-[#454956] mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
             <div class="flex items-center gap-4">
@@ -307,6 +312,7 @@ $userThemeClass = 'light';
             <div class="flex items-center gap-2 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-[#454956]">
                 <form action="api_user.php" method="POST" enctype="multipart/form-data" class="flex items-center gap-2">
                     <input type="hidden" name="action" value="upload_avatar">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                     <label class="cursor-pointer bg-slate-900 dark:bg-white hover:bg-slate-800 dark:hover:bg-slate-100 text-white dark:text-slate-900 font-semibold px-3 py-1.5 rounded-md text-xs transition">
                         <span>Trocar Foto</span>
                         <input type="file" name="avatar_file" accept="image/*" class="hidden" onchange="this.form.submit()">
@@ -314,9 +320,11 @@ $userThemeClass = 'light';
                 </form>
 
                 <?php if (!empty($userData['avatar'])): ?>
-                    <a href="api_user.php?action=remove_avatar" class="text-xs text-red-600 dark:text-red-400 hover:underline px-2.5 py-1.5 font-medium">
-                        Remover Foto
-                    </a>
+                    <form action="api_user.php" method="POST" class="inline">
+                        <input type="hidden" name="action" value="remove_avatar">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                        <button type="submit" class="text-xs text-red-600 dark:text-red-400 hover:underline px-2.5 py-1.5 font-medium">Remover Foto</button>
+                    </form>
                 <?php endif; ?>
             </div>
         </div>

@@ -3,6 +3,8 @@
 require_once __DIR__ . '/config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/services/CsrfService.php';
+$csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
 $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
@@ -101,6 +103,7 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title>Meus Favoritos - <?= htmlspecialchars($appName) ?></title>
     
     <script src="https://cdn.tailwindcss.com"></script>
@@ -252,12 +255,7 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
 
         <!-- CONTAINER PRINCIPAL DE FAVORITOS -->
         <main class="max-container pb-10 pt-20 sm:pt-24">
-            
-            <nav class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-6">
-                <a href="index.php" class="hover:text-slate-900 dark:hover:text-white transition">Início</a>
-                <span>/</span>
-                <span class="font-bold text-slate-900 dark:text-white">Favoritos</span>
-            </nav>
+            <?php $backHref = 'index.php'; $backLabel = 'Voltar ao acervo'; $backUseHistory = true; require __DIR__ . '/partials/back_navigation.php'; ?>
 
             <div class="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
@@ -438,7 +436,16 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
             const card = document.getElementById(cardId);
             if (btnElem) btnElem.disabled = true;
 
-            fetch('api_user.php?action=toggle_favorito&type=' + type + '&target_id=' + id)
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+            fetch('api_user.php', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                    'X-CSRF-Token': csrfToken,
+                },
+                body: new URLSearchParams({ action: 'toggle_favorito', type, target_id: id }),
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (data.success && !data.is_favorite) {
