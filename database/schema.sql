@@ -15,6 +15,8 @@ $$ LANGUAGE plpgsql;
 
 -- LIMPEZA DE SEGUNDA CAMADA (Para reinicialização completa se necessário)
 DROP TABLE IF EXISTS system_settings CASCADE;
+DROP TABLE IF EXISTS system_capability_audit CASCADE;
+DROP TABLE IF EXISTS group_system_capabilities CASCADE;
 DROP TABLE IF EXISTS permissions CASCADE;
 DROP TABLE IF EXISTS permission_audit CASCADE;
 DROP TABLE IF EXISTS group_access CASCADE;
@@ -126,6 +128,38 @@ CREATE TRIGGER trg_subjects_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Catálogo extensível das seções geradas pelos documentos.
+CREATE TABLE document_sections (
+    section_key VARCHAR(80) PRIMARY KEY,
+    label VARCHAR(120) NOT NULL,
+    description VARCHAR(500) NOT NULL DEFAULT '',
+    editor_kind VARCHAR(20) NOT NULL CHECK (editor_kind IN (
+        'richtext', 'file', 'code', 'video', 'link', 'flow', 'orgchart'
+    )),
+    sort_order INTEGER NOT NULL DEFAULT 100,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT document_sections_key_format CHECK (section_key ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
+);
+CREATE TRIGGER trg_document_sections_updated_at BEFORE UPDATE ON document_sections
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+INSERT INTO document_sections (section_key, label, description, editor_kind, sort_order) VALUES
+    ('documents', 'Documentos', 'Conteúdos textuais e orientações do assunto.', 'richtext', 10),
+    ('process-flow', 'Fluxo do Processo', 'Fluxos operacionais representados graficamente.', 'flow', 20),
+    ('organization-chart', 'Organograma', 'Estruturas hierárquicas e organizacionais.', 'orgchart', 30),
+    ('attachments', 'Arquivos', 'Arquivos e anexos para consulta ou download.', 'file', 40),
+    ('videos', 'Vídeos', 'Vídeos locais ou hospedados externamente.', 'video', 50),
+    ('source-code', 'Códigos', 'Trechos de código com realce e cópia.', 'code', 60),
+    ('links', 'Links', 'Referências e sistemas externos.', 'link', 70),
+    ('faq', 'Perguntas Frequentes', 'Perguntas e respostas relacionadas ao assunto.', 'richtext', 80),
+    ('legislation', 'Legislação', 'Leis, decretos, portarias e normas aplicáveis.', 'richtext', 90),
+    ('tutorials', 'Tutoriais', 'Orientações práticas e tutoriais.', 'richtext', 100),
+    ('manuals', 'Manuais', 'Manuais e procedimentos de referência.', 'richtext', 110),
+    ('templates', 'Modelos', 'Modelos e padrões reutilizáveis.', 'richtext', 120),
+    ('indicators', 'Indicadores', 'Indicadores e informações de acompanhamento.', 'richtext', 130);
+
 -- ------------------------------------------------------------------------------
 -- 5. TABELA: documents (Documentos / Conteúdos do Sistema)
 -- ------------------------------------------------------------------------------
@@ -136,7 +170,8 @@ CREATE TABLE documents (
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) NOT NULL,
     description TEXT DEFAULT '',
-    content_type VARCHAR(20) NOT NULL CHECK (content_type IN ('file', 'text', 'link', 'code', 'video')),
+    content_type VARCHAR(20) NOT NULL CHECK (content_type IN ('file', 'text', 'link', 'code', 'video', 'flow', 'orgchart')),
+    section_key VARCHAR(80) NOT NULL DEFAULT 'documents' REFERENCES document_sections(section_key) ON UPDATE CASCADE ON DELETE RESTRICT,
     status VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'review', 'published', 'inactive')),
     published_at TIMESTAMPTZ NULL,
     approval_expires_at TIMESTAMPTZ NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '1 month'),
@@ -162,6 +197,7 @@ CREATE TABLE documents (
     -- Para tipo 'text'
     text_content TEXT NULL,
     code_language VARCHAR(50) NOT NULL DEFAULT 'auto',
+    structured_content JSONB NULL CHECK (structured_content IS NULL OR jsonb_typeof(structured_content) = 'object'),
 
     -- Para tipo 'link'
     external_url TEXT NULL,
@@ -176,9 +212,30 @@ CREATE TRIGGER trg_documents_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
+CREATE INDEX idx_documents_subject_section_published
+    ON documents(subject_id, section_key, published_at DESC, id DESC)
+    WHERE status = 'published';
+
+CREATE TABLE document_inline_media (
+    id BIGSERIAL PRIMARY KEY,
+    document_id INTEGER NULL REFERENCES documents(id) ON DELETE CASCADE,
+    uploaded_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    stored_filename VARCHAR(100) NOT NULL UNIQUE,
+    original_filename VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(30) NOT NULL CHECK (mime_type IN ('image/jpeg', 'image/png', 'image/gif', 'image/webp')),
+    file_size INTEGER NOT NULL CHECK (file_size > 0 AND file_size <= 10485760),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_document_inline_media_document ON document_inline_media(document_id);
+CREATE INDEX idx_document_inline_media_unbound ON document_inline_media(created_at) WHERE document_id IS NULL;
+
 -- Documentação estruturada de processos no nível Assunto.
 CREATE TABLE subject_workspaces (
     subject_id INTEGER PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+    enabled_sections JSONB NOT NULL DEFAULT
+        '["overview","description","flow","steps","video","evidence","faq","permissions","integrations","history"]'::jsonb
+        CHECK (jsonb_typeof(enabled_sections) = 'array'),
     objective VARCHAR(600) NOT NULL DEFAULT '',
     owner_name VARCHAR(255) NOT NULL DEFAULT '',
     audience VARCHAR(600) NOT NULL DEFAULT '',
@@ -201,6 +258,19 @@ CREATE TABLE subject_workspaces (
     integrations JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    submitted_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    submitted_at TIMESTAMPTZ NULL,
+    reviewed_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMPTZ NULL,
+    approved_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    approved_at TIMESTAMPTZ NULL,
+    returned_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    returned_at TIMESTAMPTZ NULL,
+    return_reason TEXT NULL,
+    deprecated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    deprecated_at TIMESTAMPTZ NULL,
+    workflow_note TEXT NULL,
+    review_reminder_sent_for DATE NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -215,7 +285,7 @@ CREATE TABLE subject_workspace_history (
     subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
     actor_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
     section VARCHAR(30) NOT NULL CHECK (section IN (
-        'overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'integrations'
+        'visibility', 'overview', 'description', 'flow', 'steps', 'video', 'evidence', 'faq', 'integrations', 'workflow'
     )),
     action VARCHAR(30) NOT NULL DEFAULT 'updated',
     summary VARCHAR(500) NOT NULL DEFAULT '',
@@ -225,6 +295,10 @@ CREATE TABLE subject_workspace_history (
 
 CREATE INDEX idx_subject_workspace_history_subject_created
     ON subject_workspace_history(subject_id, created_at DESC, id DESC);
+
+CREATE INDEX idx_subject_workspaces_review_due
+    ON subject_workspaces(next_review_on)
+    WHERE documentation_status = 'approved' AND next_review_on IS NOT NULL;
 
 -- Tags transversais. Elas não concedem acesso: o acesso continua definido pela hierarquia.
 CREATE TABLE tags (
@@ -367,6 +441,47 @@ CREATE TABLE user_groups (
 
 CREATE INDEX idx_user_groups_user_id ON user_groups(user_id);
 CREATE INDEX idx_user_groups_group_id ON user_groups(group_id);
+
+-- Capacidades de administração global por equipe. Elas são deliberadamente
+-- independentes das permissões hierárquicas de conteúdo.
+CREATE TABLE group_system_capabilities (
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    capability VARCHAR(80) NOT NULL CHECK (capability IN (
+        'system.settings.manage',
+        'system.authentication.manage',
+        'system.directory.manage',
+        'system.audit.view',
+        'system.tags.manage'
+    )),
+    granted_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, capability)
+);
+
+CREATE INDEX idx_group_system_capabilities_capability
+    ON group_system_capabilities(capability, group_id);
+
+-- A equipe não é FK aqui para que a trilha sobreviva à exclusão da equipe.
+CREATE TABLE system_capability_audit (
+    id BIGSERIAL PRIMARY KEY,
+    actor_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    group_id INTEGER NULL,
+    group_name VARCHAR(255) NOT NULL,
+    capability VARCHAR(80) NOT NULL CHECK (capability IN (
+        'system.settings.manage',
+        'system.authentication.manage',
+        'system.directory.manage',
+        'system.audit.view',
+        'system.tags.manage'
+    )),
+    action VARCHAR(10) NOT NULL CHECK (action IN ('GRANTED', 'REVOKED')),
+    ip_address VARCHAR(45) NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_system_capability_audit_created_at ON system_capability_audit(created_at DESC);
+CREATE INDEX idx_system_capability_audit_group ON system_capability_audit(group_id, created_at DESC);
+CREATE INDEX idx_system_capability_audit_actor ON system_capability_audit(actor_id, created_at DESC) WHERE actor_id IS NOT NULL;
 
 CREATE TABLE permissions (
     id SERIAL PRIMARY KEY,

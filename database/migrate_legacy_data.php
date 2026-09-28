@@ -121,9 +121,9 @@ try {
 
     $stmtDoc = $pdo->prepare("
         INSERT INTO documents (
-            subject_id, created_by, title, slug, description, content_type, status, published_at, text_content, external_url
+            subject_id, created_by, title, slug, description, content_type, section_key, status, published_at, text_content, external_url
         ) VALUES (
-            :subject_id, :created_by, :title, :slug, :description, :content_type, :status, CURRENT_TIMESTAMP, :text_content, :external_url
+            :subject_id, :created_by, :title, :slug, :description, :content_type, :section_key, :status, CURRENT_TIMESTAMP, :text_content, :external_url
         ) ON CONFLICT (subject_id, slug) DO UPDATE SET title = EXCLUDED.title
     ");
 
@@ -136,6 +136,7 @@ try {
             ':slug' => $d[3],
             ':description' => $d[4],
             ':content_type' => $d[5],
+            ':section_key' => $d[5] === 'link' ? 'links' : ($d[5] === 'text' ? 'documents' : 'attachments'),
             ':status' => $d[6],
             ':text_content' => $d[7],
             ':external_url' => $d[8]
