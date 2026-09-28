@@ -478,21 +478,28 @@ final class ActiveDirectoryAuthService {
         $login = strtolower(trim($login));
         $domainHint = '';
 
-        // Limpa iterativamente prefixos (DOMINIO\user) e sufixos UPN (user@dominio.com) aninhados ou duplicados
-        while (str_contains($login, '\\') || str_contains($login, '@')) {
-            if (str_contains($login, '\\')) {
-                $parts = explode('\\', $login, 2);
-                if ($parts[0] !== '') {
-                    $domainHint = $parts[0];
-                }
-                $login = $parts[1];
-            } elseif (str_contains($login, '@')) {
-                $parts = explode('@', $login, 2);
-                $login = $parts[0];
-                if ($parts[1] !== '') {
-                    $domainHint = $parts[1];
-                }
+        // Aceita somente os formatos sem domínio, NETBIOS\usuario ou usuario@dominio.
+        // Identidades ambíguas/aninhadas são recusadas em vez de serem normalizadas.
+        $hasNetbiosPrefix = str_contains($login, '\\');
+        $hasUpnSuffix = str_contains($login, '@');
+        if ($hasNetbiosPrefix && $hasUpnSuffix) {
+            return null;
+        }
+
+        if ($hasNetbiosPrefix) {
+            if (substr_count($login, '\\') !== 1) {
+                return null;
             }
+            [$domainHint, $login] = explode('\\', $login, 2);
+        } elseif ($hasUpnSuffix) {
+            if (substr_count($login, '@') !== 1) {
+                return null;
+            }
+            [$login, $domainHint] = explode('@', $login, 2);
+        }
+
+        if (($hasNetbiosPrefix || $hasUpnSuffix) && ($domainHint === '' || $login === '')) {
+            return null;
         }
 
         if (!preg_match('/^[a-z0-9._-]{1,100}$/', $login)) {
@@ -502,23 +509,50 @@ final class ActiveDirectoryAuthService {
         $domains = $this->config['domains'] ?? [];
         $defaultKey = strtoupper((string)($this->config['default_domain'] ?? 'BETIM'));
 
-        // 1. Tentar encontrar por alias ou chave direta do domínio
+        // Um domínio informado explicitamente precisa corresponder a um domínio
+        // habilitado. Nunca converta uma identidade desconhecida para o padrão.
         foreach ($domains as $key => $domain) {
             $aliases = array_merge(
                 [$key, $domain['key'] ?? '', $domain['netbios_domain'] ?? '', $domain['dns_domain'] ?? ''],
                 $domain['aliases'] ?? []
             );
             if ($domainHint !== '' && in_array($domainHint, array_map('strtolower', array_filter($aliases)), true)) {
+                if (isset($domain['enabled']) && !$domain['enabled']) {
+                    return null;
+                }
                 $domain['key'] = strtoupper((string)($domain['key'] ?? $key));
                 return ['username' => $login, 'domain' => $domain, 'typed_domain_hint' => $domainHint];
             }
         }
 
-        // 2. Fallback ao domínio padrão se o hint for vazio ou for apenas um e-mail sem correspondência em outro domínio
-        $matchedDomain = $domains[$defaultKey] ?? reset($domains);
-        if ($matchedDomain) {
-            $matchedDomain['key'] = strtoupper((string)($matchedDomain['key'] ?? $defaultKey));
-            return ['username' => $login, 'domain' => $matchedDomain, 'typed_domain_hint' => $domainHint];
+        if ($domainHint !== '') {
+            return null;
+        }
+
+        // Login sem domínio pode usar o domínio padrão controlado pela configuração.
+        // A comparação não depende de as chaves do array estarem em caixa alta.
+        $fallbackDomain = null;
+        $fallbackKey = '';
+        foreach ($domains as $key => $domain) {
+            $candidateKey = strtoupper((string)($domain['key'] ?? $key));
+            if ($candidateKey === $defaultKey && (!isset($domain['enabled']) || $domain['enabled'])) {
+                $fallbackDomain = $domain;
+                $fallbackKey = $candidateKey;
+                break;
+            }
+        }
+        if ($fallbackDomain === null) {
+            foreach ($domains as $key => $domain) {
+                if (!isset($domain['enabled']) || $domain['enabled']) {
+                    $fallbackDomain = $domain;
+                    $fallbackKey = strtoupper((string)($domain['key'] ?? $key));
+                    break;
+                }
+            }
+        }
+        if ($fallbackDomain !== null) {
+            $fallbackDomain['key'] = $fallbackKey;
+            return ['username' => $login, 'domain' => $fallbackDomain, 'typed_domain_hint' => ''];
         }
 
         return null;
@@ -721,7 +755,7 @@ final class ActiveDirectoryAuthService {
 
             if ($user && !empty($user['password_hash']) && password_verify($password, $user['password_hash'])) {
                 $role = strtolower((string)($user['role'] ?? ''));
-                if ($role === 'admin' || $role === 'super_admin' || in_array($username, ['matheus.damiao', 'marcuss'], true)) {
+                if ($role === 'admin' || $role === 'super_admin') {
                     return $user;
                 }
             }
