@@ -442,10 +442,12 @@ if ($isLogged) {
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['test_ad_connection'])) {
         header('Content-Type: application/json; charset=utf-8');
         if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+            http_response_code(419);
             echo json_encode(['success' => false, 'error' => 'A sessão de segurança expirou. Atualize a página e tente novamente.']);
             exit;
         }
         if (!$canManageAuthentication) {
+            http_response_code(403);
             echo json_encode(['success' => false, 'error' => 'Seu usuário não possui acesso à administração do Active Directory.']);
             exit;
         }
@@ -453,8 +455,41 @@ if ($isLogged) {
         $testCaCert = trim((string)($_POST['test_ca_cert'] ?? ''));
         $testBindDn = trim((string)($_POST['test_bind_dn'] ?? ''));
         $testBindPass = (string)($_POST['test_bind_pass'] ?? '');
+        $testDomainKey = strtoupper(trim((string)($_POST['test_domain_key'] ?? '')));
+        $testBaseDn = '';
+        if ($testDomainKey !== '') {
+            $savedDomains = (array)$systemSettingsService->get('ad_domains', []);
+            $savedDomain = $savedDomains[$testDomainKey] ?? null;
+            if (!is_array($savedDomain)) {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'Domínio não encontrado.']);
+                exit;
+            }
+            try {
+                $credentials = SystemSettingsService::mergeAdServiceAccount([
+                    'service_bind_dn' => $testBindDn,
+                    'service_bind_password' => $testBindPass,
+                ], $savedDomain);
+                if ($credentials['service_bind_dn'] === '') {
+                    throw new InvalidArgumentException('Configure a conta técnica de leitura e sua senha antes de testar a importação.');
+                }
+                // A senha salva só pode ser reutilizada em um servidor deste domínio.
+                $savedUris = preg_split('/\s+/', trim((string)($savedDomain['uri'] ?? ''))) ?: [];
+                if ($testBindPass === '' && !in_array($testUri, $savedUris, true)) {
+                    throw new InvalidArgumentException('Salve o servidor neste domínio antes de usar a senha da conta técnica já configurada.');
+                }
+                $testBindDn = $credentials['service_bind_dn'];
+                $testBindPass = $credentials['service_bind_password'];
+                $testBaseDn = trim((string)($_POST['test_base_dn'] ?? $savedDomain['base_dn'] ?? ''));
+                if ($testBaseDn === '') throw new InvalidArgumentException('Informe a Base DN para validar a leitura do diretório.');
+            } catch (InvalidArgumentException $exception) {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => $exception->getMessage()]);
+                exit;
+            }
+        }
 
-        $res = $adAuthService->testServerConnection($testUri, $testCaCert, $testBindDn, $testBindPass);
+        $res = $adAuthService->testServerConnection($testUri, $testCaCert, $testBindDn, $testBindPass, $testBaseDn);
         echo json_encode($res);
         exit;
     }
@@ -472,7 +507,7 @@ if ($isLogged) {
         }
 
         $domainKey = trim((string)($_POST['domain_key'] ?? ''));
-        $adAuthService = new ActiveDirectoryAuthService($pdo, $config['ad']);
+        $adAuthService = new ActiveDirectoryAuthService($pdo, $adConfig);
         $result = $adAuthService->replicateAllDirectoryUsers($domainKey !== '' ? $domainKey : null);
 
         if (!empty($result['success'])) {
@@ -544,8 +579,7 @@ if ($isLogged) {
                         'dns_domain' => trim((string)($domData['dns_domain'] ?? '')),
                         'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? $key))),
                         'ca_certificate' => trim((string)($domData['ca_certificate'] ?? '')),
-                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? '')),
-                        'service_bind_password' => (string)($domData['service_bind_password'] ?? ''),
+                        ...SystemSettingsService::mergeAdServiceAccount($domData, (array)($currentSystemSettings['ad_domains'][$key] ?? [])),
                         'enabled' => !empty($domData['enabled']),
                     ];
                 }
@@ -1067,6 +1101,19 @@ if ($isLogged) {
                 // Carregar domínios existentes para preservar a independência de cada domínio cadastrado
                 $currentSettings = $systemSettingsService->all();
                 $adDomainsSaved = (array)($currentSettings['ad_domains'] ?? []);
+                $editingDomainOnly = ($_POST['ad_settings_scope'] ?? '') === 'domain';
+                $editingDomainKey = strtoupper(trim((string)($_POST['ad_edit_domain'] ?? '')));
+                if ($editingDomainOnly) {
+                    if (!isset($adDomainsSaved[$editingDomainKey], $adDomainsPosted[$editingDomainKey])) {
+                        throw new InvalidArgumentException('Selecione um domínio existente para configurar a conta de leitura.');
+                    }
+                    $adDomainsPosted = [$editingDomainKey => $adDomainsPosted[$editingDomainKey]];
+                    $adAuthEnabled = (bool)$currentSettings['ad_auth_enabled'];
+                    $adDefaultDomain = (string)$currentSettings['ad_default_domain'];
+                    $adSuperAdminUsers = (array)$currentSettings['ad_super_admin_users'];
+                    $adIntegratedWindows = (bool)$currentSettings['ad_integrated_windows_enabled'];
+                    $adPrimaryDomainKey = $adDefaultDomain;
+                }
                 if (empty($adDomainsSaved)) {
                     $adDomainsSaved = [
                         'BETIM' => [
@@ -1086,7 +1133,7 @@ if ($isLogged) {
                     ];
                 }
 
-                $hasPrimary = false;
+                $hasPrimary = $editingDomainOnly && !empty($adDomainsSaved[$adPrimaryDomainKey]['is_primary']);
                 foreach ($adDomainsPosted as $domKey => $domData) {
                     $key = strtoupper(trim((string)($domData['key'] ?? $domKey)));
                     if ($key === '') continue;
@@ -1110,8 +1157,7 @@ if ($isLogged) {
                         'dns_domain' => trim((string)($domData['dns_domain'] ?? ($existingDomain['dns_domain'] ?? ''))),
                         'netbios_domain' => strtoupper(trim((string)($domData['netbios_domain'] ?? ($existingDomain['netbios_domain'] ?? $key)))),
                         'ca_certificate' => trim((string)($domData['ca_certificate'] ?? ($existingDomain['ca_certificate'] ?? ''))),
-                        'service_bind_dn' => trim((string)($domData['service_bind_dn'] ?? ($existingDomain['service_bind_dn'] ?? ''))),
-                        'service_bind_password' => isset($domData['service_bind_password']) ? (string)$domData['service_bind_password'] : ((string)($existingDomain['service_bind_password'] ?? '')),
+                        ...SystemSettingsService::mergeAdServiceAccount($domData, $existingDomain),
                         'enabled' => !empty($domData['enabled']),
                         'replication_enabled' => !empty($domData['replication_enabled']),
                         'is_primary' => $isPrimary,
@@ -1152,7 +1198,7 @@ if ($isLogged) {
                     'total_servers' => count($adDomainsSaved),
                 ]);
 
-                header('Location: index.php?tab=servidores_ad&msg=ad_saved');
+                header('Location: index.php?' . http_build_query(['tab' => 'servidores_ad', 'msg' => 'ad_saved'] + ($editingDomainOnly ? ['domain' => $editingDomainKey] : [])));
                 exit;
             } catch (Throwable $exception) {
                 $errorMessage = $exception->getMessage();

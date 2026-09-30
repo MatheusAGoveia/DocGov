@@ -107,6 +107,28 @@ final class SystemSettingsService {
         return array_key_exists($theme, self::portalThemes()) ? $theme : 'emerald';
     }
 
+    /** Senha vazia preserva a credencial salva somente quando a conta não mudou. */
+    public static function mergeAdServiceAccount(#[\SensitiveParameter] array $input, #[\SensitiveParameter] array $existing): array {
+        foreach (['service_bind_dn', 'service_bind_password'] as $field) {
+            if (isset($input[$field]) && !is_string($input[$field])) {
+                throw new InvalidArgumentException('Informe uma conta técnica e senha válidas.');
+            }
+        }
+        $previousAccount = trim((string)($existing['service_bind_dn'] ?? ''));
+        $account = trim((string)($input['service_bind_dn'] ?? $previousAccount));
+        $password = (string)($input['service_bind_password'] ?? '');
+        if ($password === '' && $account === $previousAccount) {
+            $password = (string)($existing['service_bind_password'] ?? '');
+        }
+        if ($account === '' && $password !== '') {
+            throw new InvalidArgumentException('Informe o login da conta técnica para salvar a senha.');
+        }
+        if ($account !== '' && $password === '') {
+            throw new InvalidArgumentException('Informe a senha da conta técnica. Ao trocar a conta, informe também a nova senha.');
+        }
+        return ['service_bind_dn' => $account, 'service_bind_password' => $password];
+    }
+
     public function saveMany(array $values, int $actorId): void {
         if ($actorId <= 0) {
             throw new InvalidArgumentException('Executor inválido para alterar configurações.');

@@ -284,6 +284,8 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
         <form method="POST" action="index.php?tab=servidores_ad&domain=<?= htmlspecialchars($currentDomain['key']) ?>" class="space-y-5" id="form-domain-servers">
             <input type="hidden" name="save_ad_settings" value="1">
+            <input type="hidden" name="ad_settings_scope" value="domain">
+            <input type="hidden" name="ad_edit_domain" value="<?= htmlspecialchars($currentDomain['key'], ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="ad_auth_enabled" value="<?= $adAuthEnabled ? '1' : '0' ?>">
             <input type="hidden" name="ad_primary_domain" value="<?= htmlspecialchars($primaryKey) ?>">
@@ -318,12 +320,29 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                 </div>
             </section>
 
+            <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-2xs dark:border-[#454956] dark:bg-[#353842]" aria-labelledby="ad-service-account-title">
+                <h3 id="ad-service-account-title" class="text-sm font-bold text-slate-900 dark:text-slate-100">Conta de leitura para importar usuários</h3>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Esta conta será usada para consultar usuários deste domínio. Ela é compartilhada pelos servidores abaixo.</p>
+                <p class="mt-2 text-xs font-semibold text-slate-600 dark:text-slate-300" id="ad-service-account-status"><?= !empty($currentDomain['service_bind_dn']) && ($currentDomain['service_bind_password'] ?? '') !== '' ? 'Conta configurada. Use o teste do servidor para validar a autenticação.' : 'Configuração pendente: informe a conta e a senha para habilitar a importação.' ?></p>
+                <div class="mt-4 grid gap-4 md:grid-cols-2">
+                    <label class="block" for="ad-service-bind-dn">
+                        <span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Login da conta de leitura</span>
+                        <input id="ad-service-bind-dn" name="ad_domains[<?= htmlspecialchars($currentDomain['key'], ENT_QUOTES, 'UTF-8') ?>][service_bind_dn]" type="text" autocomplete="off" value="<?= htmlspecialchars((string)($currentDomain['service_bind_dn'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" placeholder="usuario@dominio ou DOMINIO\usuario" class="input-minimal w-full px-3 py-2 text-xs font-mono">
+                    </label>
+                    <label class="block" for="ad-service-bind-password">
+                        <span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Senha da conta de leitura</span>
+                        <input id="ad-service-bind-password" name="ad_domains[<?= htmlspecialchars($currentDomain['key'], ENT_QUOTES, 'UTF-8') ?>][service_bind_password]" type="password" autocomplete="new-password" value="" placeholder="<?= ($currentDomain['service_bind_password'] ?? '') !== '' ? 'Deixe vazio para manter a senha salva' : 'Informe a senha da conta' ?>" class="input-minimal w-full px-3 py-2 text-xs">
+                    </label>
+                </div>
+                <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400">A senha salva não é exibida. Ao trocar o login da conta, informe também a nova senha.</p>
+            </section>
+
             <!-- SERVIDORES DO DOMÍNIO COM NOME DO SERVIDOR E PROPRIEDADES INDIVIDUAIS -->
             <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-2xs dark:border-[#454956] dark:bg-[#353842] ad-domain-card" data-domain-key="<?= htmlspecialchars($currentDomain['key']) ?>">
                 <div class="mb-4 flex items-center justify-between border-b border-slate-100 pb-3 dark:border-[#454956]">
                     <div>
                         <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Servidores do Domínio [<?= htmlspecialchars($currentDomain['key']) ?>]</h3>
-                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Cadastre o Nome do Servidor, Host/IP, Certificado CA e credenciais para cada réplica.</p>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Cadastre o nome, endereço e certificado de cada servidor. O teste usa a conta de leitura do domínio.</p>
                     </div>
                     <button type="button" id="btn-add-server-row" class="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-sky-700 shadow-xs">
                         <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
@@ -391,20 +410,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                                     <label class="block">
                                         <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Certificado CA PEM Específico</span>
                                         <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-ca-cert" value="<?= htmlspecialchars((string)($currentDomain['ca_certificate'] ?? '')) ?>" placeholder="C:\caminho\ca.pem">
-                                    </label>
-                                </div>
-
-                                <div>
-                                    <label class="block">
-                                        <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Conta Técnica Específica (Bind DN)</span>
-                                        <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-dn" value="<?= htmlspecialchars((string)($currentDomain['service_bind_dn'] ?? '')) ?>" placeholder="CN=Conta,DC=betim,DC=pmb">
-                                    </label>
-                                </div>
-
-                                <div>
-                                    <label class="block">
-                                        <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Senha da Conta Técnica</span>
-                                        <input type="password" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-pass" value="<?= htmlspecialchars((string)($currentDomain['service_bind_password'] ?? '')) ?>" placeholder="••••••••">
                                     </label>
                                 </div>
                             </div>
@@ -533,7 +538,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                                 <input type="hidden" name="ad_domains[<?= htmlspecialchars($domKeyUpper) ?>][netbios_domain]" value="<?= htmlspecialchars((string)($domain['netbios_domain'] ?? $domKeyUpper)) ?>">
                                 <input type="hidden" name="ad_domains[<?= htmlspecialchars($domKeyUpper) ?>][ca_certificate]" value="<?= htmlspecialchars((string)($domain['ca_certificate'] ?? '')) ?>">
                                 <input type="hidden" name="ad_domains[<?= htmlspecialchars($domKeyUpper) ?>][service_bind_dn]" value="<?= htmlspecialchars((string)($domain['service_bind_dn'] ?? '')) ?>">
-                                <input type="hidden" name="ad_domains[<?= htmlspecialchars($domKeyUpper) ?>][service_bind_password]" value="<?= htmlspecialchars((string)($domain['service_bind_password'] ?? '')) ?>">
 
                                 <label class="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
                                     <input type="checkbox" name="ad_domains[<?= htmlspecialchars($domKeyUpper) ?>][enabled]" value="1" <?= $isDomainActive ? 'checked' : '' ?> class="h-3.5 w-3.5 rounded accent-sky-600">
@@ -778,20 +782,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                         <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-ca-cert" value="" placeholder="C:\\caminho\\ca.pem">
                     </label>
                 </div>
-
-                <div>
-                    <label class="block">
-                        <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Conta Técnica Específica (Bind DN)</span>
-                        <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-dn" value="" placeholder="CN=Conta,DC=betim,DC=pmb">
-                    </label>
-                </div>
-
-                <div>
-                    <label class="block">
-                        <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Senha da Conta Técnica</span>
-                        <input type="password" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-pass" value="" placeholder="••••••••">
-                    </label>
-                </div>
             </div>
 
             <div class="ad-test-result-box mt-3 hidden rounded-md p-2.5 text-xs font-semibold"></div>
@@ -809,8 +799,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             const sourceName = sourceRow.querySelector('.server-name-input')?.value || 'Servidor Réplica';
             const sourceUri = sourceRow.querySelector('.server-uri-input')?.value || '';
             const sourceCa = sourceRow.querySelector('.js-test-ca-cert')?.value || '';
-            const sourceBindDn = sourceRow.querySelector('.js-test-bind-dn')?.value || '';
-            const sourceBindPass = sourceRow.querySelector('.js-test-bind-pass')?.value || '';
             const container = document.getElementById('server-rows-container');
             if (!container) return;
 
@@ -859,20 +847,6 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                         <label class="block">
                             <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Certificado CA PEM Específico</span>
                             <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-ca-cert" value="${sourceCa}" placeholder="C:\\caminho\\ca.pem">
-                        </label>
-                    </div>
-
-                    <div>
-                        <label class="block">
-                            <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Conta Técnica Específica (Bind DN)</span>
-                            <input type="text" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-dn" value="${sourceBindDn}" placeholder="CN=Conta,DC=betim,DC=pmb">
-                        </label>
-                    </div>
-
-                    <div>
-                        <label class="block">
-                            <span class="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-slate-300">Senha da Conta Técnica</span>
-                            <input type="password" class="input-minimal w-full px-2.5 py-1.5 text-xs font-mono js-test-bind-pass" value="${sourceBindPass}" placeholder="••••••••">
                         </label>
                     </div>
                 </div>
@@ -1032,8 +1006,8 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             const serverName = card.querySelector('.server-name-input')?.value || 'Servidor';
             const uri = card.querySelector('.server-uri-input')?.value || '';
             const caCert = card.querySelector('.js-test-ca-cert')?.value || '';
-            const bindDn = card.querySelector('.js-test-bind-dn')?.value || '';
-            const bindPass = card.querySelector('.js-test-bind-pass')?.value || '';
+            const bindDn = document.getElementById('ad-service-bind-dn')?.value || '';
+            const bindPass = document.getElementById('ad-service-bind-password')?.value || '';
             const csrfToken = document.getElementById('ad-csrf-token')?.value || document.querySelector('input[name="csrf_token"]')?.value || '';
 
             resultBox.classList.remove('hidden', 'bg-emerald-100', 'text-emerald-800', 'bg-red-100', 'text-red-800', 'dark:bg-emerald-900/50', 'dark:text-emerald-200', 'dark:bg-red-900/50', 'dark:text-red-200');
@@ -1045,6 +1019,8 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
             formData.append('csrf_token', csrfToken);
             formData.append('test_uri', uri);
             formData.append('test_ca_cert', caCert);
+            formData.append('test_domain_key', document.querySelector('.ad-domain-card')?.dataset.domainKey || '');
+            formData.append('test_base_dn', document.querySelector('.js-test-base-dn')?.value || '');
             formData.append('test_bind_dn', bindDn);
             formData.append('test_bind_pass', bindPass);
 

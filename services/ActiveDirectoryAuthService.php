@@ -801,7 +801,7 @@ final class ActiveDirectoryAuthService {
         return ($accountControl & 8388608) === 8388608;
     }
 
-    public function testServerConnection(string $uri, string $caCert = '', string $bindDn = '', string $bindPass = ''): array {
+    public function testServerConnection(string $uri, string $caCert = '', string $bindDn = '', #[\SensitiveParameter] string $bindPass = '', string $baseDn = ''): array {
         if (!extension_loaded('ldap')) {
             return ['success' => false, 'error' => 'A extensão PHP LDAP não está instalada ou ativada no servidor web.'];
         }
@@ -817,14 +817,14 @@ final class ActiveDirectoryAuthService {
         $host = $parsedUrl['host'] ?? '';
         $port = (int)($parsedUrl['port'] ?? ($scheme === 'ldaps' ? 636 : 389));
 
-        if ($host === '') {
-            // Tentar regex se parse_url falhar por sintaxe de URI
-            if (preg_match('/^ldaps?:\/\/([^\/:]+)(?::(\d+))?/i', $uri, $m)) {
-                $host = $m[1];
-                $port = !empty($m[2]) ? (int)$m[2] : ($scheme === 'ldaps' ? 636 : 389);
-            } else {
-                return ['success' => false, 'error' => "Sintaxe da URI do servidor LDAP inválida: [{$uri}]."];
-            }
+        if ($parsedUrl === false || !in_array($scheme, ['ldap', 'ldaps'], true)
+            || $host === '' || $port < 1 || $port > 65535
+            || isset($parsedUrl['user']) || isset($parsedUrl['pass'])) {
+            return ['success' => false, 'error' => 'Informe uma URI LDAP/LDAPS válida com porta entre 1 e 65535.'];
+        }
+        $bindDn = trim($bindDn);
+        if (($bindDn === '') !== ($bindPass === '')) {
+            return ['success' => false, 'error' => 'Informe o login e a senha da conta de leitura para testar a autenticação.'];
         }
 
         // 2. Teste físico de conectividade TCP via Socket antes do aperto de mão LDAP
@@ -868,12 +868,8 @@ final class ActiveDirectoryAuthService {
             @ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, 3);
         }
 
-        // 4. Se a senha for a máscara visual (•), ignorar a senha para não dar erro falso de bind
-        $isPlaceholderPass = str_contains($bindPass, '•') || str_contains($bindPass, '*');
-        $bindDn = trim($bindDn);
-        $bindPass = trim($bindPass);
-
-        if ($bindDn !== '' && $bindPass !== '' && !$isPlaceholderPass) {
+        // A senha é usada exatamente como informada, incluindo espaços e asteriscos.
+        if ($bindDn !== '' && $bindPass !== '') {
             $bound = @ldap_bind($conn, $bindDn, $bindPass);
             if (!$bound) {
                 $err = ldap_error($conn);
@@ -883,10 +879,19 @@ final class ActiveDirectoryAuthService {
                     'error' => "Conexão aberta com [{$uri}], mas a autenticação da Conta Técnica (Bind DN) falhou: {$err}"
                 ];
             }
+            if ($baseDn !== '') {
+                $read = @ldap_read($conn, $baseDn, '(objectClass=*)', ['distinguishedName'], 0, 1, 3);
+                if ($read === false || ldap_count_entries($conn, $read) < 1) {
+                    @ldap_unbind($conn);
+                    return ['success' => false, 'authenticated' => true, 'error' => 'A conta autenticou, mas não foi possível ler a Base DN configurada. Confira a Base DN e a permissão de leitura da conta.'];
+                }
+            }
             @ldap_unbind($conn);
             return [
                 'success' => true,
-                'message' => "Conexão de rede e Autenticação BIND bem-sucedidas no servidor [{$uri}]!"
+                'authenticated' => true,
+                'directory_readable' => $baseDn !== '',
+                'message' => $baseDn !== '' ? 'Conta de leitura validada: autenticação e consulta ao diretório bem-sucedidas.' : "Conexão de rede e Autenticação BIND bem-sucedidas no servidor [{$uri}]!"
             ];
         } else {
             $bound = @ldap_bind($conn);
@@ -901,6 +906,7 @@ final class ActiveDirectoryAuthService {
             @ldap_unbind($conn);
             return [
                 'success' => true,
+                'authenticated' => false,
                 'message' => "Conexão TCP e protocolo LDAP/TLS validados com sucesso no servidor [{$uri}]!"
             ];
         }
