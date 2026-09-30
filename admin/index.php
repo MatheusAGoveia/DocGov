@@ -3477,7 +3477,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         <div class="p-4 border-b border-slate-100 dark:border-[#454956] flex items-center justify-between">
                             <a href="../index.php" class="flex items-center gap-3 text-decoration-none min-w-0" title="Ir ao Portal Público">
                                 <?php if ($appLogoUrl): ?>
-                                    <img src="../<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 shrink-0 rounded-md border border-slate-200 bg-white object-contain p-0.5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">
+                                    <img src="../<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="Brasão da Prefeitura Municipal de Betim" class="docgov-brand-logo h-10 w-10">
                                 <?php else: ?>
                                     <div class="w-8 h-8 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs shrink-0">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
@@ -4899,7 +4899,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <?php endif; ?>
 
                                     <div id="box-text" class="<?= $selectedContentType === 'text' ? '' : 'hidden ' ?>rounded-md border border-slate-200 bg-slate-50/70 p-4 dark:border-[#454956] dark:bg-[#2c2e33]">
-                                        <div class="mb-3"><h4 class="text-xs font-bold text-slate-800 dark:text-slate-100">Editor de artigo</h4><p class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Clique na imagem para selecioná-la. Arraste a alça superior para posicioná-la no texto e nas zonas laterais para definir onde o texto passa. Arraste os pontos nos cantos para redimensionar.</p></div>
+                                        <div class="mb-3"><h4 class="text-xs font-bold text-slate-800 dark:text-slate-100">Editor de artigo</h4><p class="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">Clique na imagem para selecioná-la. Arraste qualquer parte da imagem para movê-la no texto ou escolher uma zona lateral. Arraste os pontos nos cantos para redimensionar.</p></div>
                                         <textarea id="text-content-input" name="conteudo_html" rows="14" aria-label="Conteúdo formatado do documento" class="input-minimal min-h-80 w-full px-3 py-2 text-sm" placeholder="Comece a escrever o conteúdo..."><?= htmlspecialchars($selectedContentType === 'text' ? ($editDoc['conteudo_html'] ?? '') : '') ?></textarea>
                                         <div id="quill-editor-container" class="govdoc-quill-editor hidden" aria-label="Conteúdo formatado do documento"></div>
                                         <div id="article-selected-media" class="govdoc-media-inspector hidden mt-3" aria-label="Ajustar mídia selecionada">

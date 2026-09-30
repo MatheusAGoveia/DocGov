@@ -17,14 +17,57 @@
   --dg-muted: #6b7280;
   --dg-accent: #0f8f6f;
   --dg-accent-soft: #e8f5f0;
+  --docgov-overlay-start: rgba(250, 253, 252, 0.78);
+  --docgov-overlay-middle: rgba(247, 251, 249, 0.48);
+  --docgov-overlay-end: rgba(240, 248, 245, 0.24);
+  --docgov-login-overlay-start: rgba(244, 249, 247, 0.94);
+  --docgov-login-overlay-middle: rgba(247, 251, 250, 0.70);
+  --docgov-login-overlay-end: rgba(247, 251, 250, 0.32);
 }
 
 body {
+  margin: 0;
   font-family: var(--font-main);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--dg-canvas);
+  background-image:
+    linear-gradient(180deg, var(--docgov-overlay-start) 0%, var(--docgov-overlay-middle) 52%, var(--docgov-overlay-end) 100%),
+    url("betim-portal-background.png");
+  /* Cobertura de ponta a ponta nas telas menores. */
+  background-position: center, right bottom;
+  background-repeat: no-repeat, no-repeat;
+  background-size: 100% 100%, cover;
+  background-attachment: fixed, fixed;
   color: var(--dg-text);
+  transition: background-color 900ms ease, color 300ms ease;
+}
+
+@media (min-width: 1024px) {
+  body {
+    /* A arte mede 1755x896; a faixa abaixo da linha em y=823 não deve entrar na tela. */
+    background-size: 100% 100%, max(100vw, 214vh) auto;
+    background-position: center, right calc(100% + max(4.22vw, 9vh));
+  }
+}
+
+.docgov-brand-logo {
+  flex: none;
+  object-fit: contain;
+  object-position: center;
+  filter: drop-shadow(0 3px 5px rgba(15, 23, 42, 0.14));
+}
+
+.dark body {
+  background-image:
+    linear-gradient(180deg, rgba(21, 23, 28, 0.92) 0%, rgba(21, 23, 28, 0.86) 58%, rgba(21, 23, 28, 0.78) 100%),
+    url("betim-portal-background.png");
+}
+
+@media print {
+  body {
+    background-image: none !important;
+  }
 }
 
 /* ===========================================================================
@@ -821,6 +864,109 @@ body #doc-reader-modal>div {
   padding-right: 1rem;
 }
 
+/* O perfil não deve determinar a altura da barra quando o nome é longo. */
+.portal-topbar .max-container > div:first-child {
+  min-width: 0;
+}
+
+.portal-topbar .max-container > div:first-child > div {
+  min-width: 0;
+}
+
+.portal-profile-link {
+  min-width: 0;
+  max-width: min(24vw, 18rem);
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+.portal-profile-avatar {
+  flex: none;
+}
+
+.portal-profile-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1199px) {
+  .portal-profile-link {
+    flex: none;
+    max-width: none;
+    padding-right: 0.375rem;
+  }
+
+  .portal-profile-name,
+  .portal-header-desktop-nav {
+    display: none !important;
+  }
+
+  .portal-header-menu-button {
+    display: inline-flex !important;
+  }
+
+  .portal-header-mobile-menu:not(.hidden) {
+    display: block !important;
+  }
+}
+
+@media (max-width: 700px) {
+  .portal-header-search,
+  .portal-logout-link {
+    display: none !important;
+  }
+
+  .portal-drawer-search {
+    display: block !important;
+  }
+}
+
+@media (max-width: 440px) {
+  .portal-brand > span {
+    display: none;
+  }
+}
+
+@media (min-width: 1920px) {
+  html {
+    font-size: clamp(17px, 0.8vw, 22px);
+  }
+
+  .max-container {
+    max-width: min(88vw, 2400px);
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
+
+  .portal-topbar .max-container > div:first-child {
+    min-height: 4rem;
+  }
+
+  .portal-profile-link {
+    max-width: min(24vw, 32rem);
+  }
+
+  .portal-category-grid > a {
+    min-height: 9rem;
+    padding: 1rem;
+  }
+
+  .portal-category-grid > a h3 {
+    font-size: 0.85rem;
+  }
+
+  .portal-category-grid > a p {
+    font-size: 0.75rem;
+  }
+
+  .portal-category-grid > a > div:last-child {
+    font-size: 0.7rem;
+  }
+}
+
 @media (min-width: 640px) {
   .max-container {
     padding-left: 1.5rem;
@@ -994,7 +1140,7 @@ body #doc-reader-modal>div {
   border: 1px solid transparent;
   border-radius: 0.4rem;
   background: transparent;
-  color: #d97706;
+  color: #111827;
   cursor: pointer;
   transition: transform var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
@@ -1002,24 +1148,24 @@ body #doc-reader-modal>div {
 .favorite-card-button:hover {
   border-color: transparent;
   background: transparent;
-  color: #92400e;
+  color: #020617;
   transform: scale(1.05);
 }
 
 .favorite-card-button:focus-visible {
-  outline: 2px solid #f59e0b;
+  outline: 2px solid #111827;
   outline-offset: 2px;
 }
 
 .dark .favorite-card-button {
   border-color: transparent;
   background: transparent;
-  color: #fcd34d;
+  color: #f8fafc;
 }
 
 .dark .favorite-card-button:hover {
   background: transparent;
-  color: #fde68a;
+  color: #ffffff;
 }
 
 .favorite-card-button__icon {
@@ -1422,6 +1568,91 @@ html:not(.dark)[data-portal-theme] .navigation-trail [class*="bg-emerald-500"] {
 
 html:not(.dark)[data-portal-theme] .dashboard-stat-card--primary {
   border-left-color: var(--dg-accent) !important;
+}
+
+/* A tonalidade da paisagem acompanha exclusivamente a seleção manual. */
+html[data-portal-theme="emerald"] {
+  --docgov-overlay-start: rgba(247, 252, 250, 0.78);
+  --docgov-overlay-middle: rgba(232, 247, 241, 0.46);
+  --docgov-overlay-end: rgba(151, 207, 190, 0.20);
+  --docgov-login-overlay-start: rgba(244, 250, 248, 0.94);
+  --docgov-login-overlay-middle: rgba(232, 247, 241, 0.69);
+  --docgov-login-overlay-end: rgba(189, 225, 214, 0.30);
+}
+
+html[data-portal-theme="blue"] {
+  --docgov-overlay-start: rgba(247, 250, 255, 0.80);
+  --docgov-overlay-middle: rgba(226, 235, 253, 0.48);
+  --docgov-overlay-end: rgba(148, 176, 230, 0.20);
+  --docgov-login-overlay-start: rgba(247, 250, 255, 0.95);
+  --docgov-login-overlay-middle: rgba(229, 237, 253, 0.72);
+  --docgov-login-overlay-end: rgba(175, 198, 239, 0.30);
+}
+
+html[data-portal-theme="indigo"] {
+  --docgov-overlay-start: rgba(249, 248, 255, 0.80);
+  --docgov-overlay-middle: rgba(232, 230, 252, 0.48);
+  --docgov-overlay-end: rgba(163, 158, 226, 0.20);
+  --docgov-login-overlay-start: rgba(249, 249, 255, 0.95);
+  --docgov-login-overlay-middle: rgba(234, 232, 253, 0.72);
+  --docgov-login-overlay-end: rgba(187, 183, 236, 0.30);
+}
+
+html[data-portal-theme="violet"] {
+  --docgov-overlay-start: rgba(252, 248, 255, 0.80);
+  --docgov-overlay-middle: rgba(241, 228, 252, 0.48);
+  --docgov-overlay-end: rgba(193, 151, 225, 0.20);
+  --docgov-login-overlay-start: rgba(252, 249, 255, 0.95);
+  --docgov-login-overlay-middle: rgba(243, 231, 252, 0.72);
+  --docgov-login-overlay-end: rgba(209, 177, 234, 0.30);
+}
+
+html[data-portal-theme="rose"] {
+  --docgov-overlay-start: rgba(255, 248, 250, 0.80);
+  --docgov-overlay-middle: rgba(252, 228, 235, 0.48);
+  --docgov-overlay-end: rgba(225, 146, 167, 0.20);
+  --docgov-login-overlay-start: rgba(255, 249, 251, 0.95);
+  --docgov-login-overlay-middle: rgba(252, 232, 238, 0.72);
+  --docgov-login-overlay-end: rgba(235, 176, 191, 0.30);
+}
+
+html[data-portal-theme="amber"] {
+  --docgov-overlay-start: rgba(255, 251, 240, 0.82);
+  --docgov-overlay-middle: rgba(255, 242, 211, 0.50);
+  --docgov-overlay-end: rgba(232, 190, 112, 0.20);
+  --docgov-login-overlay-start: rgba(255, 252, 242, 0.95);
+  --docgov-login-overlay-middle: rgba(255, 245, 220, 0.72);
+  --docgov-login-overlay-end: rgba(241, 211, 151, 0.30);
+}
+
+html[data-portal-theme="ocean"] {
+  --docgov-overlay-start: rgba(245, 252, 253, 0.79);
+  --docgov-overlay-middle: rgba(220, 243, 247, 0.47);
+  --docgov-overlay-end: rgba(125, 194, 207, 0.20);
+  --docgov-login-overlay-start: rgba(245, 252, 253, 0.95);
+  --docgov-login-overlay-middle: rgba(225, 245, 248, 0.71);
+  --docgov-login-overlay-end: rgba(163, 215, 224, 0.30);
+}
+
+html[data-portal-theme="graphite"] {
+  --docgov-overlay-start: rgba(250, 250, 250, 0.82);
+  --docgov-overlay-middle: rgba(236, 237, 238, 0.50);
+  --docgov-overlay-end: rgba(158, 162, 168, 0.20);
+  --docgov-login-overlay-start: rgba(251, 251, 251, 0.95);
+  --docgov-login-overlay-middle: rgba(239, 240, 241, 0.73);
+  --docgov-login-overlay-end: rgba(186, 189, 194, 0.30);
+}
+
+html[data-portal-theme] body .bg-white,
+html[data-portal-theme] body .bg-slate-50,
+html[data-portal-theme] body .fixed.inset-x-0.top-0,
+html[data-portal-theme] body .login-info-card {
+  transition: background-color 900ms ease, border-color 900ms ease, color 300ms ease;
+}
+
+.login-context-kicker {
+  border-color: var(--dg-accent) !important;
+  color: var(--dg-accent-strong) !important;
 }
 
 /* Seletor administrativo de tema. A prévia e a troca imediata tornam a escolha

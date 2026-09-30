@@ -219,7 +219,7 @@ $userThemeClass = 'light';
                 <div class="flex items-center gap-6">
                     <a href="index.php" class="inline-flex items-center gap-2.5 group text-decoration-none shrink-0">
                         <?php if ($appLogoUrl): ?>
-                            <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 rounded-xl border border-slate-200 bg-white object-contain p-0.5 shadow-xs transition-transform duration-200 group-hover:scale-105 dark:border-[#454956] dark:bg-[#353842]">
+                            <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="Brasão da Prefeitura Municipal de Betim" class="docgov-brand-logo h-10 w-10 transition-transform duration-200 group-hover:scale-105">
                         <?php else: ?>
                             <div class="w-8 h-8 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs group-hover:scale-105 transition-transform duration-200">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

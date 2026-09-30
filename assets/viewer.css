@@ -164,7 +164,11 @@
 }
 
 .viewer-btn-icon.is-active {
-  color: #f59e0b;
+  color: #111827;
+}
+
+.dark .viewer-btn-icon.is-active {
+  color: #f8fafc;
 }
 
 .viewer-divider {

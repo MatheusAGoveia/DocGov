@@ -34,7 +34,7 @@
                 node.classList.add(`govdoc-media--${value.layout}`);
                 node.style.width = `${value.width}%`;
                 node.setAttribute('draggable', 'true');
-                node.setAttribute('title', 'Clique para ajustar; arraste para mover no texto');
+                node.setAttribute('title', 'Clique para ajustar; arraste a mídia para mover no texto');
                 node.setAttribute('tabindex', '0');
                 node.setAttribute('role', 'group');
                 node.setAttribute('aria-label', value.kind === 'video' ? 'Vídeo no artigo; pressione Enter para ajustar' : 'Imagem no artigo; pressione Enter para ajustar');
@@ -54,17 +54,11 @@
                     const image = document.createElement('img');
                     image.src = value.src;
                     image.alt = value.alt;
-                    image.draggable = true;
+                    // O navegador não deve arrastar uma cópia/URL da imagem.
+                    // O FIGURE é a única origem do movimento no editor.
+                    image.draggable = false;
                     frameContainer.append(image);
                 }
-                const handle = document.createElement('span');
-                handle.className = 'govdoc-media-handle';
-                handle.textContent = '⠿';
-                handle.setAttribute('draggable', 'true');
-                handle.setAttribute('contenteditable', 'false');
-                handle.setAttribute('aria-hidden', 'true');
-                handle.setAttribute('title', 'Arrastar bloco de mídia');
-                frameContainer.append(handle);
                 const deleteButton = document.createElement('button');
                 deleteButton.type = 'button';
                 deleteButton.className = 'govdoc-media-delete';
@@ -460,12 +454,15 @@
             dragged = figure;
             select(figure);
             dropZones.classList.add('is-visible');
+            // Remove o payload de imagem/URL que o navegador poderia copiar.
+            event.dataTransfer.clearData();
             event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', 'govdoc-article-media');
+            event.dataTransfer.setData('application/x-govdoc-article-media', 'move');
         }, true);
         root.addEventListener('dragover', event => {
             if (!dragged) return;
             event.preventDefault();
+            event.stopImmediatePropagation();
             event.dataTransfer.dropEffect = 'move';
             const target = positionDuringDrag(event.clientX, event.clientY);
             dropZones.dataset.activeLayout = layoutFromX(event.clientX);
@@ -490,6 +487,7 @@
         root.addEventListener('drop', event => {
             if (!dragged) return;
             event.preventDefault();
+            event.stopImmediatePropagation();
             const target = positionDuringDrag(event.clientX, event.clientY);
             moveTo(target.index, layoutFromX(event.clientX));
             clearDragPreview();

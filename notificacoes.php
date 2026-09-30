@@ -83,7 +83,7 @@ function notificationTone(string $type): string {
         <header class="max-container flex min-h-[58px] items-center justify-between gap-4">
             <a href="index.php" class="inline-flex items-center gap-2.5 text-decoration-none">
                 <?php if ($appLogoUrl): ?>
-                    <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 rounded-xl border border-slate-200 bg-white object-contain p-0.5 dark:border-[#454956] dark:bg-[#353842]">
+                    <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="Brasão da Prefeitura Municipal de Betim" class="docgov-brand-logo h-10 w-10">
                 <?php else: ?>
                     <span class="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900">D</span>
                 <?php endif; ?>

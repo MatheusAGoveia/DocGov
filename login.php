@@ -104,16 +104,30 @@ try {
     <link rel="stylesheet" href="assets/style.css">
     <style>
         .login-info-panel {
-            background: #f3f4f6;
-            border-left: 1px solid #e5e7eb;
+            position: relative;
+            isolation: isolate;
+            overflow: hidden;
+            background-color: rgba(241, 247, 245, 0.74);
+            background-image:
+                linear-gradient(90deg, var(--docgov-login-overlay-start) 0%, var(--docgov-login-overlay-middle) 42%, var(--docgov-login-overlay-end) 100%),
+                url('assets/betim-portal-background.png');
+            background-position: center, right top;
+            background-repeat: no-repeat, no-repeat;
+            background-size: 100% 100%, auto 109%;
+            border-left: 1px solid rgba(148, 163, 184, 0.28);
         }
         .dark .login-info-panel {
-            background: #262626;
+            background-color: #262626;
+            background-image:
+                linear-gradient(90deg, rgba(28, 31, 37, 0.94) 0%, rgba(28, 31, 37, 0.82) 54%, rgba(28, 31, 37, 0.70) 100%),
+                url('assets/betim-portal-background.png');
             border-left-color: #424242;
         }
         .login-info-card {
-            border: 1px solid #d1d5db;
-            background: #ffffff;
+            border: 1px solid rgba(148, 163, 184, 0.30);
+            background: rgba(255, 255, 255, 0.76);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+            backdrop-filter: blur(10px);
         }
         .dark .login-info-card {
             border-color: #4a4a4a;
@@ -126,13 +140,13 @@ try {
     <div class="w-full flex flex-col md:flex-row min-h-screen">
 
         <!-- PAINEL DE LOGIN (FORMULÁRIO LATERAL) -->
-        <div class="w-full md:w-[440px] lg:w-[480px] p-8 lg:p-12 flex flex-col justify-between border-r border-slate-200 dark:border-[#2c2e33] bg-white dark:bg-[#1e293b] z-10">
+        <div class="w-full md:w-[440px] lg:w-[480px] p-8 lg:p-12 flex flex-col justify-center border-r border-slate-200/70 dark:border-[#2c2e33] bg-white/95 dark:bg-[#1e293b]/95 backdrop-blur-xl z-10 shadow-2xl shadow-slate-900/5">
             
             <!-- CABEÇALHO DO MARCA -->
             <div>
                 <div class="flex items-center gap-3 mb-10">
                     <?php if ($appLogoUrl): ?>
-                        <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($appName) ?>" class="h-10 w-10 rounded-xl border border-slate-200 bg-white object-contain p-0.5 shadow-md dark:border-[#454956] dark:bg-[#353842]">
+                        <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="Brasão da Prefeitura Municipal de Betim" class="docgov-brand-logo h-20 w-20">
                     <?php else: ?>
                         <div class="w-10 h-10 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5m0 0h4m-4 0V11m0 0L9 14m3-3l3 3"/></svg>
@@ -214,17 +228,12 @@ try {
                 </form>
             </div>
 
-            <!-- RODAPÉ DA TELA DE LOGIN -->
-            <div class="pt-4 border-t border-slate-100 dark:border-[#2c2e33] text-[11px] text-slate-400">
-                <span>© 2026 <?= htmlspecialchars($organizationName) ?></span>
-            </div>
-
         </div>
 
         <!-- PAINEL DE CONTEXTO DO PORTAL -->
         <div class="hidden md:flex flex-1 login-info-panel p-12 lg:p-16 flex-col justify-between text-slate-900 dark:text-slate-100">
             <div class="max-w-xl my-auto py-12">
-                <div class="inline-flex items-center gap-2 border-l-2 border-emerald-600 pl-3 text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-6">
+                <div class="login-context-kicker inline-flex items-center gap-2 border-l-2 pl-3 text-[11px] font-bold uppercase tracking-wider mb-6">
                     Acesso corporativo
                 </div>
 
@@ -252,9 +261,6 @@ try {
                 </div>
             </div>
 
-            <div class="text-xs text-slate-500 dark:text-slate-400 flex items-center border-t border-slate-300 dark:border-[#424242] pt-6">
-                <span><?= htmlspecialchars($appName) ?> &bull; <?= htmlspecialchars($organizationName) ?></span>
-            </div>
         </div>
     </div>
 

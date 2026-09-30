@@ -16,7 +16,7 @@ $navigationTrail = $navigationTrail ?? [];
                         <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
                     </li>
                 <?php endif; ?>
-                <li class="relative max-w-52 truncate sm:max-w-72 lg:max-w-none lg:min-h-8 lg:pl-5">
+                <li class="relative max-w-52 sm:max-w-72 lg:max-w-none lg:min-h-8 lg:pl-5">
                     <span aria-hidden="true" class="absolute left-0 top-1.5 hidden h-2 w-2 rounded-full border <?= $isLastTrailItem ? 'nav-trail-active-dot' : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-[#2c2e33]' ?> lg:block"></span>
                     <?php if (!$isLastTrailItem): ?>
                         <span aria-hidden="true" class="absolute left-[0.22rem] top-4 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 lg:block"></span>

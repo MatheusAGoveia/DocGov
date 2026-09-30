@@ -533,7 +533,6 @@ if ($userId > 0) {
 
 $userTheme = 'light';
 $userThemeClass = 'light';
-$totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubjs);
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR" class="light" data-portal-theme="<?= htmlspecialchars($portalTheme, ENT_QUOTES, 'UTF-8') ?>">
@@ -583,15 +582,15 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 
     <div class="flex-1 flex flex-col">
         <!-- NAVBAR FIXA, LEVE E DE LARGURA TOTAL -->
-        <div class="fixed inset-x-0 top-0 z-50 border-b border-slate-200/80 bg-white/90 shadow-sm shadow-slate-900/5 backdrop-blur-md dark:border-slate-800/80 dark:bg-[#1f2128]/95">
+        <div class="portal-topbar fixed inset-x-0 top-0 z-50 border-b border-slate-200/80 bg-white/90 shadow-sm shadow-slate-900/5 backdrop-blur-md dark:border-slate-800/80 dark:bg-[#1f2128]/95">
             <header class="max-container">
                 <div class="flex min-h-[58px] items-center justify-between gap-4">
                     
                     <!-- ESQUERDA: LOGO & LINK PRINCIPAL -->
                     <div class="flex items-center gap-6">
-                        <a href="index.php" class="inline-flex items-center gap-2.5 group text-decoration-none shrink-0">
+                        <a href="index.php" class="portal-brand inline-flex items-center gap-2.5 group text-decoration-none shrink-0">
                             <?php if ($appLogoUrl): ?>
-                                <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-8 w-8 rounded-xl border border-slate-200 bg-white object-contain p-0.5 shadow-xs transition-transform duration-200 group-hover:scale-105 dark:border-[#454956] dark:bg-[#353842]">
+                                <img src="<?= htmlspecialchars($appLogoUrl, ENT_QUOTES, 'UTF-8') ?>" alt="Brasão da Prefeitura Municipal de Betim" class="docgov-brand-logo h-10 w-10 transition-transform duration-200 group-hover:scale-105">
                             <?php else: ?>
                                 <div class="w-8 h-8 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 flex items-center justify-center font-bold text-xs shadow-xs group-hover:scale-105 transition-transform duration-200">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -603,17 +602,12 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                         </a>
 
                         <!-- NAVEGAÇÃO PRINCIPAL (DESKTOP) -->
-                        <nav class="hidden md:flex items-center gap-1">
+                        <nav class="portal-header-desktop-nav hidden md:flex items-center gap-1">
                             <a href="index.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold nav-item-active">
                                 Início
                             </a>
 
-                            <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition flex items-center gap-1">
-                                <span>Favoritos</span>
-                                <?php if ($totalFavsCount > 0): ?>
-                                    <span class="px-1.5 py-0.2 text-[10px] rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 font-extrabold font-mono"><?= $totalFavsCount ?></span>
-                                <?php endif; ?>
-                            </a>
+                            <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">Favoritos</a>
                         </nav>
                     </div>
 
@@ -621,7 +615,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                     <div class="flex items-center gap-3">
                         
                         <!-- BUSCA COM FILTROS INTEGRADOS -->
-                        <form id="navbar-search-form" action="index.php" method="GET" class="relative hidden sm:block">
+                        <form id="navbar-search-form" action="index.php" method="GET" class="portal-header-search relative hidden sm:block">
                             <div class="flex items-center rounded-xl border border-slate-200/80 bg-slate-100/70 transition-all duration-200 focus-within:ring-1 focus-within:ring-slate-400 dark:border-slate-700/80 dark:bg-slate-800/70">
                                 <svg class="ml-2.5 h-3.5 w-3.5 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                                 <input type="search" name="q" value="<?= htmlspecialchars($searchQuery) ?>" placeholder="Pesquisar..." aria-label="Pesquisar no acervo" class="w-28 bg-transparent px-2 py-1.5 text-xs text-slate-900 outline-none transition-all duration-200 focus:w-48 dark:text-slate-100">
@@ -656,14 +650,14 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                             <?php require __DIR__ . '/partials/notification_link.php'; ?>
 
                             <!-- DROPDOWN DO USUÁRIO LOGADO -->
-                            <a href="minha_conta.php" class="flex items-center gap-2 p-1 pl-1.5 pr-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-xs font-medium text-slate-800 dark:text-slate-200">
-                                <div class="w-6 h-6 rounded-lg bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-[11px]">
+                            <a href="minha_conta.php" class="portal-profile-link flex items-center gap-2 p-1 pl-1.5 pr-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-xs font-medium text-slate-800 dark:text-slate-200" aria-label="Minha conta: <?= htmlspecialchars($loggedUser['nome'], ENT_QUOTES, 'UTF-8') ?>" title="Minha conta: <?= htmlspecialchars($loggedUser['nome'], ENT_QUOTES, 'UTF-8') ?>">
+                                <div class="portal-profile-avatar w-6 h-6 rounded-lg bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-[11px]">
                                     <?= htmlspecialchars($loggedUser['inicial'] ?? 'U') ?>
                                 </div>
-                                <span class="hidden sm:inline font-semibold"><?= htmlspecialchars($loggedUser['nome']) ?></span>
+                                <span class="portal-profile-name font-semibold" aria-hidden="true"><?= htmlspecialchars($loggedUser['nome']) ?></span>
                             </a>
 
-                            <a href="logout.php" class="p-1.5 rounded-lg text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition" title="Sair do Sistema">
+                            <a href="logout.php" class="portal-logout-link p-1.5 rounded-lg text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition" title="Sair do Sistema">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                             </a>
                         <?php else: ?>
@@ -674,8 +668,8 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 
                         <!-- BOTÃO HAMBÚRGUER MOBILE -->
                         <button type="button" 
-                                onclick="document.getElementById('mobile-menu-drawer').classList.toggle('hidden')"
-                                class="md:hidden p-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                                onclick="this.setAttribute('aria-expanded', String(!document.getElementById('mobile-menu-drawer').classList.toggle('hidden')))"
+                                class="portal-header-menu-button md:hidden p-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition" aria-label="Abrir navegação" aria-expanded="false">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
                         </button>
 
@@ -683,9 +677,10 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                 </div>
 
                 <!-- DRAWER / MENU MOBILE COMPACTO -->
-                <div id="mobile-menu-drawer" class="hidden md:hidden pt-3 pb-2 px-2 border-t border-slate-100 dark:border-slate-800 mt-2 space-y-1">
+                <div id="mobile-menu-drawer" class="portal-header-mobile-menu hidden md:hidden pt-3 pb-2 px-2 border-t border-slate-100 dark:border-slate-800 mt-2 space-y-1">
+                    <form action="index.php" method="GET" class="portal-drawer-search mb-2 hidden px-3"><input type="search" name="q" placeholder="Pesquisar no acervo" aria-label="Pesquisar no acervo" class="input-minimal w-full px-3 py-2 text-sm"></form>
                     <a href="index.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Início</a>
-                    <a href="favoritos.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-amber-600 dark:text-amber-400 hover:bg-slate-100 dark:hover:bg-slate-800">Favoritos</a>
+                    <a href="favoritos.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Favoritos</a>
                     <?php if ($loggedUser): ?>
                         <a href="minha_conta.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Minha Conta</a>
                         <?php if ($canAccessAdminPanel): ?>
@@ -735,7 +730,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 
             <!-- NÍVEL 1: LISTA CATEGORIAS -->
             <?php if ($currentLevel === 1 && !$searchMode): ?>
-                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div class="portal-category-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                     <?php foreach ($items as $cat): ?>
                         <a href="index.php?cat=<?= urlencode($cat['slug']) ?>" 
                            class="group min-h-32 p-3 rounded-lg bg-white dark:bg-[#353842] border border-slate-200/80 dark:border-[#454956] hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between focus:outline-none focus:ring-2 focus:ring-slate-400">
@@ -767,7 +762,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                     <?php foreach ($items as $subcat): ?>
                         <?php $isFavSub = isset($favMapSubcats[(int)$subcat['id']]); ?>
-                        <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border <?= $isFavSub ? 'border-amber-500/40 dark:border-amber-500/50' : 'border-slate-200/80 dark:border-[#454956]' ?> hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
+                        <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border border-slate-200/80 dark:border-[#454956] hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
                             <a href="index.php?cat=<?= urlencode($selectedCat) ?>&subcat=<?= urlencode($subcat['slug']) ?>" class="absolute inset-0 z-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400" aria-label="Abrir subcategoria <?= htmlspecialchars($subcat['name']) ?>"></a>
                             <div class="relative z-[1] pointer-events-none">
                                 <?php if (!empty($subcat['image_path'])): ?>
@@ -811,7 +806,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                     <?php foreach ($items as $assunto): ?>
                         <?php $isFavSubj = isset($favMapSubjs[(int)$assunto['id']]); ?>
-                        <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border <?= $isFavSubj ? 'border-amber-500/40 dark:border-amber-500/50' : 'border-slate-200/80 dark:border-[#454956]' ?> hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
+                        <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border border-slate-200/80 dark:border-[#454956] hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
                             <a href="index.php?cat=<?= urlencode($selectedCat) ?>&subcat=<?= urlencode($selectedSubcat) ?>&assunto=<?= urlencode($assunto['slug']) ?>" class="absolute inset-0 z-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400" aria-label="Abrir assunto <?= htmlspecialchars($assunto['name']) ?>"></a>
                             <div class="relative z-[1] pointer-events-none">
                                 <div class="flex items-start justify-between gap-2 mb-1">
@@ -857,7 +852,7 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
                     <?php else: ?>
                         <?php foreach ($items as $doc): ?>
                             <?php $isFavDoc = isset($favMapDocs[(int)$doc['id']]); ?>
-                            <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border <?= $isFavDoc ? 'border-amber-500/40 dark:border-amber-500/50' : 'border-slate-200/80 dark:border-[#454956]' ?> hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
+                            <div class="group relative min-h-28 overflow-hidden p-3 rounded-lg bg-white dark:bg-[#353842] border border-slate-200/80 dark:border-[#454956] hover:border-slate-400 dark:hover:border-slate-500 hover:-translate-y-0.5 transition shadow-xs flex flex-col justify-between">
                                 <a href="ver_conteudo.php?id=<?= $doc['id'] ?>" class="absolute inset-0 z-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-400" aria-label="Visualizar <?= htmlspecialchars($doc['title']) ?>"></a>
                                 <div class="relative z-[1] pointer-events-none flex items-start gap-2.5">
                                     <div class="w-7 h-7 rounded bg-slate-100 dark:bg-[#2c2e33] flex items-center justify-center shrink-0">
@@ -917,10 +912,6 @@ $totalFavsCount = count($favMapDocs) + count($favMapSubcats) + count($favMapSubj
 
         </main>
 
-        <!-- RODAPÉ NEUTRO COLADO AO FINAL DA PÁGINA -->
-        <footer class="mt-auto w-full border-t border-slate-200/80 dark:border-[#292e37] bg-slate-100/60 dark:bg-[#14171d] py-5 text-center text-xs text-slate-500 dark:text-[#7e8896]">
-            <?= htmlspecialchars($appName) ?> &bull; <?= htmlspecialchars($appDescription) ?> &bull; <?= htmlspecialchars($organizationName) ?>
-        </footer>
     </div>
 
     <script>
