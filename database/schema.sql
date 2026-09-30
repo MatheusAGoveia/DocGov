@@ -117,10 +117,12 @@ CREATE TABLE subjects (
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(255) NOT NULL,
     description TEXT DEFAULT '',
+    visibility VARCHAR(10) NOT NULL DEFAULT 'private',
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_subjects_subcategory_slug UNIQUE (subcategory_id, slug)
+    CONSTRAINT uk_subjects_subcategory_slug UNIQUE (subcategory_id, slug),
+    CONSTRAINT subjects_visibility_check CHECK (visibility IN ('private', 'public'))
 );
 
 CREATE TRIGGER trg_subjects_updated_at

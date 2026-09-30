@@ -308,7 +308,7 @@ if ($searchMode) {
 
             $stmt = $pdo->prepare("
                 SELECT 
-                    s.id, s.name, s.slug, s.description,
+                    s.id, s.name, s.slug, s.description, s.visibility,
                     sc.name AS subcategory_name, sc.slug AS subcategory_slug,
                     c.name AS category_name, c.slug AS category_slug,
                     COUNT(DISTINCT d.id) AS total_docs,
@@ -322,7 +322,7 @@ if ($searchMode) {
                   AND (c.slug = :cat OR c.id::text = :cat)
                   AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE
                   AND s.id IN ($subInSql)
-                GROUP BY s.id, s.name, s.slug, s.description, sc.name, sc.slug, c.name, c.slug, f.id
+                GROUP BY s.id, s.name, s.slug, s.description, s.visibility, sc.name, sc.slug, c.name, c.slug, f.id
                 ORDER BY is_favorited DESC, s.name ASC
             ");
             $stmt->execute([':cat' => $selectedCat, ':subcat' => $selectedSubcat, ':uid' => $userId]);
@@ -823,6 +823,7 @@ $userThemeClass = 'light';
                                         </button>
                                     <?php endif; ?>
                                 </div>
+                                <p class="mt-1 text-[10px] font-semibold leading-4 text-slate-500 dark:text-slate-400"><?= $assunto['visibility'] === 'public' ? 'Público' : 'Privado' ?></p>
                                 <p class="text-[10px] leading-4 text-slate-500 dark:text-slate-400 mt-1 line-clamp-2">
                                     <?= htmlspecialchars($assunto['description'] ?: 'Coleção de documentos oficiais.') ?>
                                 </p>

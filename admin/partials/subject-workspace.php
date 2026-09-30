@@ -199,6 +199,16 @@ $workspaceSectionForm = static function (string $section) use ($csrfToken, $resI
                     <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Nome e resumo usados na árvore de categorias.</p>
                 </div>
                 <div class="grid gap-4 md:grid-cols-2">
+                    <div class="md:col-span-2 space-y-3">
+                        <p class="text-xs text-slate-500 dark:text-slate-400"><?= $workspaceEscape($resData['category_name']) ?> › <?= $workspaceEscape($resData['subcategory_name']) ?></p>
+                        <?php
+                            $subjectVisibilityValue = $resData['visibility'];
+                            $subjectVisibilityControlId = 'resource-subject-visibility';
+                            $subjectVisibilityCreationMode = false;
+                            $canManageSubjectVisibility = $canManageResourcePermissions;
+                            require __DIR__ . '/../../partials/subject_visibility.php';
+                        ?>
+                    </div>
                     <label class="block md:col-span-2"><span class="mb-1 block text-xs font-semibold">Nome *</span><input name="nome" required maxlength="255" value="<?= $workspaceEscape($resData['name']) ?>" class="input-minimal w-full px-3 py-2 text-xs"></label>
                     <label class="block md:col-span-2"><span class="mb-1 block text-xs font-semibold">Resumo na árvore</span><textarea name="descricao" rows="3" maxlength="2000" class="input-minimal w-full px-3 py-2 text-xs"><?= $workspaceEscape($resData['description']) ?></textarea></label>
                     <label class="block"><span class="mb-1 block text-xs font-semibold">Status do assunto</span><select name="status" class="input-minimal w-full px-3 py-2 text-xs"><option value="ativo" <?= $resData['active'] ? 'selected' : '' ?>>Ativo</option><option value="inativo" <?= !$resData['active'] ? 'selected' : '' ?>>Inativo</option></select></label>

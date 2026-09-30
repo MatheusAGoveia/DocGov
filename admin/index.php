@@ -2332,6 +2332,7 @@ if ($isLogged) {
         $isNewSubject = !$assId;
         $redirectTab = trim($_POST['redirect_tab'] ?? 'assuntos');
         $redirectQuery = trim((string)($_POST['redirect_query'] ?? ''));
+        $requestedSubjectVisibility = $_POST['visibility'] ?? null;
 
         $originalSubcategoryId = 0;
         if ($assId) {
@@ -2357,36 +2358,71 @@ if ($isLogged) {
             && (!$permService->canAdminSubject($userId, $assId) || !$permService->canAdminSubcategory($userId, $subId))) {
             http_response_code(403);
             $errorMessage = 'Para mover um assunto é necessário possuir Admin tanto na origem quanto na subcategoria de destino.';
+        } elseif ($requestedSubjectVisibility !== null
+            && (!is_string($requestedSubjectVisibility) || !in_array($requestedSubjectVisibility, ['private', 'public'], true))) {
+            http_response_code(422);
+            $errorMessage = 'Visibilidade inválida. Escolha Privado ou Público.';
         } elseif (!empty($nome) && $subId > 0) {
-            $slug = slugify($nome);
-            if ($assId) {
-                $stmt = $pdo->prepare("UPDATE subjects SET subcategory_id = :sub_id, name = :name, slug = :slug, description = :desc, active = :active WHERE id = :id");
-                $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':id' => $assId]);
-            } else {
-                $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active) VALUES (:sub_id, :name, :slug, :desc, :active) RETURNING id");
-                $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false']);
-                $assId = (int)$stmt->fetchColumn();
-            }
-            $usageAuditService->logAdminAction($userId, $isNewSubject ? 'subject_created' : 'subject_updated', 'SUBJECT', (int)$assId);
-            if ($redirectQuery !== '' && preg_match('/^tab=editar_estrutura(?:&[a-z_]+=[a-z0-9_-]+)*$/i', $redirectQuery) === 1) {
-                header('Location: index.php?' . $redirectQuery . '&msg=subject_saved');
+            try {
+                $pdo->beginTransaction();
+                $slug = slugify($nome);
+                $subjectVisibilityChanged = false;
+                if ($assId) {
+                    $existingStmt = $pdo->prepare('SELECT visibility FROM subjects WHERE id = :id FOR UPDATE');
+                    $existingStmt->execute([':id' => $assId]);
+                    $existingVisibility = $existingStmt->fetchColumn();
+                    if ($existingVisibility === false) throw new RuntimeException('Assunto não encontrado.');
+                    $subjectVisibility = $requestedSubjectVisibility ?? $existingVisibility;
+                    $subjectVisibilityChanged = $subjectVisibility !== $existingVisibility;
+                    if ($subjectVisibilityChanged && !$permService->canAdminSubject($userId, $assId)) {
+                        http_response_code(403);
+                        throw new RuntimeException('Somente administradores do assunto podem alterar sua visibilidade.');
+                    }
+                    $stmt = $pdo->prepare("UPDATE subjects SET subcategory_id = :sub_id, name = :name, slug = :slug, description = :desc, active = :active, visibility = :visibility WHERE id = :id");
+                    $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':visibility' => $subjectVisibility, ':id' => $assId]);
+                } else {
+                    $subjectVisibility = $requestedSubjectVisibility ?? 'private';
+                    if ($subjectVisibility === 'public' && !$permService->canAdminSubcategory($userId, $subId)) {
+                        http_response_code(403);
+                        throw new RuntimeException('Somente administradores da subcategoria podem criar assuntos públicos.');
+                    }
+                    $subjectVisibilityChanged = $subjectVisibility === 'public';
+                    $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active, visibility) VALUES (:sub_id, :name, :slug, :desc, :active, :visibility) RETURNING id");
+                    $stmt->execute([':sub_id' => $subId, ':name' => $nome, ':slug' => $slug, ':desc' => $descricao, ':active' => $statusVal ? 'true' : 'false', ':visibility' => $subjectVisibility]);
+                    $assId = (int)$stmt->fetchColumn();
+                }
+                $pdo->commit();
+                $usageAuditService->logAdminAction($userId, $isNewSubject ? 'subject_created' : 'subject_updated', 'SUBJECT', (int)$assId);
+                if ($subjectVisibilityChanged) {
+                    $usageAuditService->logAdminAction($userId, 'subject_visibility_' . $subjectVisibility, 'SUBJECT', (int)$assId);
+                }
+                if ($redirectQuery !== '' && preg_match('/^tab=editar_estrutura(?:&[a-z_]+=[a-z0-9_-]+)*$/i', $redirectQuery) === 1) {
+                    header('Location: index.php?' . $redirectQuery . '&msg=subject_saved');
+                    exit;
+                }
+                $redirectParams = ['tab' => $redirectTab, 'msg' => 'subject_saved'];
+                if ($redirectTab === 'novo_documento' && $isNewSubject && $statusVal) {
+                    $parentStmt = $pdo->prepare('SELECT sc.category_id FROM subcategories sc WHERE sc.id = :id');
+                    $parentStmt->execute([':id' => $subId]);
+                    $redirectParams += [
+                        'setup' => 'document',
+                        'cat_id' => (int)$parentStmt->fetchColumn(),
+                        'subcat_id' => $subId,
+                        'subject_id' => (int)$assId,
+                    ];
+                } elseif ($redirectTab === 'novo_documento' && !$statusVal) {
+                    $redirectParams['tab'] = 'assuntos';
+                }
+                header('Location: index.php?' . http_build_query($redirectParams));
                 exit;
+            } catch (Throwable $error) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $errorMessage = $error instanceof PDOException
+                    ? ($error->getCode() === '23505' ? 'Já existe um assunto com este nome nesta subcategoria.' : 'Erro ao salvar assunto no banco de dados.')
+                    : $error->getMessage();
             }
-            $redirectParams = ['tab' => $redirectTab, 'msg' => 'subject_saved'];
-            if ($redirectTab === 'novo_documento' && $isNewSubject && $statusVal) {
-                $parentStmt = $pdo->prepare('SELECT sc.category_id FROM subcategories sc WHERE sc.id = :id');
-                $parentStmt->execute([':id' => $subId]);
-                $redirectParams += [
-                    'setup' => 'document',
-                    'cat_id' => (int)$parentStmt->fetchColumn(),
-                    'subcat_id' => $subId,
-                    'subject_id' => (int)$assId,
-                ];
-            } elseif ($redirectTab === 'novo_documento' && !$statusVal) {
-                $redirectParams['tab'] = 'assuntos';
-            }
-            header('Location: index.php?' . http_build_query($redirectParams));
-            exit;
+        } else {
+            $errorMessage = 'Informe a subcategoria pai e o nome do assunto.';
         }
     }
 
@@ -2425,7 +2461,7 @@ if ($isLogged) {
             http_response_code(403);
             $errorMessage = 'Acesso negado: assunto fora do seu escopo administrativo.';
         } else {
-            $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name AS nome, s.description AS descricao, s.active, sc.name AS subcategoria_nome FROM subjects s JOIN subcategories sc ON s.subcategory_id = sc.id WHERE s.id = :id");
+            $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name AS nome, s.description AS descricao, s.active, s.visibility, sc.name AS subcategoria_nome FROM subjects s JOIN subcategories sc ON s.subcategory_id = sc.id WHERE s.id = :id");
             $stmt->execute([':id' => $requestedSubjectId]);
             $editAss = $stmt->fetch();
             if ($editAss) {
@@ -2998,7 +3034,7 @@ $listSubcategorias = $pdo->query("
 ")->fetchAll();
 
 $listAssuntos = $pdo->query("
-    SELECT s.id, s.subcategory_id, s.name AS nome, s.slug, s.description AS descricao, s.active,
+    SELECT s.id, s.subcategory_id, s.name AS nome, s.slug, s.description AS descricao, s.active, s.visibility,
            CASE WHEN s.active THEN 'ativo' ELSE 'inativo' END AS status,
            sc.category_id, sc.name AS subcategoria_nome, sc.active AS subcategoria_active,
            c.name AS categoria_nome, c.active AS categoria_active,
@@ -3007,7 +3043,7 @@ $listAssuntos = $pdo->query("
     JOIN subcategories sc ON s.subcategory_id = sc.id
     JOIN categories c ON sc.category_id = c.id
     LEFT JOIN documents d ON d.subject_id = s.id
-    GROUP BY s.id, s.subcategory_id, s.name, s.slug, s.description, s.active, sc.category_id, sc.name, sc.active, c.name, c.active
+    GROUP BY s.id, s.subcategory_id, s.name, s.slug, s.description, s.active, s.visibility, sc.category_id, sc.name, sc.active, c.name, c.active
     ORDER BY c.name ASC, sc.name ASC, s.name ASC
 ")->fetchAll();
 
@@ -3081,6 +3117,11 @@ $subcatsParaAssunto = array_values(array_filter($listSubcategorias, function($sc
         && $permService->canCreateSubject($_currentUserId, (int)$sc['id']);
 }));
 $_canCreateAnyAss = !empty($subcatsParaAssunto);
+$subjectVisibilitySubcategoryPermissions = [];
+foreach ($subcatsParaAssunto as $visibilitySubcategory) {
+    $subjectVisibilitySubcategoryPermissions[(int)$visibilitySubcategory['id']] = $permService->canAdminSubcategory($_currentUserId, (int)$visibilitySubcategory['id']);
+}
+$_canManageAnySubjectVisibility = in_array(true, $subjectVisibilitySubcategoryPermissions, true);
 
 // Para Documento: assuntos onde canCreateDocument = true
 $assuntosParaDocumento = array_values(array_filter($listAssuntos, function($s) use ($permService, $_currentUserId) {
@@ -4603,6 +4644,15 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
+                                <?php
+                                    $subjectVisibilityValue = $editAss['visibility'] ?? 'private';
+                                    $subjectVisibilityControlId = 'subject-visibility';
+                                    $subjectVisibilityCreationMode = !$editAss;
+                                    $canManageSubjectVisibility = $editAss
+                                        ? $permService->canAdminSubject($currentAdminUserId, (int)$editAss['id'])
+                                        : $_canManageAnySubjectVisibility;
+                                    require __DIR__ . '/../partials/subject_visibility.php';
+                                ?>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1">Nome do Assunto *</label>
                                     <input type="text" name="nome" required value="<?= htmlspecialchars($editAss['nome'] ?? '') ?>" class="input-minimal w-full px-3 py-1.5 text-xs">
@@ -4632,6 +4682,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <tr>
                                             <th class="p-2">Assunto</th>
                                             <th class="p-2">Subcategoria Pai</th>
+                                            <th class="p-2">Visibilidade</th>
                                             <th class="p-2">Docs</th>
                                             <th class="p-2 text-right">Ação</th>
                                         </tr>
@@ -4641,6 +4692,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                             <tr>
                                                 <td class="p-2 font-bold"><?= htmlspecialchars($ass['nome']) ?></td>
                                                 <td class="p-2 text-slate-500"><?= htmlspecialchars($ass['subcategoria_nome']) ?></td>
+                                                <td class="p-2"><span class="rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold dark:border-[#454956] dark:bg-[#2c2e33]"><?= $ass['visibility'] === 'public' ? 'Público' : 'Privado' ?></span></td>
                                                 <td class="p-2"><?= $ass['total_docs'] ?> docs</td>
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=assunto&id=<?= $ass['id'] ?>" class="text-amber-600 font-semibold mr-2">Disposição Visual &rarr;</a>
@@ -5247,6 +5299,13 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <option value="">-- Selecione a Categoria primeiro --</option>
                                     </select>
                                 </div>
+                                <?php
+                                    $subjectVisibilityValue = 'private';
+                                    $subjectVisibilityControlId = 'nc-subject-visibility';
+                                    $subjectVisibilityCreationMode = true;
+                                    $canManageSubjectVisibility = $_canManageAnySubjectVisibility;
+                                    require __DIR__ . '/../partials/subject_visibility.php';
+                                ?>
                                 <div>
                                     <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nome *</label>
                                     <input type="text" name="nome" required class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex: Solicitação de Férias">
@@ -5523,7 +5582,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         } elseif ($canAccessResource && $resType === 'subject') {
                             $resTypeNameLabel = 'Assunto';
                             $stmtR = $pdo->prepare("
-                                SELECT s.id, s.subcategory_id, s.name, s.description, s.active, 
+                                SELECT s.id, s.subcategory_id, s.name, s.description, s.active, s.visibility,
                                        sc.name AS subcategory_name, sc.category_id, c.name AS category_name
                                 FROM subjects s
                                 JOIN subcategories sc ON s.subcategory_id = sc.id

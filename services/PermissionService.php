@@ -14,6 +14,7 @@ require_once __DIR__ . '/NotificationService.php';
  * 6. GRUPOS ATIVOS: Apenas grupos com `active = TRUE` concedem permissões.
  * 7. ADMIN GLOBAL: `users.role = 'admin'` concede nível 'admin' (3) em todo o sistema.
  * 8. EXPLICABILIDADE DE FONTES: Retorna lista detalhada com a rastreabilidade da origem de cada regra aplicável.
+ * 9. ASSUNTO PÚBLICO: Leitura para usuários autenticados ativos, sem conceder edição ou liberar irmãos privados.
  */
 
 class PermissionService {
@@ -35,6 +36,13 @@ class PermissionService {
 
     public function __construct(PDO $pdo) {
         $this->pdo = $pdo;
+    }
+
+    public static function normalizeSubjectVisibility(mixed $visibility): string {
+        if (!is_string($visibility) || !in_array($visibility, ['private', 'public'], true)) {
+            throw new InvalidArgumentException('Visibilidade inválida. Escolha Privado ou Público.');
+        }
+        return $visibility;
     }
 
     /**
@@ -164,6 +172,24 @@ class PermissionService {
         // 6. Consultar todas as regras na tabela 'permissions' aplicáveis aos principais e recursos da cadeia
         $sources = $this->queryApplicableRules($userId, $userName, $activeGroupIds, $resourceType, $resourceId, $resourceChain);
 
+        // A leitura pública nasce no assunto, sem conceder acesso herdável aos pais.
+        foreach ($resourceChain as $resource) {
+            if ($resource['type'] === 'subject' && !empty($resource['is_public'])) {
+                $sources[] = [
+                    'principal_type' => 'public',
+                    'principal_id' => 0,
+                    'principal_name' => 'Todos os usuários autenticados',
+                    'resource_type' => 'subject',
+                    'resource_id' => $resource['id'],
+                    'resource_name' => $resource['name'],
+                    'permission_level' => 'view',
+                    'permission_value' => 1,
+                    'is_inherited' => $resourceType === 'document',
+                    'description' => 'Assunto público: leitura para todos os usuários autenticados ativos',
+                ];
+            }
+        }
+
         // 7. Calcular o nível efetivo final via MAX()
         $maxValue = 0;
         foreach ($sources as $source) {
@@ -245,7 +271,8 @@ class PermissionService {
 
         if ($resourceType === 'subject') {
             $stmt = $this->pdo->prepare("
-                SELECT s.id AS subject_id, s.name AS subject_name,
+                SELECT s.id AS subject_id, s.name AS subject_name, s.visibility,
+                       s.active AS subject_active, sc.active AS subcategory_active, c.active AS category_active,
                        sc.id AS subcategory_id, sc.name AS subcategory_name,
                        c.id AS category_id, c.name AS category_name
                 FROM subjects s
@@ -257,7 +284,10 @@ class PermissionService {
             $row = $stmt->fetch();
             if (!$row) return [];
 
-            $chain[] = ['type' => 'subject', 'id' => (int)$row['subject_id'], 'name' => $row['subject_name'], 'is_inherited' => false];
+            $chain[] = ['type' => 'subject', 'id' => (int)$row['subject_id'], 'name' => $row['subject_name'], 'is_inherited' => false,
+                'visibility' => $row['visibility'],
+                'is_public' => $row['visibility'] === 'public' && filter_var($row['subject_active'], FILTER_VALIDATE_BOOLEAN)
+                    && filter_var($row['subcategory_active'], FILTER_VALIDATE_BOOLEAN) && filter_var($row['category_active'], FILTER_VALIDATE_BOOLEAN)];
             $chain[] = ['type' => 'subcategory', 'id' => (int)$row['subcategory_id'], 'name' => $row['subcategory_name'], 'is_inherited' => true];
             $chain[] = ['type' => 'category', 'id' => (int)$row['category_id'], 'name' => $row['category_name'], 'is_inherited' => true];
         } elseif ($resourceType === 'subcategory') {
@@ -1099,7 +1129,7 @@ class PermissionService {
                 ];
 
                 $subjectActiveFilter = $activeOnly ? ' AND active = TRUE' : '';
-                $stmtSubjs = $this->pdo->prepare("SELECT id, name FROM subjects WHERE subcategory_id = ?{$subjectActiveFilter} ORDER BY name ASC");
+                $stmtSubjs = $this->pdo->prepare("SELECT id, name, visibility FROM subjects WHERE subcategory_id = ?{$subjectActiveFilter} ORDER BY name ASC");
                 $stmtSubjs->execute([$sub['id']]);
                 $subjects = $stmtSubjs->fetchAll(PDO::FETCH_ASSOC);
 
@@ -1107,7 +1137,8 @@ class PermissionService {
                     $subItem['subjects'][] = [
                         'type' => 'subject',
                         'id' => (int)$subj['id'],
-                        'name' => $subj['name']
+                        'name' => $subj['name'],
+                        'visibility' => $subj['visibility'],
                     ];
                 }
 
@@ -1305,6 +1336,15 @@ class PermissionService {
                                 'description' => $isUser ? "Acesso direto no Assunto {$subj['name']}" : "Equipe {$rule['group_name']} → " . ucfirst(strtolower($rule['permission_level'])) . " no Assunto {$subj['name']}"
                             ];
                         }
+                    }
+
+                    if (($subj['visibility'] ?? 'private') === 'public') {
+                        $subjSources[] = [
+                            'type' => 'public',
+                            'via_group' => false,
+                            'level' => 'view',
+                            'description' => 'Assunto público: leitura para todos os usuários autenticados ativos',
+                        ];
                     }
 
                     if (!empty($subjSources)) {
@@ -1753,13 +1793,16 @@ class PermissionService {
      * Wrappers Explícitos de Conveniência
      */
     public function canViewCategory(?int $userId, int $categoryId): bool {
+        // Pais podem ser navegáveis por um descendente acessível, sem criar herança.
         return $this->isActiveHierarchy('category', $categoryId)
-            && $this->canView((int)$userId, 'category', $categoryId);
+            && ($this->canView((int)$userId, 'category', $categoryId)
+                || in_array($categoryId, $this->getAllowedCategoryIds($userId), true));
     }
 
     public function canViewSubcategory(?int $userId, int $subcategoryId): bool {
         return $this->isActiveHierarchy('subcategory', $subcategoryId)
-            && $this->canView((int)$userId, 'subcategory', $subcategoryId);
+            && ($this->canView((int)$userId, 'subcategory', $subcategoryId)
+                || in_array($subcategoryId, $this->getAllowedSubcategoryIds($userId), true));
     }
 
     public function canViewSubject(?int $userId, int $subjectId): bool {

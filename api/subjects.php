@@ -5,6 +5,7 @@ docgovStartSession();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';
 require_once __DIR__ . '/../services/CsrfService.php';
+require_once __DIR__ . '/../services/UsageAuditService.php';
 
 if (!headers_sent()) {
     header('Content-Type: application/json; charset=utf-8');
@@ -52,12 +53,12 @@ if ($method === 'GET') {
     $inSql = implode(',', array_map('intval', $allowedSubjectIds));
 
     if ($subcategoryId <= 0) {
-        $stmt = $pdo->query("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
+        $stmt = $pdo->query("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description, s.visibility FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
         echo json_encode(['success' => true, 'data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
         exit;
     }
 
-    $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.subcategory_id = :sub_id AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
+    $stmt = $pdo->prepare("SELECT s.id, s.subcategory_id, s.name, s.slug, s.description, s.visibility FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id JOIN categories c ON c.id = sc.category_id WHERE s.subcategory_id = :sub_id AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE AND s.id IN ($inSql) ORDER BY s.name ASC");
     $stmt->execute([':sub_id' => $subcategoryId]);
     $subjects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -84,11 +85,21 @@ if ($method === 'POST') {
     $slug = slugify($name);
 
     try {
-        $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active) VALUES (:sub_id, :name, :slug, :description, TRUE) RETURNING id");
-        $stmt->execute([':sub_id' => $subcategoryId, ':name' => $name, ':slug' => $slug, ':description' => $description]);
+        $visibility = PermissionService::normalizeSubjectVisibility($_POST['visibility'] ?? 'private');
+        if ($visibility === 'public' && !$permService->canAdminSubcategory($userId, $subcategoryId)) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'Somente administradores da subcategoria podem criar assuntos públicos.']);
+            exit;
+        }
+        $stmt = $pdo->prepare("INSERT INTO subjects (subcategory_id, name, slug, description, active, visibility) VALUES (:sub_id, :name, :slug, :description, TRUE, :visibility) RETURNING id");
+        $stmt->execute([':sub_id' => $subcategoryId, ':name' => $name, ':slug' => $slug, ':description' => $description, ':visibility' => $visibility]);
         $newId = $stmt->fetchColumn();
+        (new UsageAuditService($pdo))->logAdminAction($userId, 'subject_created_' . $visibility, 'SUBJECT', (int)$newId);
 
-        echo json_encode(['success' => true, 'id' => (int)$newId, 'subcategory_id' => $subcategoryId, 'name' => $name, 'slug' => $slug]);
+        echo json_encode(['success' => true, 'id' => (int)$newId, 'subcategory_id' => $subcategoryId, 'name' => $name, 'slug' => $slug, 'visibility' => $visibility]);
+    } catch (InvalidArgumentException $e) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     } catch (PDOException $e) {
         if ($e->getCode() == '23505') {
             echo json_encode(['success' => false, 'error' => 'Já existe um assunto com este nome nesta subcategoria.']);
