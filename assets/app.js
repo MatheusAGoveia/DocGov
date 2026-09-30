@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     const searchInput = document.getElementById('mysearch-input');
     const navCards = document.querySelectorAll('.nav-card');
-    const themeToggleBtn = document.getElementById('theme-toggle');
     const userMenuBtn = document.getElementById('user-menu-btn');
     const userDropdown = document.getElementById('user-dropdown');
 
@@ -133,10 +132,4 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // =========================================================================
-    // 4. Modo Claro Padrão
-    // =========================================================================
-    document.documentElement.classList.remove('dark');
-    document.documentElement.classList.add('light');
-    localStorage.removeItem('theme');
 });

@@ -172,6 +172,7 @@ $backUseHistory = true;
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title><?= htmlspecialchars($doc['title']) ?> - <?= htmlspecialchars($appName) ?></title>
+    <?php require __DIR__ . '/partials/favicon.php'; ?>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="assets/code-snippets.css">
@@ -204,13 +205,7 @@ $backUseHistory = true;
         }
       }
     </script>
-    <script>
-        (function() {
-            document.documentElement.classList.remove('dark');
-            document.documentElement.classList.add('light');
-            localStorage.removeItem('theme');
-        })();
-    </script>
+    <script src="assets/theme-bootstrap.js"></script>
     
     <link rel="stylesheet" href="assets/style.css">
     <link rel="stylesheet" href="assets/structured-content.css">

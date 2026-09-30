@@ -80,6 +80,7 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Acesso ao Sistema - <?= htmlspecialchars($appName) ?></title>
+    <?php require __DIR__ . '/partials/favicon.php'; ?>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -101,6 +102,7 @@ try {
       }
     </script>
     
+    <script src="assets/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="assets/style.css">
     <style>
         .login-info-panel {
@@ -117,11 +119,11 @@ try {
             border-left: 1px solid rgba(148, 163, 184, 0.28);
         }
         .dark .login-info-panel {
-            background-color: #262626;
+            background-color: var(--bg-surface-1);
             background-image:
-                linear-gradient(90deg, rgba(28, 31, 37, 0.94) 0%, rgba(28, 31, 37, 0.82) 54%, rgba(28, 31, 37, 0.70) 100%),
+                linear-gradient(90deg, rgba(27, 30, 36, 0.96) 0%, rgba(27, 30, 36, 0.86) 54%, rgba(27, 30, 36, 0.74) 100%),
                 url('assets/betim-portal-background.png');
-            border-left-color: #424242;
+            border-left-color: var(--border-default);
         }
         .login-info-card {
             border: 1px solid rgba(148, 163, 184, 0.30);
@@ -130,8 +132,8 @@ try {
             backdrop-filter: blur(10px);
         }
         .dark .login-info-card {
-            border-color: #4a4a4a;
-            background: #303030;
+            border-color: var(--border-default);
+            background: var(--bg-surface-2);
         }
     </style>
 </head>
@@ -141,6 +143,7 @@ try {
 
         <!-- PAINEL DE LOGIN (FORMULÁRIO LATERAL) -->
         <div class="w-full md:w-[440px] lg:w-[480px] p-8 lg:p-12 flex flex-col justify-center border-r border-slate-200/70 dark:border-[#2c2e33] bg-white/95 dark:bg-[#1e293b]/95 backdrop-blur-xl z-10 shadow-2xl shadow-slate-900/5">
+            <div class="mb-6 self-end"><?php require __DIR__ . '/partials/theme_dropdown.php'; ?></div>
             
             <!-- CABEÇALHO DO MARCA -->
             <div>

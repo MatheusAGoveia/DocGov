@@ -73,8 +73,10 @@ function notificationTone(string $type): string {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title>Notificações - <?= htmlspecialchars($appName) ?></title>
+    <?php require __DIR__ . '/partials/favicon.php'; ?>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>tailwind.config = { darkMode: 'class' };</script>
+    <script src="assets/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="assets/style.css">
 </head>
 <body class="min-h-screen bg-[#f8f9fa] text-slate-900 dark:bg-[#2c2e33] dark:text-slate-100">

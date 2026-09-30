@@ -20,6 +20,7 @@ http_response_code($maintenance['active'] ? 503 : 200);
     <meta name="robots" content="noindex, nofollow">
     <?php if ($refreshSeconds > 0): ?><meta http-equiv="refresh" content="<?= $refreshSeconds ?>"><?php endif; ?>
     <title>Estamos em manutenção — <?= htmlspecialchars($appName) ?></title>
+    <?php require __DIR__ . '/partials/favicon.php'; ?>
     <style>
         :root { color-scheme: light dark; --maintenance-canvas: #f8f8f6; --maintenance-text: #242424; --maintenance-muted: #6d6d68; --maintenance-border: #deded9; --maintenance-surface: #fff; --maintenance-accent: #0f8f6f; }
         html[data-portal-theme="blue"] { --maintenance-canvas: #f5f8ff; --maintenance-text: #172554; --maintenance-muted: #50617f; --maintenance-border: #d8e4fb; --maintenance-accent: #2563eb; }

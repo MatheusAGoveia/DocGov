@@ -70,6 +70,8 @@ $loggedUser = $_SESSION['user'] ?? null;
 $accessDenied = false;
 $accessErrorReason = '';
 $initialAdminUserId = (int)($loggedUser['id'] ?? 0);
+require_once __DIR__ . '/../services/ProfileAvatarService.php';
+$profileAvatarPath = ProfileAvatarService::pathForUser($pdo, $initialAdminUserId);
 $hasContentAdministrativeAccess = $loggedUser
     ? $permService->canAccessAdminPanel($initialAdminUserId)
     : false;
@@ -1983,7 +1985,8 @@ if ($isLogged) {
                     $workflowService->moveToTrash($documentId, $currentAdminUserId, (string)$currentDocument['status'], 'Movido para a lixeira.');
                     $pdo->commit();
                     $usageAuditService->logAdminAction($currentAdminUserId, 'document_trashed', 'DOCUMENT', $documentId);
-                    header('Location: index.php?tab=documentos&msg=moved_to_trash');
+                    $returnFilters = array_intersect_key($_GET, array_flip(['search', 'filter_cat', 'filter_subcat', 'filter_assunto', 'filter_tipo', 'filter_status', 'page']));
+                    header('Location: index.php?' . http_build_query(array_merge(['tab' => 'documentos'], $returnFilters, ['msg' => 'moved_to_trash'])));
                     exit;
                 }
 
@@ -2085,7 +2088,8 @@ if ($isLogged) {
                     $usageAuditService->logAdminAction($currentAdminUserId, 'batch_' . $workflowActions[$batchAction], 'DOCUMENT', $selectedDocumentId);
                 }
                 $batchMessage = $batchAction === 'trash' ? 'docs_trashed' : 'docs_workflow_updated';
-                header('Location: index.php?tab=documentos&msg=' . $batchMessage . '&count=' . $processed);
+                $returnFilters = array_intersect_key($_GET, array_flip(['search', 'filter_cat', 'filter_subcat', 'filter_assunto', 'filter_tipo', 'filter_status', 'page']));
+                header('Location: index.php?' . http_build_query(array_merge(['tab' => 'documentos'], $returnFilters, ['msg' => $batchMessage, 'count' => $processed])));
                 exit;
             } catch (Throwable $exception) {
                 if ($pdo->inTransaction()) {
@@ -2500,17 +2504,36 @@ $filterCat = trim($_GET['filter_cat'] ?? '');
 $filterSubcat = trim($_GET['filter_subcat'] ?? '');
 $filterAssunto = trim($_GET['filter_assunto'] ?? '');
 $filterTipo = trim($_GET['filter_tipo'] ?? '');
-$filterStatus = trim($_GET['filter_status'] ?? '');
+$filterStatus = trim((string)($_GET['filter_status'] ?? 'pending'));
+if (!in_array($filterStatus, ['pending', 'published', 'draft', 'review', 'inactive', 'all'], true)) {
+    $filterStatus = 'pending';
+}
+
+$documentFilterQuery = array_filter([
+    'tab' => 'documentos',
+    'search' => $searchQuery,
+    'filter_cat' => $filterCat,
+    'filter_subcat' => $filterSubcat,
+    'filter_assunto' => $filterAssunto,
+    'filter_tipo' => $filterTipo,
+], static fn($value): bool => $value !== '');
+$documentFilterUrl = static function (string $status, ?int $targetPage = null) use ($documentFilterQuery): string {
+    $query = $documentFilterQuery;
+    $query['filter_status'] = $status;
+    if ($targetPage !== null && $targetPage > 1) {
+        $query['page'] = $targetPage;
+    }
+    return 'index.php?' . http_build_query($query);
+};
 
 $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 10;
-$offset = ($page - 1) * $perPage;
 
-$whereClauses = ["d.status != 'inactive'", $administrativeDocumentScopeSql];
+$whereClauses = ['d.trashed_at IS NULL', $administrativeDocumentScopeSql];
 $params = [];
 
 if (!empty($searchQuery)) {
-    $whereClauses[] = "(LOWER(d.title) LIKE :sq OR LOWER(d.description) LIKE :sq)";
+    $whereClauses[] = "(LOWER(d.title) LIKE :sq OR LOWER(d.description) LIKE :sq OR LOWER(s.name) LIKE :sq OR LOWER(sc.name) LIKE :sq OR LOWER(c.name) LIKE :sq OR EXISTS (SELECT 1 FROM document_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.document_id = d.id AND t.active = TRUE AND LOWER(t.name) LIKE :sq))";
     $params[':sq'] = '%' . mb_strtolower($searchQuery) . '%';
 }
 if (!empty($filterCat)) {
@@ -2529,7 +2552,9 @@ if (!empty($filterTipo)) {
     $whereClauses[] = "d.content_type = :ftipo";
     $params[':ftipo'] = $filterTipo;
 }
-if (!empty($filterStatus)) {
+if ($filterStatus === 'pending') {
+    $whereClauses[] = "d.status IN ('draft', 'review')";
+} elseif ($filterStatus !== 'all') {
     $whereClauses[] = "d.status = :fstat";
     $params[':fstat'] = $filterStatus;
 }
@@ -2547,12 +2572,14 @@ $countStmt = $pdo->prepare("
 ");
 $countStmt->execute($params);
 $totalDocsFiltered = (int)$countStmt->fetchColumn();
-$totalPages = max(1, ceil($totalDocsFiltered / $perPage));
+$totalPages = max(1, (int)ceil($totalDocsFiltered / $perPage));
+$page = min($page, $totalPages);
+$offset = ($page - 1) * $perPage;
 
 $sqlDocs = "
     SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo,
            d.section_key, ds.label AS section_label,
-           d.status, d.created_at, d.published_at, d.approval_expires_at,
+           d.status, d.created_at, d.updated_at, d.published_at, d.approval_expires_at, d.reviewed_by,
            s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
            u.name AS autor_nome
     FROM documents d
@@ -2562,7 +2589,7 @@ $sqlDocs = "
     JOIN categories c ON sc.category_id = c.id
     LEFT JOIN users u ON d.created_by = u.id
     {$whereSql}
-    ORDER BY d.id DESC LIMIT {$perPage} OFFSET {$offset}
+    ORDER BY d.updated_at DESC, d.id DESC LIMIT {$perPage} OFFSET {$offset}
 ";
 $stmtDocs = $pdo->prepare($sqlDocs);
 $stmtDocs->execute($params);
@@ -2575,7 +2602,8 @@ $metricsStmt = $pdo->query("
         COUNT(*) FILTER (WHERE d.status = 'published') AS published,
         COUNT(*) FILTER (WHERE d.status = 'draft') AS draft,
         COUNT(*) FILTER (WHERE d.status = 'review') AS review,
-        COUNT(*) FILTER (WHERE d.status = 'inactive') AS inactive
+        COUNT(*) FILTER (WHERE d.status = 'inactive' AND d.trashed_at IS NULL) AS inactive,
+        COUNT(*) FILTER (WHERE d.trashed_at IS NOT NULL) AS trashed
     FROM documents d
     WHERE {$administrativeDocumentScopeSql}
 ");
@@ -2585,7 +2613,7 @@ $totalPublicados = (int)($metrics['published'] ?? 0);
 $totalRascunhos = (int)($metrics['draft'] ?? 0);
 $totalEmRevisao = (int)($metrics['review'] ?? 0);
 $totalInativos = (int)($metrics['inactive'] ?? 0);
-$totalLixeira = $totalInativos;
+$totalLixeira = (int)($metrics['trashed'] ?? 0);
 
 $ultimosDocumentos = $pdo->query("
     SELECT d.id, d.title AS titulo, d.status, d.created_at, d.updated_at AS atualizado_em,
@@ -3232,6 +3260,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestão de Documentos - <?= htmlspecialchars($appName) ?></title>
+    <?php $faviconPrefix = '../'; require __DIR__ . '/../partials/favicon.php'; ?>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -3252,18 +3281,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
         }
       }
     </script>
-    <script>
-        (function() {
-            const savedTheme = localStorage.getItem('theme');
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('dark');
-                document.documentElement.classList.remove('light');
-            } else if (savedTheme === 'light') {
-                document.documentElement.classList.remove('dark');
-                document.documentElement.classList.add('light');
-            }
-        })();
-    </script>
+    <script src="../assets/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="../assets/style.css">
     <link rel="stylesheet" href="../assets/permissions.css">
     <link rel="stylesheet" href="../assets/code-snippets.css">
@@ -3518,7 +3536,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                         <span class="menu-label truncate">Documentos</span>
                                         <span class="menu-badge ml-auto text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 dark:bg-[#454956] text-slate-600 dark:text-slate-300 font-mono">
-                                            <?= $totalDocs ?>
+                                            <?= $totalDocs - $totalLixeira ?>
                                         </span>
                                     </a>
 
@@ -3622,8 +3640,12 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     <div class="p-3 border-t border-slate-100 dark:border-[#454956] space-y-2">
                         <div class="p-2 rounded-md bg-slate-50 dark:bg-[#2c2e33] flex items-center justify-between border border-slate-200/60 dark:border-[#454956]">
                             <div class="flex items-center gap-2 overflow-hidden">
-                                <div class="w-6 h-6 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold text-[11px] flex items-center justify-center shrink-0">
-                                    <?= mb_strtoupper(mb_substr($loggedUser['nome'] ?? 'A', 0, 1)) ?>
+                                <div class="admin-profile-avatar w-6 h-6 overflow-hidden rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold text-[11px] flex items-center justify-center shrink-0">
+                                    <?php if ($profileAvatarPath): ?>
+                                        <img src="../<?= htmlspecialchars($profileAvatarPath, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-full w-full object-cover" loading="eager" decoding="async">
+                                    <?php else: ?>
+                                        <?= mb_strtoupper(mb_substr($loggedUser['nome'] ?? 'A', 0, 1)) ?>
+                                    <?php endif; ?>
                                 </div>
                                 <div class="truncate text-xs user-info-text">
                                     <p class="font-semibold text-slate-900 dark:text-slate-100 truncate leading-tight"><?= htmlspecialchars($loggedUser['nome'] ?? 'Administrador') ?></p>
@@ -3677,6 +3699,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
                         <span>Menu Administração</span>
                     </button>
+                </div>
+
+                <div class="flex justify-end mb-4">
+                    <?php $themeApiUrl = '../api_user.php'; require __DIR__ . '/../partials/theme_dropdown.php'; ?>
                 </div>
 
                 <!-- ALERTAS E MENSAGENS FEEDBACK -->
@@ -3871,12 +3897,12 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <div class="dashboard-stat-progress mt-3 h-1.5 overflow-hidden rounded-full bg-blue-500/15"><div class="dashboard-stat-progress__fill h-full rounded-full bg-blue-500" style="width: <?= $dashboardPublishedRate ?>%"></div></div>
                                     <span class="mt-2 block text-[11px] text-slate-500"><?= $dashboardPublishedRate ?>% dos <?= (int)$dashboardContent['total'] ?> itens estão disponíveis</span>
                                 </a>
-                                <a href="index.php?tab=documentos" class="dashboard-link-card dashboard-stat-card rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:bg-violet-500/10">
+                                <a href="index.php?tab=documentos&amp;filter_status=all" class="dashboard-link-card dashboard-stat-card rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:bg-violet-500/10">
                                     <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-300">Novos conteúdos</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-violet-500/15 text-violet-700 dark:text-violet-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg></span></div>
                                     <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardContent['created_in_period'] ?></span>
                                     <span class="mt-6 block text-[11px] text-slate-500">Criados nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?></span>
                                 </a>
-                                <a href="index.php?tab=documentos" class="dashboard-link-card dashboard-stat-card rounded-xl border border-slate-300 bg-white p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:border-[#454956] dark:bg-[#353842]">
+                                <a href="index.php?tab=documentos&amp;filter_status=all" class="dashboard-link-card dashboard-stat-card rounded-xl border border-slate-300 bg-white p-4 text-decoration-none shadow-xs transition hover:-translate-y-0.5 hover:shadow-sm dark:border-[#454956] dark:bg-[#353842]">
                                     <div class="flex items-start justify-between gap-3"><span class="dashboard-stat-label text-[11px] font-bold uppercase tracking-wider text-slate-500">Atualizações</span><span class="dashboard-stat-icon flex h-7 w-7 items-center justify-center rounded-md bg-slate-100 text-slate-600 dark:bg-[#2c2e33] dark:text-slate-300"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div>
                                     <span class="mt-3 block font-mono text-3xl font-bold text-slate-900 dark:text-slate-100"><?= (int)$dashboardContent['updated_in_period'] ?></span>
                                     <span class="mt-6 block text-[11px] text-slate-500">Alterados nos últimos <?= htmlspecialchars($dashboardPeriodLabel) ?></span>
@@ -3912,7 +3938,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <div class="mt-4 space-y-3">
                                             <?php foreach (array_slice($globalDashboard['categories'], 0, 6) as $categoryReport): ?>
                                                 <?php $categoryWidth = max(3, round(((int)$categoryReport['documents_total'] / $categoryMaxDocuments) * 100)); ?>
-                                                <a href="index.php?tab=documentos&amp;filter_cat=<?= urlencode($categoryReport['name']) ?>" class="group block text-decoration-none"><div class="mb-1.5 flex items-center justify-between gap-4 text-xs"><span class="truncate font-semibold text-slate-700 group-hover:underline dark:text-slate-200"><?= htmlspecialchars($categoryReport['name']) ?></span><span class="shrink-0 font-mono text-slate-500"><?= (int)$categoryReport['documents_total'] ?> doc<?= (int)$categoryReport['documents_total'] === 1 ? '' : 's' ?></span></div><div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-[#2c2e33]"><div class="h-full rounded-full bg-slate-700 transition group-hover:bg-emerald-500 dark:bg-slate-300" style="width: <?= $categoryWidth ?>%"></div></div></a>
+                                                <a href="index.php?tab=documentos&amp;filter_status=all&amp;filter_cat=<?= urlencode($categoryReport['name']) ?>" class="group block text-decoration-none"><div class="mb-1.5 flex items-center justify-between gap-4 text-xs"><span class="truncate font-semibold text-slate-700 group-hover:underline dark:text-slate-200"><?= htmlspecialchars($categoryReport['name']) ?></span><span class="shrink-0 font-mono text-slate-500"><?= (int)$categoryReport['documents_total'] ?> doc<?= (int)$categoryReport['documents_total'] === 1 ? '' : 's' ?></span></div><div class="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-[#2c2e33]"><div class="h-full rounded-full bg-slate-700 transition group-hover:bg-emerald-500 dark:bg-slate-300" style="width: <?= $categoryWidth ?>%"></div></div></a>
                                             <?php endforeach; ?>
                                         </div>
                                     <?php endif; ?>
@@ -3944,7 +3970,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 </section>
 
                                 <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-5">
-                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Atividade do acervo</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Documentos alterados</h2></div><a href="index.php?tab=documentos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver todos &rarr;</a></div>
+                                    <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Atividade do acervo</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Documentos alterados</h2></div><a href="index.php?tab=documentos&amp;filter_status=all" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver todos &rarr;</a></div>
                                     <div class="mt-4 divide-y divide-slate-100 dark:divide-[#454956]"><?php if (empty($globalDashboard['documents'])): ?><p class="py-6 text-center text-xs text-slate-400">Ainda não há documentos para exibir.</p><?php endif; ?><?php foreach ($globalDashboard['documents'] as $documentEvent): ?><a href="index.php?tab=detalhes_documento&amp;id=<?= (int)$documentEvent['id'] ?>" class="block rounded-md px-2 py-3 text-decoration-none transition hover:bg-slate-50 dark:hover:bg-[#2c2e33]"><div class="flex items-start justify-between gap-4"><div class="min-w-0"><span class="block truncate text-xs font-semibold text-slate-700 dark:text-slate-200"><?= htmlspecialchars($documentEvent['title']) ?></span><span class="mt-0.5 block truncate text-[10px] text-slate-400"><?= htmlspecialchars($documentEvent['category_name']) ?> &rsaquo; <?= htmlspecialchars($documentEvent['subject_name']) ?> · <?= htmlspecialchars($documentEvent['author_name'] ?? 'Sem autor') ?></span></div><time class="shrink-0 text-[10px] text-slate-400"><?= date('d/m H:i', strtotime($documentEvent['updated_at'])) ?></time></div></a><?php endforeach; ?></div>
                                 </section>
                             </div>
@@ -4013,7 +4039,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     </section>
 
                                     <section class="dashboard-panel border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842] xl:col-span-6">
-                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documentos mais consultados</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">O que as pessoas usam</h2></div><a href="index.php?tab=documentos" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver acervo &rarr;</a></div>
+                                        <div class="flex items-start justify-between gap-3"><div><p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documentos mais consultados</p><h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">O que as pessoas usam</h2></div><a href="index.php?tab=documentos&amp;filter_status=all" class="text-xs font-bold text-slate-600 hover:underline dark:text-slate-300">Ver acervo &rarr;</a></div>
                                         <?php if (empty($globalDashboard['usage_by_document'])): ?>
                                             <p class="py-8 text-center text-xs text-slate-400">As consultas e downloads serão consolidados aqui.</p>
                                         <?php else: ?>
@@ -4107,7 +4133,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
                                     <span>Árvore & Estrutura</span>
                                 </a>
-                                <a href="index.php?tab=documentos" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-[#3e424e] transition text-decoration-none">
+                                <a href="index.php?tab=documentos&amp;filter_status=all" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md border border-slate-200 dark:border-[#454956] bg-slate-50 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-[#3e424e] transition text-decoration-none">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                     <span>Ver Documentos</span>
                                 </a>
@@ -4134,13 +4160,11 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                 <!-- ABA 2: PÁGINA DOCUMENTOS (BUSCA, FILTROS, AÇÕES EM LOTE, TABELA E ⋯) -->
                 <?php if ($activeTab === 'documentos'): ?>
-                    <form method="POST" action="index.php?tab=documentos" id="batch-form" class="space-y-5">
-                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
-                        <input type="hidden" name="document_id" id="single-document-id" value="">
+                    <div class="space-y-5">
                         <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                             <div>
                                 <h1 class="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Documentos</h1>
-                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Gerencie todos os conteúdos cadastrados no sistema.</p>
+                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Acompanhe as pendências e consulte o acervo publicado separadamente.</p>
                             </div>
 
                             <div class="flex items-center gap-2">
@@ -4151,11 +4175,28 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             </div>
                         </div>
 
+                        <nav class="grid grid-cols-1 gap-2 sm:grid-cols-3" aria-label="Visualização dos documentos">
+                            <?php foreach ([
+                                ['status' => 'pending', 'label' => 'Pendentes', 'count' => $totalRascunhos + $totalEmRevisao, 'hint' => 'Rascunhos e em revisão'],
+                                ['status' => 'published', 'label' => 'Publicados', 'count' => $totalPublicados, 'hint' => 'Acervo disponível no portal'],
+                                ['status' => 'all', 'label' => 'Todos', 'count' => $totalRascunhos + $totalEmRevisao + $totalPublicados + $totalInativos, 'hint' => 'Todos os status, exceto lixeira'],
+                            ] as $documentView): ?>
+                                <?php $documentViewActive = $filterStatus === $documentView['status']; ?>
+                                <a href="<?= htmlspecialchars($documentFilterUrl($documentView['status']), ENT_QUOTES, 'UTF-8') ?>"
+                                   class="rounded-lg border px-4 py-3 text-decoration-none transition <?= $documentViewActive ? 'border-slate-900 bg-slate-900 text-white shadow-sm dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900' : 'border-slate-200 bg-white text-slate-800 hover:border-slate-400 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-100 dark:hover:border-slate-400' ?>"
+                                   <?= $documentViewActive ? 'aria-current="page"' : '' ?>>
+                                    <span class="flex items-baseline justify-between gap-3"><span class="text-sm font-bold"><?= $documentView['label'] ?></span><span class="text-lg font-bold tabular-nums"><?= (int)$documentView['count'] ?></span></span>
+                                    <span class="mt-0.5 block text-[11px] <?= $documentViewActive ? 'text-slate-200 dark:text-slate-600' : 'text-slate-500 dark:text-slate-400' ?>"><?= $documentView['hint'] ?></span>
+                                </a>
+                            <?php endforeach; ?>
+                        </nav>
+
                         <!-- BARRA DE PESQUISA E FILTROS -->
-                        <div class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
-                            <div class="flex items-center gap-3">
+                        <form method="GET" action="index.php" id="document-filter-form" class="p-4 rounded-md bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] shadow-xs space-y-3">
+                            <input type="hidden" name="tab" value="documentos">
+                            <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                                 <div class="relative flex-1">
-                                    <input type="text" name="search" value="<?= htmlspecialchars($searchQuery) ?>" aria-label="Pesquisar documentos" class="input-minimal w-full pl-9 pr-3 py-2 text-xs" placeholder="Pesquisar por título, resumo ou palavras-chave...">
+                                    <input type="text" name="search" value="<?= htmlspecialchars($searchQuery) ?>" aria-label="Pesquisar documentos" class="input-minimal w-full pl-9 pr-3 py-2 text-xs" placeholder="Pesquisar por título, resumo, assunto ou tag...">
                                     <span class="absolute left-3 top-2.5 text-slate-400 text-xs">
                                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                                     </span>
@@ -4163,12 +4204,12 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <button type="submit" class="px-4 py-2 rounded-md bg-slate-200 dark:bg-[#2c2e33] hover:bg-slate-300 dark:hover:bg-[#3e424e] text-slate-700 dark:text-slate-300 font-semibold text-xs transition">
                                     Filtrar
                                 </button>
-                                <?php if (!empty($searchQuery) || !empty($filterCat) || !empty($filterSubcat) || !empty($filterAssunto) || !empty($filterTipo) || !empty($filterStatus)): ?>
+                                <?php if ($searchQuery !== '' || $filterCat !== '' || $filterSubcat !== '' || $filterAssunto !== '' || $filterTipo !== '' || $filterStatus !== 'pending'): ?>
                                     <a href="index.php?tab=documentos" class="px-3 py-2 rounded-md bg-slate-100 dark:bg-[#2c2e33] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 text-xs font-semibold">Limpar</a>
                                 <?php endif; ?>
                             </div>
 
-                            <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-2 border-t border-slate-100 dark:border-[#454956]">
+                            <div class="grid grid-cols-2 lg:grid-cols-5 gap-2.5 pt-2 border-t border-slate-100 dark:border-[#454956]">
                                 <div>
                                     <label for="filter-cat" class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Categoria</label>
                                     <select id="filter-cat" name="filter_cat" onchange="onFilterCategoryChange()" class="input-minimal w-full px-2 py-1.5 text-xs">
@@ -4210,34 +4251,40 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <div>
                                     <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1">Status</label>
                                     <select name="filter_status" aria-label="Filtrar por status" class="input-minimal w-full px-2 py-1.5 text-xs">
-                                        <option value="">Todos</option>
+                                        <option value="pending" <?= $filterStatus === 'pending' ? 'selected' : '' ?>>Pendentes</option>
                                         <option value="published" <?= $filterStatus === 'published' ? 'selected' : '' ?>>Publicado</option>
                                         <option value="draft" <?= $filterStatus === 'draft' ? 'selected' : '' ?>>Rascunho</option>
                                         <option value="review" <?= $filterStatus === 'review' ? 'selected' : '' ?>>Em revisão</option>
                                         <option value="inactive" <?= $filterStatus === 'inactive' ? 'selected' : '' ?>>Inativo</option>
+                                        <option value="all" <?= $filterStatus === 'all' ? 'selected' : '' ?>>Todos (exceto lixeira)</option>
                                     </select>
                                 </div>
                             </div>
-                        </div>
+                        </form>
+
+                        <form method="POST" action="<?= htmlspecialchars($documentFilterUrl($filterStatus, $page), ENT_QUOTES, 'UTF-8') ?>" id="batch-form" class="space-y-3">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                            <input type="hidden" name="document_id" id="single-document-id" value="">
 
                         <!-- BARRA DE AÇÕES EM LOTE -->
-                        <div class="flex items-center justify-between p-3 rounded-md bg-slate-100 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
-                            <div class="flex items-center gap-2">
-                                <span class="font-bold text-slate-700 dark:text-slate-300">Ações em Lote:</span>
-                                <button type="submit" name="batch_action" value="submit_review" onclick="return confirm('Enviar os documentos selecionados para revisão?')" class="px-3 py-1 rounded bg-blue-600 text-white font-semibold hover:opacity-90">
+                        <div class="flex flex-wrap items-center justify-between gap-3 p-3 rounded-md bg-slate-100 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span id="batch-selection-count" class="font-bold text-slate-700 dark:text-slate-300" aria-live="polite">Selecione documentos para ações em lote</span>
+                                <button type="submit" name="batch_action" value="submit_review" data-batch-action="submit_review" disabled onclick="return confirm('Enviar os documentos selecionados para revisão?')" class="px-3 py-1 rounded bg-blue-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Enviar para revisão
                                 </button>
-                                <button type="submit" name="batch_action" value="publish" onclick="return confirm('Aprovar e publicar os documentos selecionados? Somente itens em revisão serão aceitos.')" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90">
+                                <button type="submit" name="batch_action" value="publish" data-batch-action="publish" disabled onclick="return confirm('Aprovar e publicar os documentos selecionados? Somente itens revisados serão aceitos.')" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Aprovar e publicar
                                 </button>
-                                <button type="submit" name="batch_action" value="draft" onclick="return confirm('Mover selecionados para rascunho?')" class="px-3 py-1 rounded bg-amber-600 text-white font-semibold hover:opacity-90">
+                                <button type="submit" name="batch_action" value="draft" data-batch-action="draft" disabled onclick="return confirm('Mover selecionados para rascunho?')" class="px-3 py-1 rounded bg-amber-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Mover para Rascunho
                                 </button>
-                                <button type="submit" name="batch_action" value="trash" onclick="return confirm('Mover selecionados para a lixeira?')" class="px-3 py-1 rounded bg-red-600 text-white font-semibold hover:opacity-90 flex items-center gap-1">
+                                <button type="submit" name="batch_action" value="trash" data-batch-action="trash" disabled onclick="return confirm('Mover selecionados para a lixeira?')" class="px-3 py-1 rounded bg-red-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     <span>Mover para Lixeira</span>
                                 </button>
                             </div>
+                            <span class="text-[11px] text-slate-500 dark:text-slate-400">A seleção vale apenas para esta página.</span>
                         </div>
 
                         <div class="bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs overflow-hidden">
@@ -4246,10 +4293,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-[#2c2e33] text-slate-400 flex items-center justify-center font-bold text-xl mx-auto mb-3">
                                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
                                     </div>
-                                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-1">Nenhum documento cadastrado</h3>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Comece adicionando o primeiro conteúdo.</p>
-                                    <a href="index.php?tab=novo_documento" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold shadow-xs">
-                                        + Novo Conteúdo
+                                    <h3 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-1">Nenhum documento nesta visualização</h3>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Altere os filtros ou consulte todos os documentos.</p>
+                                    <a href="<?= htmlspecialchars($documentFilterUrl('all'), ENT_QUOTES, 'UTF-8') ?>" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-xs font-semibold shadow-xs">
+                                        Ver todos
                                     </a>
                                 </div>
                             <?php else: ?>
@@ -4258,12 +4305,12 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <thead class="bg-slate-50 dark:bg-[#2c2e33] text-slate-400 uppercase font-semibold text-[10px] border-b border-slate-200 dark:border-[#454956]">
                                             <tr>
                                                 <th class="p-3 w-8">
-                                                    <input type="checkbox" onclick="toggleSelectAll(this)" aria-label="Selecionar todos os documentos">
+                                                    <input type="checkbox" onclick="toggleSelectAll(this)" aria-label="Selecionar todos os documentos desta página">
                                                 </th>
                                                 <th class="p-3">Título</th>
                                                 <th class="p-3">Localização</th>
-                                                <th class="p-3">Tipo</th>
-                                                <th class="p-3">Layout</th>
+                                                <th class="p-3">Seção</th>
+                                                <th class="p-3">Atualizado</th>
                                                 <th class="p-3">Status</th>
                                                 <th class="p-3 text-right">Ação</th>
                                             </tr>
@@ -4271,9 +4318,9 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <tbody class="divide-y divide-slate-100 dark:divide-[#454956]/60">
                                             <?php foreach ($documentosPaginados as $doc): ?>
                                                 <?php $st = strtolower($doc['status'] ?: 'published'); ?>
-                                                <tr class="hover:bg-slate-50/70 dark:hover:bg-[#3e424e]/50 transition">
+                                                <tr class="cursor-pointer hover:bg-slate-50/70 dark:hover:bg-[#3e424e]/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 transition" tabindex="0" aria-label="Abrir detalhes de <?= htmlspecialchars($doc['titulo'], ENT_QUOTES, 'UTF-8') ?>" data-document-url="index.php?tab=detalhes_documento&amp;id=<?= (int)$doc['id'] ?>" onclick="openDocumentRow(event)" onkeydown="openDocumentRow(event)">
                                                     <td class="p-3">
-                                                        <input type="checkbox" name="selected_docs[]" value="<?= $doc['id'] ?>" class="batch-checkbox" aria-label="Selecionar <?= htmlspecialchars($doc['titulo'], ENT_QUOTES, 'UTF-8') ?>">
+                                                        <input type="checkbox" name="selected_docs[]" value="<?= $doc['id'] ?>" class="batch-checkbox" data-status="<?= htmlspecialchars($st, ENT_QUOTES, 'UTF-8') ?>" data-reviewed="<?= !empty($doc['reviewed_by']) ? '1' : '0' ?>" onchange="updateBatchToolbar()" aria-label="Selecionar <?= htmlspecialchars($doc['titulo'], ENT_QUOTES, 'UTF-8') ?>">
                                                     </td>
                                                     <td class="p-3">
                                                         <a href="index.php?tab=detalhes_documento&id=<?= $doc['id'] ?>" class="font-bold text-slate-900 dark:text-slate-100 hover:underline block"><?= htmlspecialchars($doc['titulo']) ?></a>
@@ -4287,8 +4334,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                             <?= htmlspecialchars((string)($doc['section_label'] ?? strtoupper($doc['tipo_conteudo']))) ?>
                                                         </span>
                                                     </td>
-                                                    <td class="p-3 font-mono text-[10px] uppercase text-slate-400">
-                                                        <?= htmlspecialchars($doc['layout_width'] ?? 'full') ?>
+                                                    <td class="p-3 text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                                        <?= date('d/m/Y H:i', strtotime((string)$doc['updated_at'])) ?>
                                                     </td>
                                                     <td class="p-3">
                                                         <?php if ($st === 'published'): ?>
@@ -4306,18 +4353,18 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                         <?php endif; ?>
                                                     </td>
                                                     <td class="p-3 text-right relative">
-                                                        <button type="button" onclick="toggleActionMenu(<?= $doc['id'] ?>, event)" class="px-2 py-1 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-[#454956] font-bold text-sm">
+                                                        <button type="button" onclick="toggleActionMenu(<?= $doc['id'] ?>, event)" data-action-menu-trigger aria-label="Ações do documento <?= htmlspecialchars($doc['titulo'], ENT_QUOTES, 'UTF-8') ?>" aria-controls="action-menu-<?= $doc['id'] ?>" aria-expanded="false" class="px-2 py-1 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-[#454956] font-bold text-sm">
                                                             ⋯
                                                         </button>
 
-                                                        <div id="action-menu-<?= $doc['id'] ?>" class="hidden absolute right-3 top-10 w-48 bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-md shadow-md py-1 z-50 text-left text-xs font-medium">
+                                                        <div id="action-menu-<?= $doc['id'] ?>" class="hidden fixed w-48 bg-white dark:bg-[#353842] border border-slate-200 dark:border-[#454956] rounded-md shadow-md py-1 text-left text-xs font-medium" style="z-index: 1000">
                                                             <a href="index.php?tab=detalhes_documento&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Visualizar Detalhes</a>
                                                             <a href="index.php?tab=novo_documento&action=edit_doc&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Editar Metadados</a>
                                                             <?php if ($doc['tipo_conteudo'] === 'file'): ?>
                                                                 <a href="index.php?tab=substituir_arquivo&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Substituir arquivo</a>
                                                             <?php endif; ?>
                                                             <div class="my-1 border-t border-slate-100 dark:border-[#454956]"></div>
-                                                            <button type="submit" name="document_trash_action" value="trash" onclick="document.getElementById('single-document-id').value = '<?= $doc['id'] ?>'; return confirm('Mover este documento para a lixeira?')" class="block w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
+                                                            <button type="submit" form="batch-form" name="document_trash_action" value="trash" onclick="document.getElementById('single-document-id').value = '<?= $doc['id'] ?>'; return confirm('Mover este documento para a lixeira?')" class="block w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
                                                                 Mover para lixeira
                                                             </button>
                                                         </div>
@@ -4329,7 +4376,17 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 </div>
                             <?php endif; ?>
                         </div>
-                    </form>
+                        <div class="flex flex-col gap-3 px-1 text-xs text-slate-500 dark:text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+                            <p><?= (int)$totalDocsFiltered ?> <?= $totalDocsFiltered === 1 ? 'documento encontrado' : 'documentos encontrados' ?> · página <?= $page ?> de <?= $totalPages ?></p>
+                            <?php if ($totalPages > 1): ?>
+                                <nav class="flex items-center gap-2" aria-label="Paginação dos documentos">
+                                    <?php if ($page > 1): ?><a href="<?= htmlspecialchars($documentFilterUrl($filterStatus, $page - 1), ENT_QUOTES, 'UTF-8') ?>" class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-200 dark:hover:bg-[#3e424e]">Anterior</a><?php endif; ?>
+                                    <?php if ($page < $totalPages): ?><a href="<?= htmlspecialchars($documentFilterUrl($filterStatus, $page + 1), ENT_QUOTES, 'UTF-8') ?>" class="rounded-md border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50 dark:border-[#454956] dark:bg-[#353842] dark:text-slate-200 dark:hover:bg-[#3e424e]">Próxima</a><?php endif; ?>
+                                </nav>
+                            <?php endif; ?>
+                        </div>
+                        </form>
+                    </div>
                 <?php endif; ?>
 
                 <!-- ABA 3: GERENCIAMENTO DE CATEGORIAS -->
@@ -7022,25 +7079,84 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 overlay.classList.toggle('hidden');
             }
 
+            function openDocumentRow(event) {
+                const row = event.currentTarget;
+                if (event.type === 'keydown') {
+                    if (event.target !== row || !['Enter', ' '].includes(event.key)) return;
+                    event.preventDefault();
+                } else if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.target.closest('a, button, input, select, textarea, label, [contenteditable="true"]')) {
+                    return;
+                }
+                window.location.assign(row.dataset.documentUrl);
+            }
+
+            function closeActionMenus() {
+                document.querySelectorAll('[id^="action-menu-"]').forEach(menu => menu.classList.add('hidden'));
+                document.querySelectorAll('[data-action-menu-trigger]').forEach(trigger => trigger.setAttribute('aria-expanded', 'false'));
+            }
+
             function toggleActionMenu(id, event) {
                 event.stopPropagation();
-                const allMenus = document.querySelectorAll('[id^="action-menu-"]');
-                allMenus.forEach(m => {
-                    if (m.id !== 'action-menu-' + id) m.classList.add('hidden');
-                });
                 const targetMenu = document.getElementById('action-menu-' + id);
-                if (targetMenu) targetMenu.classList.toggle('hidden');
+                if (!targetMenu) return;
+
+                const wasOpen = !targetMenu.classList.contains('hidden');
+                closeActionMenus();
+                if (wasOpen) return;
+
+                // Fora do contêiner com overflow: o menu não é cortado quando há só uma linha.
+                document.body.appendChild(targetMenu);
+                targetMenu.classList.remove('hidden');
+                const trigger = event.currentTarget;
+                const triggerRect = trigger.getBoundingClientRect();
+                const menuRect = targetMenu.getBoundingClientRect();
+                const margin = 8;
+                const spaceBelow = window.innerHeight - triggerRect.bottom - margin;
+                const top = spaceBelow >= menuRect.height || spaceBelow >= triggerRect.top - margin
+                    ? triggerRect.bottom + 4
+                    : triggerRect.top - menuRect.height - 4;
+                targetMenu.style.top = Math.max(margin, Math.min(top, window.innerHeight - menuRect.height - margin)) + 'px';
+                targetMenu.style.left = Math.max(margin, Math.min(triggerRect.right - menuRect.width, window.innerWidth - menuRect.width - margin)) + 'px';
+                trigger.setAttribute('aria-expanded', 'true');
             }
 
             function toggleSelectAll(master) {
                 const checkboxes = document.querySelectorAll('.batch-checkbox');
                 checkboxes.forEach(c => c.checked = master.checked);
+                updateBatchToolbar();
             }
 
-            document.addEventListener('click', () => {
-                const allMenus = document.querySelectorAll('[id^="action-menu-"]');
-                allMenus.forEach(m => m.classList.add('hidden'));
+            function updateBatchToolbar() {
+                const checkboxes = Array.from(document.querySelectorAll('.batch-checkbox'));
+                const selected = checkboxes.filter(checkbox => checkbox.checked);
+                const count = document.getElementById('batch-selection-count');
+                if (!count) return;
+                count.textContent = selected.length === 0
+                    ? 'Selecione documentos para ações em lote'
+                    : `${selected.length} ${selected.length === 1 ? 'documento selecionado' : 'documentos selecionados'}`;
+                const availability = {
+                    submit_review: selected.length > 0 && selected.every(checkbox => ['draft', 'published'].includes(checkbox.dataset.status)),
+                    publish: selected.length > 0 && selected.every(checkbox => checkbox.dataset.status === 'review' && checkbox.dataset.reviewed === '1'),
+                    draft: selected.length > 0 && selected.every(checkbox => ['draft', 'review', 'published'].includes(checkbox.dataset.status)),
+                    trash: selected.length > 0 && selected.every(checkbox => ['draft', 'review', 'published'].includes(checkbox.dataset.status)),
+                };
+                document.querySelectorAll('[data-batch-action]').forEach(button => {
+                    button.disabled = !availability[button.dataset.batchAction];
+                });
+                const master = document.querySelector('input[aria-label="Selecionar todos os documentos desta página"]');
+                if (master) {
+                    master.checked = checkboxes.length > 0 && selected.length === checkboxes.length;
+                    master.indeterminate = selected.length > 0 && selected.length < checkboxes.length;
+                }
+            }
+
+            document.addEventListener('click', closeActionMenus);
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape') closeActionMenus();
             });
+            document.addEventListener('wheel', closeActionMenus, { passive: true });
+            document.addEventListener('touchmove', closeActionMenus, { passive: true });
+            window.addEventListener('resize', closeActionMenus);
 
             const hierarchyDataFilter = <?= json_encode($hierarchyMap) ?>;
             const currentFilterCat = <?= json_encode($filterCat) ?>;

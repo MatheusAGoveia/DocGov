@@ -8,6 +8,7 @@ if (!headers_sent()) {
 }
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/CsrfService.php';
+require_once __DIR__ . '/services/ProfileAvatarService.php';
 $csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
@@ -17,6 +18,7 @@ if ($isPortalLoginRequired) {
     exit;
 }
 $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
+$profileAvatarPath = ProfileAvatarService::pathForUser($pdo, $userId);
 
 require_once __DIR__ . '/services/AccessService.php';
 $accessService = new AccessService($pdo);
@@ -541,6 +543,7 @@ $userThemeClass = 'light';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
     <title><?= htmlspecialchars($pageTitle) ?> - <?= htmlspecialchars($appName) ?></title>
+    <?php require __DIR__ . '/partials/favicon.php'; ?>
     <meta name="description" content="<?= htmlspecialchars($appDescription) ?> — <?= htmlspecialchars($organizationName) ?>.">
     
     <script src="https://cdn.tailwindcss.com"></script>
@@ -562,17 +565,7 @@ $userThemeClass = 'light';
         }
       }
     </script>
-    <script>
-        (function() {
-            localStorage.setItem('theme', 'light');
-            document.documentElement.classList.remove('dark');
-            document.documentElement.classList.add('light');
-            const savedPortalTheme = localStorage.getItem('portal_theme');
-            if (savedPortalTheme) {
-                document.documentElement.setAttribute('data-portal-theme', savedPortalTheme);
-            }
-        })();
-    </script>
+    <script src="assets/theme-bootstrap.js"></script>
     
     <link rel="stylesheet" href="assets/style.css">
     <link rel="stylesheet" href="assets/structured-content.css">
@@ -651,8 +644,12 @@ $userThemeClass = 'light';
 
                             <!-- DROPDOWN DO USUÁRIO LOGADO -->
                             <a href="minha_conta.php" class="portal-profile-link flex items-center gap-2 p-1 pl-1.5 pr-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-xs font-medium text-slate-800 dark:text-slate-200" aria-label="Minha conta: <?= htmlspecialchars($loggedUser['nome'], ENT_QUOTES, 'UTF-8') ?>" title="Minha conta: <?= htmlspecialchars($loggedUser['nome'], ENT_QUOTES, 'UTF-8') ?>">
-                                <div class="portal-profile-avatar w-6 h-6 rounded-lg bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-[11px]">
-                                    <?= htmlspecialchars($loggedUser['inicial'] ?? 'U') ?>
+                                <div class="portal-profile-avatar w-6 h-6 overflow-hidden rounded-lg bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-[11px]">
+                                    <?php if ($profileAvatarPath): ?>
+                                        <img src="<?= htmlspecialchars($profileAvatarPath, ENT_QUOTES, 'UTF-8') ?>" alt="" class="h-full w-full object-cover" loading="eager" decoding="async">
+                                    <?php else: ?>
+                                        <?= htmlspecialchars($loggedUser['inicial'] ?? 'U') ?>
+                                    <?php endif; ?>
                                 </div>
                                 <span class="portal-profile-name font-semibold" aria-hidden="true"><?= htmlspecialchars($loggedUser['nome']) ?></span>
                             </a>

@@ -22,14 +22,14 @@
 .govdoc-quill-editor .ql-editor .govdoc-media:hover { border-color: #94a3b8; }
 .govdoc-quill-editor .ql-editor .govdoc-media-frame { position: relative; }
 .govdoc-quill-editor .ql-editor .govdoc-media img { pointer-events: none; user-select: none; -webkit-user-drag: none; }
-.govdoc-quill-editor .ql-editor .govdoc-media.is-selected .govdoc-media-frame, .govdoc-quill-editor .ql-editor .govdoc-media.is-resizing .govdoc-media-frame { outline: 2px solid #2563eb; outline-offset: 1px; }
+.govdoc-quill-editor .ql-editor .govdoc-media.is-selected .govdoc-media-frame, .govdoc-quill-editor .ql-editor .govdoc-media.is-resizing .govdoc-media-frame { outline: 2px solid var(--accent); outline-offset: 1px; }
 .govdoc-quill-editor .ql-editor .govdoc-media-delete { display: none; place-items: center; position: absolute; top: .55rem; right: .8rem; width: 2rem; height: 2rem; border: 1px solid #fecaca; border-radius: .4rem; background: rgba(255, 255, 255, .97); color: #b91c1c; cursor: pointer; z-index: 4; }
 .govdoc-quill-editor .ql-editor .govdoc-media.is-selected .govdoc-media-delete { display: grid; }
 .govdoc-quill-editor .ql-editor .govdoc-media-delete:hover, .govdoc-quill-editor .ql-editor .govdoc-media-delete:focus-visible { background: #fef2f2; border-color: #ef4444; outline: 2px solid transparent; }
 .govdoc-quill-editor .ql-editor .govdoc-media-delete svg { width: 1rem; height: 1rem; pointer-events: none; }
 .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle { display: none; place-items: center; position: absolute; width: 1.7rem; height: 1.7rem; cursor: nwse-resize; user-select: none; touch-action: none; z-index: 3; }
 .govdoc-quill-editor .ql-editor .govdoc-media.is-selected .govdoc-media-resize-handle { display: grid; }
-.govdoc-quill-editor .ql-editor .govdoc-media-resize-handle::after { content: ''; width: .72rem; height: .72rem; border: 2px solid #2563eb; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0f172a40; }
+.govdoc-quill-editor .ql-editor .govdoc-media-resize-handle::after { content: ''; width: .72rem; height: .72rem; border: 2px solid var(--accent); border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0f172a40; }
 .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle--nw { top: 0; left: 0; transform: translate(-50%, -50%); }
 .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle--ne { top: 0; right: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
 .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle--sw { bottom: 0; left: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
@@ -38,8 +38,8 @@
 .govdoc-quill-editor .ql-editor .govdoc-media iframe { pointer-events: none; }
 .dark .govdoc-quill-editor .ql-editor .govdoc-media-delete { border-color: #7f1d1d; background: #353842; color: #fca5a5; }
 .dark .govdoc-quill-editor .ql-editor .govdoc-media-delete:hover, .dark .govdoc-quill-editor .ql-editor .govdoc-media-delete:focus-visible { background: #451a1a; }
-.dark .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle::after { border-color: #93c5fd; background: #353842; }
-.govdoc-media-drop-marker { display: none; position: absolute; left: 1rem; right: 1rem; height: 3px; background: #2563eb; border-radius: 3px; z-index: 10; pointer-events: none; }
+.dark .govdoc-quill-editor .ql-editor .govdoc-media-resize-handle::after { border-color: var(--accent); background: var(--bg-surface-3); }
+.govdoc-media-drop-marker { display: none; position: absolute; left: 1rem; right: 1rem; height: 3px; background: var(--accent); border-radius: 3px; z-index: 10; pointer-events: none; }
 .govdoc-media-drop-marker.is-visible { display: block; }
 .govdoc-media-drop-marker.is-caret { right: auto; width: 2px; }
 .govdoc-media-drop-zones { display: none; position: absolute; inset: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); z-index: 9; pointer-events: none; }
@@ -47,11 +47,11 @@
 .govdoc-media-drop-zone { display: flex; justify-content: center; align-items: flex-start; min-width: 0; border-right: 1px dashed rgba(37, 99, 235, .25); background: rgba(37, 99, 235, .025); }
 .govdoc-media-drop-zone:last-child { border-right: 0; }
 .govdoc-media-drop-zone span { margin: .55rem .2rem 0; border: 1px solid #bfdbfe; border-radius: 999px; padding: .3rem .55rem; background: rgba(255, 255, 255, .96); color: #1e40af; font-size: .68rem; font-weight: 700; text-align: center; box-shadow: 0 1px 3px #0f172a1c; }
-.govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"], .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"], .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] { background: rgba(37, 99, 235, .16); box-shadow: inset 0 0 0 2px #2563eb; }
-.govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"] span, .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"] span, .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] span { border-color: #2563eb; background: #eff6ff; }
+.govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"], .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"], .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] { background: var(--accent-subtle); box-shadow: inset 0 0 0 2px var(--accent); }
+.govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"] span, .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"] span, .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] span { border-color: var(--accent-border); background: var(--accent-subtle); color: var(--accent); }
 .dark .govdoc-media-drop-zone { border-color: rgba(147, 197, 253, .25); background: rgba(147, 197, 253, .035); }
 .dark .govdoc-media-drop-zone span { border-color: #475569; background: #353842; color: #bfdbfe; }
-.dark .govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"], .dark .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"], .dark .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] { background: rgba(147, 197, 253, .16); box-shadow: inset 0 0 0 2px #93c5fd; }
+.dark .govdoc-media-drop-zones[data-active-layout="wrap-left"] [data-zone-layout="wrap-left"], .dark .govdoc-media-drop-zones[data-active-layout="center"] [data-zone-layout="center"], .dark .govdoc-media-drop-zones[data-active-layout="wrap-right"] [data-zone-layout="wrap-right"] { background: var(--accent-subtle); box-shadow: inset 0 0 0 2px var(--accent); }
 .govdoc-media-undo { display: none; position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%); z-index: 1000; align-items: center; justify-content: space-between; gap: .75rem; width: max-content; max-width: calc(100% - 2rem); border: 1px solid #cbd5e1; border-radius: .5rem; padding: .6rem .75rem; background: #0f172a; color: #fff; box-shadow: 0 8px 24px #0f172a30; font-size: .75rem; }
 .govdoc-media-undo.is-visible { display: flex; }
 .govdoc-media-undo button { flex-shrink: 0; border: 1px solid #93c5fd; border-radius: .35rem; padding: .3rem .55rem; background: #1d4ed8; color: #fff; font-size: .75rem; font-weight: 700; cursor: pointer; }
@@ -78,17 +78,17 @@
 .govdoc-media-inspector__actions { border-top: 1px solid #e2e8f0; padding-top: .6rem; }
 .govdoc-media-inspector__hint { margin-left: auto; align-self: center; color: #64748b; font-size: .66rem; }
 @media (max-width: 700px) { .govdoc-media-inspector__fields { grid-template-columns: 1fr; } }
-.dark .govdoc-media-inspector { border-color: #565b68; background: #353842; color: #e2e8f0; }
+.dark .govdoc-media-inspector { border-color: var(--border-strong); background: var(--bg-surface-2); color: var(--text-main); }
 .dark .govdoc-media-inspector__head strong { color: #f1f5f9; }
 .dark .govdoc-media-inspector__head span { color: #aeb7c5; }
 .dark .govdoc-media-inspector .govdoc-media-inspector__delete { border-color: #7f1d1d; color: #fca5a5; }
 .dark .govdoc-media-inspector .govdoc-media-inspector__delete:hover, .dark .govdoc-media-inspector .govdoc-media-inspector__delete:focus-visible { background: #451a1a; }
 .dark .govdoc-media-inspector__head .govdoc-media-inspector__delete span { color: inherit; }
 .dark .govdoc-media-inspector__hint { color: #aeb7c5; }
-.dark .govdoc-media-inspector button, .dark .govdoc-media-inspector__fields input[type="text"] { border-color: #565b68; background: #2c2e33; color: #f1f5f9; }
-.dark .govdoc-media-inspector button:hover { background: #454956; }
-.dark .govdoc-media-inspector button[aria-pressed="true"] { border-color: #93c5fd; background: #1e3a5f; color: #bfdbfe; }
-.dark .govdoc-media-inspector__actions { border-color: #565b68; }
+.dark .govdoc-media-inspector button, .dark .govdoc-media-inspector__fields input[type="text"] { border-color: var(--border-default); background: var(--bg-surface-3); color: var(--text-primary); }
+.dark .govdoc-media-inspector button:hover { background: var(--bg-surface-hover); }
+.dark .govdoc-media-inspector button[aria-pressed="true"] { border-color: var(--accent-border); background: var(--accent-subtle); color: var(--accent); }
+.dark .govdoc-media-inspector__actions { border-color: var(--border-default); }
 
 .govdoc-quill-editor .ql-editor img { display: block; max-width: 100%; height: auto; margin: .75rem auto; }
 .govdoc-quill-editor .ql-editor iframe.ql-video { display: block; width: min(100%, 46rem); min-height: 20rem; margin: .75rem auto; border: 0; }
@@ -106,12 +106,16 @@
 
 .dark #box-text .ql-toolbar.ql-snow,
 .dark .govdoc-quill-editor.ql-container {
-    border-color: #565b68;
+    border-color: var(--border-strong);
 }
 
 .dark .govdoc-quill-editor.ql-container {
-    background: #353842;
-    color: #f1f5f9;
+    background: var(--bg-surface-3);
+    color: var(--text-primary);
+}
+
+.dark .govdoc-quill-editor .ql-editor a {
+    color: var(--accent-hover);
 }
 
 .dark #box-text .ql-toolbar .ql-stroke {
@@ -129,7 +133,7 @@
 
 .dark #box-text .ql-toolbar .ql-picker-options,
 .dark .govdoc-quill-editor .ql-tooltip {
-    border-color: #565b68;
-    background: #353842;
-    color: #f1f5f9;
+    border-color: var(--border-strong);
+    background: var(--bg-surface-4);
+    color: var(--text-primary);
 }
