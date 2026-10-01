@@ -1,0 +1,208 @@
+/* Diálogos de confirmação e avisos: tokens compartilhados com o portal. */
+.dg-dialog {
+  --dialog-color: #1d4ed8;
+  --dialog-tint: rgba(59, 130, 246, .1);
+  width: min(480px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--dg-border, #e2e8f0);
+  border-radius: 16px;
+  background: var(--dg-surface, #fff);
+  color: var(--dg-text, #0f172a);
+  font-family: inherit;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .25);
+}
+.dg-dialog[open] { animation: dg-dialog-enter .16s ease-out; }
+.dg-dialog::backdrop {
+  background: rgba(15, 23, 42, .58);
+  backdrop-filter: blur(4px);
+}
+.dg-dialog[data-tone="danger"] {
+  --dialog-color: #b91c1c;
+  --dialog-tint: rgba(239, 68, 68, .1);
+}
+.dg-dialog[data-tone="warning"] {
+  --dialog-color: #a16207;
+  --dialog-tint: rgba(245, 158, 11, .12);
+}
+.dg-dialog[data-tone="success"] {
+  --dialog-color: #047857;
+  --dialog-tint: rgba(16, 185, 129, .1);
+}
+.dark .dg-dialog { --dialog-color: #93c5fd; }
+.dark .dg-dialog[data-tone="danger"] { --dialog-color: #fca5a5; }
+.dark .dg-dialog[data-tone="warning"] { --dialog-color: #fcd34d; }
+.dark .dg-dialog[data-tone="success"] { --dialog-color: #6ee7b7; }
+.dg-dialog [hidden] { display: none !important; }
+.dg-dialog__form { margin: 0; }
+.dg-dialog__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 24px 16px;
+}
+.dg-dialog__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  height: 44px;
+  border: 1px solid color-mix(in srgb, var(--dialog-color) 20%, transparent);
+  border-radius: 12px;
+  background: var(--dialog-tint);
+  color: var(--dialog-color);
+}
+.dg-dialog__icon svg { width: 24px; height: 24px; }
+.dg-dialog__heading { flex: 1; min-width: 0; }
+.dg-dialog__eyebrow {
+  margin: 0 0 4px;
+  color: var(--dg-muted, #475569);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.dg-dialog__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.dg-dialog__close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dg-muted, #475569);
+  cursor: pointer;
+}
+.dg-dialog__close svg { width: 18px; height: 18px; }
+.dg-dialog__close:hover { background: var(--dg-surface-hover, #e2e8f0); }
+.dg-dialog__body { padding: 0 24px 24px; }
+.dg-dialog__message {
+  margin: 0;
+  color: var(--dg-muted, #475569);
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.dg-dialog__details {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--dg-border, #e2e8f0);
+  border-radius: 10px;
+  background: var(--dg-surface-raised, #f1f5f9);
+}
+.dg-dialog__details-label { display: block; margin-bottom: 4px; font-size: 12px; }
+.dg-dialog__details-text {
+  margin: 0;
+  color: var(--dg-muted, #475569);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.dg-dialog__warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--dialog-color);
+  border-radius: 0 8px 8px 0;
+  background: var(--dialog-tint);
+  color: var(--dialog-color);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.dg-dialog__field { margin-top: 20px; }
+.dg-dialog__label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+.dg-dialog__expected {
+  display: block;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px dashed var(--dg-border-strong, #cbd5e1);
+  border-radius: 8px;
+  background: var(--dg-surface-raised, #f1f5f9);
+  color: var(--dg-text, #0f172a);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dg-dialog__input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--dg-border-strong, #cbd5e1);
+  border-radius: 8px;
+  background: var(--dg-surface-raised, #f1f5f9);
+  color: var(--dg-text, #0f172a);
+  font: inherit;
+  font-size: 16px;
+}
+.dg-dialog__input[aria-invalid="true"] { border-color: var(--dialog-color); }
+.dg-dialog__help {
+  margin: 8px 0 0;
+  color: var(--dg-muted, #475569);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dg-dialog__help--error { color: var(--dialog-color); }
+.dg-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--dg-border, #e2e8f0);
+  background: var(--dg-surface-muted, #f8fafc);
+}
+.dg-dialog__button {
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background-color .15s, opacity .15s;
+}
+.dg-dialog__cancel {
+  border-color: var(--dg-border-strong, #cbd5e1);
+  background: var(--dg-surface, #fff);
+  color: var(--dg-text, #0f172a);
+}
+.dg-dialog__cancel:hover { background: var(--dg-surface-hover, #e2e8f0); }
+.dg-dialog__confirm { background: var(--accent, #0f8f6f); color: #fff; }
+.dg-dialog__confirm:hover { background: var(--accent-hover, #0c775c); }
+.dg-dialog[data-tone="danger"] .dg-dialog__confirm { background: #b91c1c; }
+.dg-dialog[data-tone="danger"] .dg-dialog__confirm:hover { background: #991b1b; }
+.dg-dialog__confirm:disabled { opacity: .45; cursor: not-allowed; }
+.dg-dialog :is(button, input):focus-visible {
+  outline: 2px solid var(--dialog-color);
+  outline-offset: 3px;
+}
+@keyframes dg-dialog-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 480px) {
+  .dg-dialog__header { padding: 20px 16px 16px; gap: 10px; }
+  .dg-dialog__body { padding: 0 16px 20px; }
+  .dg-dialog__footer { padding: 14px 16px; flex-wrap: wrap; }
+  .dg-dialog__button { flex: 1 1 120px; }
+  .dg-dialog__title { font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dg-dialog[open] { animation: none; }
+  .dg-dialog__button { transition: none; }
+}
