@@ -1,6 +1,8 @@
 <?php
 
-final class ActiveDirectoryAuthService {
+require_once __DIR__ . '/DirectoryImportGateway.php';
+
+final class ActiveDirectoryAuthService implements DirectoryImportGateway {
     private PDO $pdo;
     private array $config;
 
@@ -226,6 +228,125 @@ final class ActiveDirectoryAuthService {
         } finally {
             @ldap_unbind($ldap);
         }
+    }
+
+    /** Consulta exata por nome completo ou login, reutilizando uma conexão por lote. */
+    public function lookupDirectoryUsers(array $identifiers, string $domainKey): array {
+        if (count($identifiers) > 20) {
+            throw new InvalidArgumentException('Envie até 20 entradas por etapa.');
+        }
+        $domainKey = strtoupper(trim($domainKey));
+        $domain = $this->config['domains'][$domainKey] ?? null;
+        $failAll = fn(string $code, string $message): array => array_fill(0, count($identifiers), $this->failure($code, $message));
+        if (!$domain || (isset($domain['enabled']) && !$domain['enabled'])) {
+            return $failAll('unavailable', 'O domínio selecionado está indisponível.');
+        }
+        if (empty($this->config['enabled']) || !extension_loaded('ldap')) {
+            return $failAll('unavailable', 'A consulta ao AD está indisponível. Tente novamente ou contate o suporte.');
+        }
+        if (trim((string)($domain['base_dn'] ?? '')) === '' || trim((string)($domain['service_bind_dn'] ?? '')) === '' || (string)($domain['service_bind_password'] ?? '') === '') {
+            return $failAll('unavailable', 'Configure a conta técnica de leitura e a base de consulta deste domínio.');
+        }
+        $ldap = $this->connect($domain);
+        if (!$ldap) {
+            return $failAll('unavailable', 'Não foi possível conectar ao AD. Os nomes ainda não foram verificados.');
+        }
+        try {
+            if (!@ldap_bind($ldap, $domain['service_bind_dn'], $domain['service_bind_password'])) {
+                return $failAll('unavailable', 'Não foi possível consultar o AD com a conta técnica. Os nomes ainda não foram verificados.');
+            }
+            $results = [];
+            $deadline = microtime(true) + 15;
+            if (defined('LDAP_OPT_TIMEOUT')) {
+                @ldap_set_option($ldap, LDAP_OPT_TIMEOUT, 2);
+            }
+            foreach ($identifiers as $identifier) {
+                if (microtime(true) >= $deadline) {
+                    $results[] = $this->failure('unavailable', 'O AD demorou para responder. Reprocesse esta entrada; ela ainda não foi verificada.');
+                    continue;
+                }
+                $value = trim((string)$identifier);
+                if ($value === '' || mb_strlen($value) > 255 || preg_match('/[\x00-\x1f\x7f]/', $value)) {
+                    $results[] = $this->failure('invalid', 'Informe um nome completo ou login válido.');
+                    continue;
+                }
+                if (str_contains($value, '\\') || str_contains($value, '@')) {
+                    $identity = $this->resolveIdentity($value);
+                    if (!$identity || $identity['domain']['key'] !== $domainKey) {
+                        $results[] = $this->failure('invalid', 'O login deve pertencer ao domínio selecionado.');
+                        continue;
+                    }
+                    $escaped = ldap_escape($identity['username'], '', LDAP_ESCAPE_FILTER);
+                    $condition = "(sAMAccountName={$escaped})";
+                } else {
+                    $escaped = ldap_escape($value, '', LDAP_ESCAPE_FILTER);
+                    $condition = "(|(sAMAccountName={$escaped})(displayName={$escaped})(cn={$escaped}))";
+                }
+                $search = @ldap_search($ldap, $domain['base_dn'], "(&(objectCategory=person)(objectClass=user){$condition})", [
+                    'displayName', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl', 'department', 'title', 'telephoneNumber',
+                ], 0, 3, 2);
+                $errorCode = 0;
+                if (!$search || !ldap_parse_result($ldap, $search, $errorCode) || !in_array($errorCode, [0, 4], true)) {
+                    $results[] = $this->failure('unavailable', 'A consulta ao AD falhou. Tente novamente; esta entrada ainda não foi verificada.');
+                    continue;
+                }
+                $entries = ldap_get_entries($ldap, $search);
+                if (!is_array($entries)) {
+                    $results[] = $this->failure('unavailable', 'Não foi possível ler a resposta do AD. Esta entrada ainda não foi verificada.');
+                    continue;
+                }
+                $count = (int)($entries['count'] ?? 0);
+                if ($count > 1 || $errorCode === 4) {
+                    $candidates = [];
+                    for ($i = 0; $i < min($count, 3); $i++) {
+                        $candidates[] = $domainKey . '\\' . (string)($entries[$i]['samaccountname'][0] ?? '');
+                    }
+                    $results[] = $this->failure('ambiguous', 'Mais de uma pessoa corresponde a este nome. Use o login corporativo.') + ['candidates' => $candidates];
+                } elseif ($count === 0) {
+                    $results[] = $this->failure('not_found', 'Não encontrado no AD deste domínio. Confira o nome completo ou informe o login.');
+                } elseif ($this->isDirectoryAccountDisabled($entries[0])) {
+                    $results[] = $this->failure('inactive', 'A conta está desativada no AD e não foi importada.');
+                } else {
+                    $results[] = ['success' => true, 'entry' => $entries[0]];
+                }
+            }
+            return $results;
+        } finally {
+            @ldap_unbind($ldap);
+        }
+    }
+
+    public function provisionDirectoryUser(array $entry, string $domainKey): array {
+        $domainKey = strtoupper(trim($domainKey));
+        $username = strtolower(trim((string)($entry['samaccountname'][0] ?? '')));
+        $guid = isset($entry['objectguid'][0]) ? bin2hex($entry['objectguid'][0]) : '';
+        if (!isset($this->config['domains'][$domainKey]) || !preg_match('/^[a-z0-9._-]{1,100}$/', $username) || strlen($guid) !== 32 || $this->isDirectoryAccountDisabled($entry)) {
+            throw new InvalidArgumentException('A identidade retornada pelo AD não pode ser importada.');
+        }
+        if ($this->pdo->inTransaction()) {
+            // Serializa importações concorrentes da mesma identidade no PostgreSQL.
+            $lock = $this->pdo->prepare('SELECT pg_advisory_xact_lock(81831, hashtext(?))');
+            $lock->execute([$guid]);
+            $lock = $this->pdo->prepare('SELECT pg_advisory_xact_lock(81832, hashtext(?))');
+            $lock->execute([$username]);
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM users WHERE ad_object_guid = ? OR LOWER(username) = LOWER(?) ORDER BY id');
+        $stmt->execute([$guid, $username]);
+        $existing = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($existing !== []) {
+            if (count($existing) !== 1 || $existing[0]['auth_source'] !== 'ad' || strtoupper((string)$existing[0]['ad_domain']) !== $domainKey || (!empty($existing[0]['ad_object_guid']) && strtolower($existing[0]['ad_object_guid']) !== $guid)) {
+                throw new DomainException('O login já pertence a outro cadastro. Solicite a revisão ao administrador.');
+            }
+            return ['user' => $existing[0], 'created' => false];
+        }
+        $email = strtolower(trim((string)($entry['mail'][0] ?? $entry['userprincipalname'][0] ?? ($username . '@' . $this->getDomainDnsName($domainKey)))));
+        $emailStmt = $this->pdo->prepare('SELECT 1 FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1');
+        $emailStmt->execute([$email]);
+        if ($emailStmt->fetchColumn()) {
+            throw new DomainException('O e-mail do AD já pertence a outro cadastro.');
+        }
+        // Importar não equivale a autenticar: não registra login nem promove papéis.
+        return ['user' => $this->synchronizeUser($username, $entry, $domainKey, false, null, false, true), 'created' => true];
     }
 
     /**
@@ -582,7 +703,9 @@ final class ActiveDirectoryAuthService {
         array $directoryUser,
         string $domainKey,
         bool $recordLogin = true,
-        ?bool $activeOverride = null
+        ?bool $activeOverride = null,
+        bool $allowSuperAdmin = true,
+        bool $createOnly = false
     ): array {
         $name = trim((string)($directoryUser['displayname'][0] ?? $username));
         $email = strtolower(trim((string)(
@@ -606,7 +729,11 @@ final class ActiveDirectoryAuthService {
             $existing = $stmtByUsername->fetch(PDO::FETCH_ASSOC) ?: null;
         }
 
-        $isSuperAdmin = $this->isConfiguredSuperAdmin($domainKey, $username);
+        if ($createOnly && $existing !== null) {
+            // Um login normal pode ter criado a conta durante a consulta. Repetir é seguro.
+            throw new RuntimeException('O cadastro foi criado por outro processo. Reprocesse esta entrada.');
+        }
+        $isSuperAdmin = $allowSuperAdmin && $this->isConfiguredSuperAdmin($domainKey, $username);
         // A lista do ambiente é a única fonte autorizada para o papel global.
         // Não preservar `admin` legado evita que uma conta retirada da lista
         // continue com bypass total depois de uma nova sincronização com o AD.

@@ -3370,6 +3370,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
     </script>
     <script src="../assets/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="../assets/style.css">
+    <link rel="stylesheet" href="../assets/batch-user-import.css">
+    <?php define('DOCGOV_ADMIN_DIALOG_ASSETS', true); require __DIR__ . '/../partials/dialog_assets.php'; ?>
     <link rel="stylesheet" href="../assets/permissions.css">
     <link rel="stylesheet" href="../assets/code-snippets.css">
     <link rel="stylesheet" href="../assets/structured-content.css">
@@ -4357,16 +4359,16 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         <div class="flex flex-wrap items-center justify-between gap-3 p-3 rounded-md bg-slate-100 dark:bg-[#2c2e33] border border-slate-200 dark:border-[#454956] text-xs">
                             <div class="flex flex-wrap items-center gap-2">
                                 <span id="batch-selection-count" class="font-bold text-slate-700 dark:text-slate-300" aria-live="polite">Selecione documentos para ações em lote</span>
-                                <button type="submit" name="batch_action" value="submit_review" data-batch-action="submit_review" disabled onclick="return confirm('Enviar os documentos selecionados para revisão?')" class="px-3 py-1 rounded bg-blue-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
+                                <button type="submit" name="batch_action" value="submit_review" data-batch-action="submit_review" disabled data-confirm="Enviar os documentos selecionados para revisão?" data-confirm-title="Enviar para revisão" data-confirm-label="Enviar para revisão" class="px-3 py-1 rounded bg-blue-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Enviar para revisão
                                 </button>
-                                <button type="submit" name="batch_action" value="publish" data-batch-action="publish" disabled onclick="return confirm('Aprovar e publicar os documentos selecionados? Somente itens revisados serão aceitos.')" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
+                                <button type="submit" name="batch_action" value="publish" data-batch-action="publish" disabled data-confirm="Aprovar e publicar os documentos selecionados? Somente itens revisados serão aceitos." data-confirm-title="Publicar documentos" data-confirm-label="Aprovar e publicar" data-confirm-tone="success" class="px-3 py-1 rounded bg-emerald-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Aprovar e publicar
                                 </button>
-                                <button type="submit" name="batch_action" value="draft" data-batch-action="draft" disabled onclick="return confirm('Mover selecionados para rascunho?')" class="px-3 py-1 rounded bg-amber-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
+                                <button type="submit" name="batch_action" value="draft" data-batch-action="draft" disabled data-confirm="Mover selecionados para rascunho?" data-confirm-title="Mover para rascunho" data-confirm-label="Mover para rascunho" data-confirm-tone="warning" class="px-3 py-1 rounded bg-amber-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
                                     Mover para Rascunho
                                 </button>
-                                <button type="submit" name="batch_action" value="trash" data-batch-action="trash" disabled onclick="return confirm('Mover selecionados para a lixeira?')" class="px-3 py-1 rounded bg-red-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1">
+                                <button type="submit" name="batch_action" value="trash" data-batch-action="trash" disabled data-confirm="Mover selecionados para a lixeira?" data-confirm-title="Mover para a lixeira" data-confirm-label="Mover para a lixeira" data-confirm-tone="danger" class="px-3 py-1 rounded bg-red-600 text-white font-semibold hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 flex items-center gap-1">
                                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     <span>Mover para Lixeira</span>
                                 </button>
@@ -4451,7 +4453,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                                 <a href="index.php?tab=substituir_arquivo&id=<?= $doc['id'] ?>" class="block px-3 py-1.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">Substituir arquivo</a>
                                                             <?php endif; ?>
                                                             <div class="my-1 border-t border-slate-100 dark:border-[#454956]"></div>
-                                                            <button type="submit" form="batch-form" name="document_trash_action" value="trash" onclick="document.getElementById('single-document-id').value = '<?= $doc['id'] ?>'; return confirm('Mover este documento para a lixeira?')" class="block w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
+                                                            <button type="submit" form="batch-form" name="document_trash_action" value="trash" onclick="document.getElementById('single-document-id').value = '<?= $doc['id'] ?>'" data-confirm="Mover este documento para a lixeira?" data-confirm-title="Mover para a lixeira" data-confirm-label="Mover para a lixeira" data-confirm-tone="danger" class="block w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-[#2c2e33]">
                                                                 Mover para lixeira
                                                             </button>
                                                         </div>
@@ -4555,7 +4557,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=categoria&id=<?= $cat['id'] ?>" class="text-amber-600 font-semibold mr-2">Editar Estrutura &rarr;</a>
                                                     <?php if ($isGlobalAdminCurrent): ?>
-                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $cat['status'] === 'ativo' ? 'Descartar esta categoria e ocultar todo o ramo? Os vínculos serão preservados.' : 'Restaurar esta categoria?' ?>')">
+                                                        <form method="post" class="inline" data-confirm="<?= $cat['status'] === 'ativo' ? 'Descartar esta categoria e ocultar todo o ramo? Os vínculos serão preservados.' : 'Restaurar esta categoria?' ?>" data-confirm-title="<?= $cat['status'] === 'ativo' ? 'Descartar categoria' : 'Restaurar categoria' ?>" data-confirm-label="<?= $cat['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?>" data-confirm-tone="<?= $cat['status'] === 'ativo' ? 'danger' : 'success' ?>">
                                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                             <input type="hidden" name="structure_type" value="category">
                                                             <input type="hidden" name="structure_id" value="<?= (int)$cat['id'] ?>">
@@ -4652,7 +4654,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=subcategoria&id=<?= $sub['id'] ?>" class="text-amber-600 font-semibold mr-2">Editar Estrutura &rarr;</a>
                                                     <?php if ($permService->canAdmin($currentAdminUserId, 'subcategory', (int)$sub['id'])): ?>
-                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $sub['status'] === 'ativo' ? 'Descartar esta subcategoria e ocultar seus assuntos?' : 'Restaurar esta subcategoria?' ?>')">
+                                                        <form method="post" class="inline" data-confirm="<?= $sub['status'] === 'ativo' ? 'Descartar esta subcategoria e ocultar seus assuntos?' : 'Restaurar esta subcategoria?' ?>" data-confirm-title="<?= $sub['status'] === 'ativo' ? 'Descartar subcategoria' : 'Restaurar subcategoria' ?>" data-confirm-label="<?= $sub['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?>" data-confirm-tone="<?= $sub['status'] === 'ativo' ? 'danger' : 'success' ?>">
                                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                             <input type="hidden" name="structure_type" value="subcategory">
                                                             <input type="hidden" name="structure_id" value="<?= (int)$sub['id'] ?>">
@@ -4743,7 +4745,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <td class="p-2 text-right">
                                                     <a href="index.php?tab=editar_estrutura&type=assunto&id=<?= $ass['id'] ?>" class="text-amber-600 font-semibold mr-2">Disposição Visual &rarr;</a>
                                                     <?php if ($permService->canAdmin($currentAdminUserId, 'subject', (int)$ass['id'])): ?>
-                                                        <form method="post" class="inline" onsubmit="return confirm('<?= $ass['status'] === 'ativo' ? 'Descartar este assunto e ocultar seus documentos?' : 'Restaurar este assunto?' ?>')">
+                                                        <form method="post" class="inline" data-confirm="<?= $ass['status'] === 'ativo' ? 'Descartar este assunto e ocultar seus documentos?' : 'Restaurar este assunto?' ?>" data-confirm-title="<?= $ass['status'] === 'ativo' ? 'Descartar assunto' : 'Restaurar assunto' ?>" data-confirm-label="<?= $ass['status'] === 'ativo' ? 'Descartar' : 'Restaurar' ?>" data-confirm-tone="<?= $ass['status'] === 'ativo' ? 'danger' : 'success' ?>">
                                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                             <input type="hidden" name="structure_type" value="subject">
                                                             <input type="hidden" name="structure_id" value="<?= (int)$ass['id'] ?>">
@@ -4806,7 +4808,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     <form method="POST" action="index.php?tab=lixeira" class="inline">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                         <input type="hidden" name="document_id" value="<?= (int)$lDoc['id'] ?>">
-                                                        <button type="submit" name="document_trash_action" value="permanent_delete" onclick="return confirm('Atenção: Esta ação não poderá ser desfeita. Deseja realmente excluir permanentemente este documento e o arquivo do servidor?')" class="text-red-600 font-semibold hover:underline">Excluir definitivamente</button>
+                                                        <button type="submit" name="document_trash_action" value="permanent_delete" data-confirm="Esta ação não poderá ser desfeita. Deseja excluir permanentemente este documento e o arquivo do servidor?" data-confirm-title="Excluir documento definitivamente" data-confirm-label="Excluir definitivamente" data-confirm-tone="danger" class="text-red-600 font-semibold hover:underline">Excluir definitivamente</button>
                                                     </form>
                                                 </td>
                                             </tr>
@@ -5755,7 +5757,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     </form>
                                                 <?php endif; ?>
                                                 <?php if ($deletePreview !== null): ?>
-                                                    <form method="post" data-delete-name="<?= htmlspecialchars((string)$discardedItem['nome'], ENT_QUOTES, 'UTF-8') ?>" data-delete-summary="<?= htmlspecialchars($deleteSummary, ENT_QUOTES, 'UTF-8') ?>" onsubmit="return confirmPermanentStructureDeletion(this)">
+                                                    <form method="post" data-delete-name="<?= htmlspecialchars((string)$discardedItem['nome'], ENT_QUOTES, 'UTF-8') ?>" data-delete-summary="<?= htmlspecialchars($deleteSummary, ENT_QUOTES, 'UTF-8') ?>">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                         <input type="hidden" name="structure_type" value="<?= $discardedType ?>">
                                                         <input type="hidden" name="structure_id" value="<?= (int)$discardedItem['id'] ?>">
@@ -6240,7 +6242,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                                     <?= $grp['ativo'] ? 'Desativar' : 'Ativar' ?>
                                                                 </button>
                                                             </form>
-                                                            <form method="POST" action="index.php?tab=grupos" onsubmit="return confirm('Tem certeza que deseja excluir a equipe <?= htmlspecialchars(addslashes($grp['nome'])) ?>?');" class="inline">
+                                                            <form method="POST" action="index.php?tab=grupos" data-confirm="Excluir a equipe <?= htmlspecialchars($grp['nome'], ENT_QUOTES, 'UTF-8') ?>?" data-confirm-title="Excluir equipe" data-confirm-label="Excluir equipe" data-confirm-tone="danger" class="inline">
                                                                 <input type="hidden" name="group_action" value="delete_group">
                                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                                 <input type="hidden" name="group_id" value="<?= $grp['id'] ?>">
@@ -6400,6 +6402,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 $stmtAvailable->execute([$groupId]);
                                 $availableUsers = $stmtAvailable->fetchAll(PDO::FETCH_ASSOC);
                             ?>
+                            <?php $batchImportGroupId = $groupId; require __DIR__ . '/partials/batch-user-import.php'; unset($batchImportGroupId); ?>
                             <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                                 
                                 <!-- COLUNA ESQUERDA: MEMBROS DA EQUIPE -->
@@ -6425,7 +6428,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                             <p class="text-[10px] text-slate-400 font-mono truncate leading-tight">@<?= htmlspecialchars($uMember['username']) ?> • <?= htmlspecialchars($uMember['email']) ?></p>
                                                         </div>
                                                     </div>
-                                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" onsubmit="return confirm('Remover <?= htmlspecialchars($uMember['name']) ?> desta equipe? O usuário não será excluído do sistema.');">
+                                                    <form method="POST" action="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" data-confirm="Remover <?= htmlspecialchars($uMember['name'], ENT_QUOTES, 'UTF-8') ?> desta equipe? O usuário não será excluído do sistema." data-confirm-title="Remover da equipe" data-confirm-label="Remover da equipe" data-confirm-tone="danger">
                                                         <input type="hidden" name="group_action" value="remove_user">
                                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                         <input type="hidden" name="group_id" value="<?= $groupId ?>">
@@ -6736,6 +6739,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                     <p class="mt-1.5 text-[10px] text-slate-400">A conta precisa já existir e estar ativa no Active Directory.</p>
                                 </form>
                             </section>
+                            <?php require __DIR__ . '/partials/batch-user-import.php'; ?>
                         <?php endif; ?>
 
                         <div class="bg-white dark:bg-[#353842] rounded border border-slate-200 dark:border-[#454956] shadow-xs overflow-hidden">
@@ -7019,7 +7023,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     </div>
                                                     <div class="flex shrink-0 items-center gap-2">
                                                         <span class="rounded border px-2 py-0.5 text-[10px] font-bold uppercase <?= $directLevelClass ?>"><?= htmlspecialchars($directLevel) ?></span>
-                                                        <form method="POST" action="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access" onsubmit="return confirm('Remover este acesso individual?');">
+                                                        <form method="POST" action="index.php?tab=editar_usuario&id=<?= $targetUserId ?>&user_tab=access" data-confirm="Remover este acesso individual?" data-confirm-title="Remover acesso" data-confirm-label="Remover acesso" data-confirm-tone="danger">
                                                             <input type="hidden" name="remove_direct_user_permission" value="1">
                                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                                             <input type="hidden" name="target_user_id" value="<?= $targetUserId ?>">
@@ -8059,23 +8063,6 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             // =========================================================================
             // CONTROLE DA ÁRVORE HIERÁRQUICA (EXPANDIR/RECOLHER NOS 4 NÍVEIS)
             // =========================================================================
-            function confirmPermanentStructureDeletion(form) {
-                const name = form.dataset.deleteName || '';
-                const summary = form.dataset.deleteSummary || '';
-                const typed = window.prompt(
-                    'Exclusão permanente de "' + name + '".\n' +
-                    'Serão apagados: ' + summary + '.\n' +
-                    'Esta ação não pode ser desfeita. Digite exatamente "' + name + '" para confirmar:'
-                );
-                if (typed === null) return false;
-                if (typed.trim() !== name) {
-                    window.alert('Nome diferente. Nada foi excluído.');
-                    return false;
-                }
-                form.querySelector('input[name="confirmation_name"]').value = typed.trim();
-                return true;
-            }
-
             function toggleTreeNode(btn) {
                 const group = btn.closest('.tree-node-group');
                 if (!group) return;
@@ -8150,5 +8137,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
     <?php require __DIR__ . '/partials/user-detail-modal.php'; ?>
     <script src="../assets/permissions.js"></script>
+    <?php if ($activeTab === 'usuarios' || ($activeTab === 'editar_grupo' && ($groupTab ?? '') === 'users')): ?>
+        <script src="../assets/batch-user-import.js"></script>
+    <?php endif; ?>
 </body>
 </html>
