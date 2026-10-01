@@ -1,5 +1,7 @@
 # Login integrado do Windows (BETIM e SAÚDE)
 
+> **Situação atual — 01/10/2026:** `login.php` exige usuário e senha em cada nova sessão e não chama `ActiveDirectoryAuthService::authenticateIntegrated()` automaticamente. O método e a opção de configuração existem, mas habilitar a variável abaixo, isoladamente, não ativa SSO na entrada atual. Este documento descreve a infraestrutura necessária para uma futura ativação revisada. Consulte [arquitetura](ARQUITETURA.md) e [instalação e operação](INSTALACAO_OPERACAO.md) para o comportamento vigente.
+
 O DocGov não lê nem recebe a senha usada no Windows. O IIS ou Apache autentica o navegador com Kerberos/NTLM e encaminha somente a identidade no campo `REMOTE_USER`, como `BETIM\\matheus.damiao` ou `SAUDE\\nome.sobrenome`.
 
 ## Variáveis de ambiente
