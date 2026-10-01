@@ -208,8 +208,8 @@ window.openUser360Modal = async function(userId) {
         loading.classList.add('hidden');
 
         if (!res.success || !res.user) {
-            alert(res.error || 'Não foi possível carregar os detalhes do usuário.');
             closeUser360Modal();
+            await window.DocGovDialog.alert(res.error || 'Não foi possível carregar os detalhes do usuário.');
             return;
         }
 
@@ -316,8 +316,8 @@ window.openUser360Modal = async function(userId) {
 
     } catch (err) {
         loading.classList.add('hidden');
-        alert('Erro de conexão ao carregar ficha do usuário: ' + err.message);
         closeUser360Modal();
+        await window.DocGovDialog.alert('Erro de conexão ao carregar ficha do usuário: ' + err.message);
     }
 };
 
