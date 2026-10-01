@@ -1,7 +1,10 @@
 <?php
 $batchGroupId = isset($batchImportGroupId) ? (int)$batchImportGroupId : null;
 $batchMode = $batchGroupId === null ? 'directory' : 'group';
-$batchEnabledDomains = array_filter($adConfig['domains'] ?? [], static fn(array $domain): bool => !isset($domain['enabled']) || $domain['enabled']);
+$batchDomains = $adConfig['domains'] ?? [];
+if ($batchGroupId === null) {
+    $batchDomains = array_filter($batchDomains, static fn(array $domain): bool => !isset($domain['enabled']) || $domain['enabled']);
+}
 ?>
 <details class="batch-import" data-batch-user-import data-mode="<?= $batchMode ?>" data-group-id="<?= $batchGroupId ?? '' ?>" data-csrf="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>" data-endpoint="import-users.php">
     <summary class="batch-import-heading">
@@ -19,10 +22,10 @@ $batchEnabledDomains = array_filter($adConfig['domains'] ?? [], static fn(array 
             <div class="batch-import-fields">
                 <label>Domínio para consulta
                     <select name="domain" required data-batch-domain class="input-minimal">
-                        <?php foreach ($batchEnabledDomains as $domainKey => $domain): ?>
-                            <option value="<?= htmlspecialchars($domainKey, ENT_QUOTES, 'UTF-8') ?>" <?= $selectedAdDomain === $domainKey ? 'selected' : '' ?>><?= htmlspecialchars($domainKey === 'SAUDE' ? 'SAÚDE' : $domainKey, ENT_QUOTES, 'UTF-8') ?></option>
+                        <?php foreach ($batchDomains as $domainKey => $domain): ?>
+                            <option value="<?= htmlspecialchars($domainKey, ENT_QUOTES, 'UTF-8') ?>" <?= $selectedAdDomain === $domainKey ? 'selected' : '' ?>><?= htmlspecialchars($domainKey === 'SAUDE' ? 'SAÚDE' : $domainKey, ENT_QUOTES, 'UTF-8') ?><?= isset($domain['enabled']) && !$domain['enabled'] ? ' (consulta AD indisponível)' : '' ?></option>
                         <?php endforeach; ?>
-                        <?php if ($batchEnabledDomains === []): ?><option value="">Nenhum domínio habilitado</option><?php endif; ?>
+                        <?php if ($batchDomains === []): ?><option value="">Nenhum domínio disponível</option><?php endif; ?>
                     </select>
                 </label>
                 <label>Carregar lista (.txt ou .csv)
