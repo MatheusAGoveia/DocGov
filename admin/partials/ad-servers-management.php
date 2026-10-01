@@ -270,7 +270,7 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                 </span>
 
                 <?php if (count($adDomains) > 1): ?>
-                    <form method="POST" action="index.php?tab=servidores_ad" onsubmit="return confirm('Deseja realmente excluir o domínio corporativo [<?= htmlspecialchars($currentDomain['key']) ?>]?');" class="inline">
+                    <form method="POST" action="index.php?tab=servidores_ad" data-confirm="Excluir o domínio corporativo [<?= htmlspecialchars($currentDomain['key'], ENT_QUOTES, 'UTF-8') ?>]?" data-confirm-title="Excluir domínio" data-confirm-label="Excluir domínio" data-confirm-tone="danger" class="inline">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                         <input type="hidden" name="delete_ad_domain" value="<?= htmlspecialchars($currentDomain['key']) ?>">
                         <button type="submit" class="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 transition dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
@@ -686,11 +686,17 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
         }
     });
 
-    document.addEventListener('click', e => {
+    document.addEventListener('click', async e => {
         const btnDelete = e.target.closest('.btn-delete-domain-inline');
         if (btnDelete) {
             const domainKey = btnDelete.dataset.domainKey;
-            if (domainKey && confirm(`Deseja realmente excluir o domínio [${domainKey}] e suas configurações de servidores?`)) {
+            if (domainKey && await window.DocGovDialog.confirm({
+                title: 'Excluir domínio',
+                message: `Excluir o domínio [${domainKey}] e suas configurações de servidores?`,
+                confirmLabel: 'Excluir domínio',
+                tone: 'danger',
+                opener: btnDelete,
+            })) {
                 const formDelete = document.getElementById('form-delete-ad-domain');
                 const inputKey = document.getElementById('input-delete-ad-domain-key');
                 if (formDelete && inputKey) {
