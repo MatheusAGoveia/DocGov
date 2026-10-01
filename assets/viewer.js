@@ -7,10 +7,10 @@ import {
   getDocument,
   GlobalWorkerOptions,
   version,
-} from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.mjs';
+} from './pdfjs/pdf.min.mjs';
 
 GlobalWorkerOptions.workerSrc =
-  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.mjs';
+  new URL('./pdfjs/pdf.worker.min.mjs', import.meta.url).href;
 
 /* ── Utilitários de UI ── */
 
@@ -108,7 +108,12 @@ class PdfViewer {
 
   async init() {
     try {
-      const loadingTask = getDocument({ url: this.url, withCredentials: true });
+      const loadingTask = getDocument({
+        url: this.url, withCredentials: true, isEvalSupported: false,
+        cMapUrl: new URL('./pdfjs/cmaps/', import.meta.url).href,
+        standardFontDataUrl: new URL('./pdfjs/standard_fonts/', import.meta.url).href,
+        cMapPacked: true,
+      });
       this.pdfDoc = await loadingTask.promise;
       this.totalPages = this.pdfDoc.numPages;
       this.pageIndicator.textContent = `1 / ${this.totalPages}`;
@@ -313,7 +318,7 @@ class PdfViewer {
         inner.appendChild(textLayerDiv);
 
         const textContentSource = await page.getTextContent();
-        const textLayer = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.mjs').then((mod) => new mod.TextLayer({
+        const textLayer = await import('./pdfjs/pdf.min.mjs').then((mod) => new mod.TextLayer({
           textContentSource,
           container: textLayerDiv,
           viewport,
