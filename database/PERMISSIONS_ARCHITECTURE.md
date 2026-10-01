@@ -1,5 +1,7 @@
 # 🔐 Arquitetura Definitiva de Gestão de Acesso — DocGov (Modelo Folder Permissions / Teams)
 
+> **Complemento — 01/10/2026:** assuntos públicos acrescentam leitura para contas autenticadas e ativas, conforme [visibilidade](../docs/assuntos-publicos-privados.md). Capacidades administrativas globais por equipe são separadas das permissões de conteúdo. Publicação exige revisão e aprovação administrativa; veja [arquitetura atual](../docs/ARQUITETURA.md).
+
 > **Documento de Arquitetura e Especificação Técnica**  
 > **Status:** Implementado; o nome definitivo da tabela é `permissions`
 > **Inspiração Conceitual:** Modelo de Folder Permissions & Teams (Grafana-like)  
@@ -29,7 +31,7 @@ O novo modelo de controle de acesso do **DocGov** baseia-se nos seguintes princ�
 
 3. **Níveis de Permissão Escalares:**
    - `View` = 1 (Visualização de metadados, estrutura e download/leitura de documentos)
-   - `Edit` = 2 (Criação, alteração e publicação de documentos e conteúdos)
+   - `Edit` = 2 (Criação, alteração e submissão de documentos para revisão; publicação exige aprovação administrativa)
    - `Admin` = 3 (Gestão total do recurso + concessão/revogação de permissões)
 
 4. **Maior Permissão Vence (Max Permissive):**
