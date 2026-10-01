@@ -1,5 +1,7 @@
 # 🐘 Modelagem de Banco de Dados PostgreSQL — DocGov
 
+> **Atualização — 01/10/2026:** o detalhamento abaixo registra a modelagem inicial e não cobre sozinho as extensões atuais. Consulte [arquitetura](../docs/ARQUITETURA.md), [instalação e operação](../docs/INSTALACAO_OPERACAO.md) e o [índice da documentação](../docs/README.md). `schema.sql` é para base vazia; em uma base existente, aplique somente as migrações pendentes. O seed contém contas/dados de demonstração e não deve ser usado como carga automática de produção. O executor atual em `scratch/run_migrations.php` ainda omite a migração 026.
+
 Este diretório contém a modelagem física, scripts DDL e dados de teste (seed) para o banco de dados oficial do sistema **DocGov**.
 
 ---
