@@ -84,16 +84,27 @@ if ($loggedUser) {
     $isFavorite = (bool)$stmtFav->fetch();
 }
 
-// Exclusão de Documento
+// A rota antiga segue a lixeira; exclusão física permanece exclusiva do painel.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_doc']) && $canDelete) {
-    if (!empty($doc['stored_filename'])) {
-        $physicalFile = __DIR__ . '/storage/documents/' . basename($doc['stored_filename']);
-        if (file_exists($physicalFile)) {
-            @unlink($physicalFile);
-        }
+    if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+        http_response_code(419);
+        exit('Sessão de segurança expirada. Atualize a página e tente novamente.');
     }
-    $pdo->prepare("DELETE FROM documents WHERE id = :id")->execute([':id' => $docId]);
-    header('Location: index.php?msg=deleted');
+    require_once __DIR__ . '/services/DocumentWorkflowService.php';
+    $workflowService = new DocumentWorkflowService($pdo, $_permSvcVC);
+    try {
+        $pdo->beginTransaction();
+        $currentDocument = $workflowService->lockDocument($docId, (string)($_POST['document_version'] ?? $doc['updated_at']));
+        if (!$_permSvcVC->isGlobalAdmin($userId)) throw new RuntimeException('Acesso negado.', 403);
+        $workflowService->moveToTrash($docId, $userId, (string)$currentDocument['status'], 'Movido para a lixeira pelo visualizador.');
+        $pdo->commit();
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        http_response_code(in_array((int)$exception->getCode(), [403, 404, 409], true) ? (int)$exception->getCode() : 422);
+        exit(htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'));
+    }
+    $usageAuditService->logAdminAction($userId, 'document_trashed', 'DOCUMENT', $docId);
+    header('Location: admin/index.php?tab=documentos&msg=moved_to_trash');
     exit;
 }
 
@@ -211,8 +222,7 @@ $backUseHistory = true;
     <?php require __DIR__ . '/partials/dialog_assets.php'; ?>
     <link rel="stylesheet" href="assets/structured-content.css">
     <?php if ($isPdf): ?>
-        <!-- Biblioteca PDF.js Local -->
-        <script src="assets/pdfjs/pdf.min.js"></script>
+        <!-- PDF.js e worker locais da mesma versão; carregados pelo módulo abaixo. -->
         <style>
             .pdf-page-canvas {
                 box-shadow: 0 4px 20px rgba(0,0,0,0.3);
@@ -392,9 +402,9 @@ $backUseHistory = true;
                     </div>
 
                     <!-- ENGINE PDF.JS INTEGRADA -->
-                    <script>
-                        // Configuração Oficial da biblioteca local PDF.js v3.11.174
-                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdfjs/pdf.worker.min.js';
+                    <script type="module">
+                        import * as pdfjsLib from './assets/pdfjs/pdf.min.mjs';
+                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdfjs/pdf.worker.min.mjs';
 
                         const pdfStreamUrl = '<?= $streamUrl ?>';
                         let currentPdf = null;
@@ -414,8 +424,10 @@ $backUseHistory = true;
                             try {
                                 const loadingTask = pdfjsLib.getDocument({
                                     url: pdfStreamUrl,
-                                    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
-                                    cMapPacked: true
+                                    cMapUrl: 'assets/pdfjs/cmaps/',
+                                    standardFontDataUrl: 'assets/pdfjs/standard_fonts/',
+                                    cMapPacked: true,
+                                    isEvalSupported: false
                                 });
 
                                 currentPdf = await loadingTask.promise;

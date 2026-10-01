@@ -69,7 +69,7 @@ if ($method === 'GET') {
 
         $stmt = $pdo->prepare("
             SELECT d.id, d.title, d.slug, d.description, d.content_type, d.section_key, d.structured_content,
-                   d.code_language, d.status, d.published_at,
+                   d.code_language, d.status, d.published_at, d.updated_at AS document_version,
                    d.original_filename, d.file_size, d.external_url, d.created_at,
                    ds.label AS section_label, ds.editor_kind AS section_editor_kind,
                    s.name AS subject_name, sc.name AS subcategory_name, c.name AS category_name,
@@ -88,7 +88,7 @@ if ($method === 'GET') {
     } else {
         $stmt = $pdo->prepare("
             SELECT d.id, d.title, d.slug, d.description, d.content_type, d.section_key, d.structured_content,
-                   d.code_language, d.status, d.published_at,
+                   d.code_language, d.status, d.published_at, d.updated_at AS document_version,
                    ds.label AS section_label, ds.editor_kind AS section_editor_kind,
                    s.name AS subject_name, sc.name AS subcategory_name, c.name AS category_name,
                    u.name AS author_name
@@ -135,9 +135,14 @@ if ($method === 'POST') {
     $previousStatus = null;
     $previousDocument = null;
     if ($docId > 0) {
-        $stmtPrevious = $pdo->prepare('SELECT status, subject_id, section_key, content_type FROM documents WHERE id = :id');
+        $stmtPrevious = $pdo->prepare('SELECT status, subject_id, section_key, content_type, updated_at FROM documents WHERE id = :id');
         $stmtPrevious->execute([':id' => $docId]);
         $previousDocument = $stmtPrevious->fetch(PDO::FETCH_ASSOC) ?: null;
+        if (!$previousDocument) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Documento não encontrado.']);
+            exit;
+        }
         $previousStatus = $previousDocument['status'] ?? null;
         if ($subjectId <= 0 && $previousDocument) {
             $subjectId = (int)$previousDocument['subject_id'];
@@ -364,20 +369,40 @@ if ($method === 'POST') {
         }
 
         $pdo->beginTransaction();
+        if ($docId > 0) {
+            $lockedDocument = $workflowService->lockDocument($docId, (string)($_POST['document_version'] ?? $previousDocument['updated_at']));
+            if (!$permService->canEditDocument($userId, $docId) || !$permService->canCreateDocument($userId, $subjectId)) {
+                throw new RuntimeException('Você não possui permissão para editar este documento.', 403);
+            }
+            $previousStatus = (string)$lockedDocument['status'];
+            $workflowTransition = $workflowService->prepareAction($workflowAction, $previousStatus, $userId, $docId, $workflowNote);
+            $status = $workflowTransition['status'];
+            $params[':status'] = $status;
+            $params[':is_published'] = $status === 'published' ? 1 : 0;
+            $params[':published_at'] = $status === 'published' ? date(DATE_ATOM) : null;
+            if ($workflowTransition['action'] === 'approved_and_published') {
+                $approvalChanges = ['subject_id' => $subjectId, 'title' => $title, 'description' => $description,
+                    'content_type' => $contentType, 'section_key' => $sectionKey, 'text_content' => $textContent,
+                    'structured_content' => $structuredContent, 'external_url' => $externalUrl];
+                if ($contentType === 'code') $approvalChanges['code_language'] = $codeLanguage;
+                if ($storedFilename !== null) $approvalChanges['stored_filename'] = $storedFilename;
+                $workflowService->assertReviewedContentUnchanged($lockedDocument, $approvalChanges);
+            }
+        }
         $slug = $documentSlugService->reserve($subjectId, $title, $docId > 0 ? $docId : null);
         $params[':slug'] = $slug;
         $stmt->execute($params);
         $newId = (int)$stmt->fetchColumn();
+        if ($newId <= 0) throw new RuntimeException('Documento não encontrado.', 404);
+        $workflowService->applyTransitionMetadata($newId, $userId, $workflowTransition['action'], $workflowTransition['note']);
+        $workflowService->record($newId, $userId, $workflowTransition['action'], $previousStatus ?: 'draft', $status, $workflowTransition['note']);
+        $versionStmt = $pdo->prepare('SELECT updated_at FROM documents WHERE id = :id');
+        $versionStmt->execute([':id' => $newId]);
+        $documentVersion = (string)$versionStmt->fetchColumn();
         $pdo->commit();
-        try {
-            $workflowService->applyTransitionMetadata($newId, $userId, $workflowTransition['action'], $workflowTransition['note']);
-            $workflowService->record($newId, $userId, $workflowTransition['action'], $previousStatus ?: 'draft', $status, $workflowTransition['note']);
-            $workflowService->notifyForTransition($newId, $userId, $workflowTransition['action']);
-        } catch (Throwable $exception) {
-            error_log('DocGov documents API workflow: ' . $exception->getMessage());
-        }
+        $workflowService->notifyAfterCommit($newId, $userId, $workflowTransition['action']);
 
-        echo json_encode(['success' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'status' => $status]);
+        echo json_encode(['success' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'status' => $status, 'document_version' => $documentVersion]);
     } catch (Throwable $e) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -386,8 +411,9 @@ if ($method === 'POST') {
             unlink(__DIR__ . '/../' . $filePath);
         }
         error_log('DocGov documents API: erro ao salvar documento: ' . $e->getMessage());
-        http_response_code(500);
-        echo json_encode(['success' => false, 'error' => 'Não foi possível salvar o documento.']);
+        $errorStatus = in_array((int)$e->getCode(), [403, 404, 409], true) ? (int)$e->getCode() : 500;
+        http_response_code($errorStatus);
+        echo json_encode(['success' => false, 'error' => $errorStatus === 500 ? 'Não foi possível salvar o documento.' : $e->getMessage()]);
     }
     exit;
 }

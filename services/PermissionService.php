@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/NotificationService.php';
+require_once __DIR__ . '/GroupMembershipService.php';
 /**
  * services/PermissionService.php
  * Motor Central de Autorização e Permissões do DocGov
@@ -19,6 +20,7 @@ require_once __DIR__ . '/NotificationService.php';
 
 class PermissionService {
     private PDO $pdo;
+    private GroupMembershipService $groupMembershipService;
 
     private const LEVEL_MAP = [
         'none'  => 0,
@@ -36,6 +38,7 @@ class PermissionService {
 
     public function __construct(PDO $pdo) {
         $this->pdo = $pdo;
+        $this->groupMembershipService = new GroupMembershipService($pdo);
     }
 
     public static function normalizeSubjectVisibility(mixed $visibility): string {
@@ -75,19 +78,7 @@ class PermissionService {
      * Retorna a lista de IDs de grupos ATIVOS aos quais o usuário pertence
      */
     public function getActiveUserGroupIds(int $userId): array {
-        if ($userId <= 0) {
-            return [];
-        }
-
-        $stmt = $this->pdo->prepare("
-            SELECT g.id 
-            FROM groups g
-            JOIN user_groups ug ON g.id = ug.group_id
-            WHERE ug.user_id = ? AND g.active = TRUE
-        ");
-        $stmt->execute([$userId]);
-
-        return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+        return $this->groupMembershipService->getActiveGroupIds($userId);
     }
 
     /**
@@ -126,7 +117,7 @@ class PermissionService {
      * @param int $resourceId ID do Recurso
      * @return array [ 'effective_level' => string, 'effective_value' => int, 'has_permission' => bool, 'sources' => array ]
      */
-    public function getEffectivePermission(int $userId, string $resourceType, int $resourceId): array {
+    public function getEffectivePermission(int $userId, string $resourceType, int $resourceId, bool $includeGroupPaths = true): array {
         $resourceType = strtolower(trim($resourceType));
 
         // 1. Validação básica de entrada
@@ -170,7 +161,7 @@ class PermissionService {
         $activeGroupIds = $this->getActiveUserGroupIds($userId);
 
         // 6. Consultar todas as regras na tabela 'permissions' aplicáveis aos principais e recursos da cadeia
-        $sources = $this->queryApplicableRules($userId, $userName, $activeGroupIds, $resourceType, $resourceId, $resourceChain);
+        $sources = $this->queryApplicableRules($userId, $userName, $activeGroupIds, $resourceType, $resourceId, $resourceChain, $includeGroupPaths);
 
         // A leitura pública nasce no assunto, sem conceder acesso herdável aos pais.
         foreach ($resourceChain as $resource) {
@@ -207,17 +198,17 @@ class PermissionService {
      * Métodos Convenientes de Verificação Booleana (canView, canEdit, canAdmin)
      */
     public function canView(int $userId, string $resourceType, int $resourceId): bool {
-        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId);
+        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId, false);
         return $result['effective_value'] >= self::LEVEL_MAP['view'];
     }
 
     public function canEdit(int $userId, string $resourceType, int $resourceId): bool {
-        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId);
+        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId, false);
         return $result['effective_value'] >= self::LEVEL_MAP['edit'];
     }
 
     public function canAdmin(int $userId, string $resourceType, int $resourceId): bool {
-        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId);
+        $result = $this->getEffectivePermission($userId, $resourceType, $resourceId, false);
         return $result['effective_value'] >= self::LEVEL_MAP['admin'];
     }
 
@@ -325,7 +316,8 @@ class PermissionService {
         array $activeGroupIds,
         string $targetResourceType,
         int $targetResourceId,
-        array $resourceChain
+        array $resourceChain,
+        bool $includeGroupPaths
     ): array {
         $sources = [];
 
@@ -399,6 +391,12 @@ class PermissionService {
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        $membershipPaths = [];
+        if ($includeGroupPaths && $this->groupMembershipService->isAvailable() && array_filter($rows, static fn(array $row): bool => !empty($row['group_id']))) {
+            foreach ($this->groupMembershipService->getUserGroups($userId) as $team) {
+                $membershipPaths[$team['id']] = $team;
+            }
+        }
         foreach ($rows as $row) {
             $principalType = !empty($row['user_id']) ? 'user' : 'group';
             $principalId = !empty($row['user_id']) ? (int)$row['user_id'] : (int)$row['group_id'];
@@ -419,6 +417,9 @@ class PermissionService {
 
             // Formatação amigável da descrição da fonte de permissão
             $principalLabel = ($principalType === 'user') ? "acesso direto ($principalName)" : "Equipe $principalName";
+            $membership = $membershipPaths[$principalId] ?? null;
+            $isGroupInherited = $principalType === 'group' && $membership !== null && !$membership['is_direct'];
+            if ($isGroupInherited) $principalLabel = 'Equipe ' . $membership['membership_label'];
             $resourceLabel = ucfirst($ruleResourceType) . " $ruleResourceName";
             $description = "$principalLabel / $resourceLabel / " . ucfirst($permLevel);
 
@@ -432,6 +433,8 @@ class PermissionService {
                 'permission_level' => $permLevel,
                 'permission_value' => $permValue,
                 'is_inherited'     => $isInherited,
+                'is_group_inherited' => $isGroupInherited,
+                'membership_path'  => $principalType === 'group' ? ($membership['membership_path'] ?? []) : [],
                 'description'      => $description
             ];
         }
@@ -490,7 +493,7 @@ class PermissionService {
             return [];
         }
 
-        $sql = "
+        $sql = $this->groupMembershipService->effectiveMembershipsCte() . "
             SELECT 
                 p.id AS permission_id,
                 p.user_id,
@@ -506,7 +509,7 @@ class PermissionService {
                 u.active AS user_active,
                 g.name AS group_name,
                 g.active AS group_active,
-                (SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id) AS group_members_count
+                (SELECT COUNT(*) FROM effective_user_groups ug JOIN users member ON member.id = ug.user_id AND member.active = TRUE WHERE ug.group_id = g.id) AS group_members_count
             FROM permissions p
             LEFT JOIN users u ON p.user_id = u.id
             LEFT JOIN groups g ON p.group_id = g.id
@@ -527,7 +530,7 @@ class PermissionService {
             $principalType = !empty($row['user_id']) ? 'user' : 'group';
             $principalId = !empty($row['user_id']) ? (int)$row['user_id'] : (int)$row['group_id'];
             $principalName = !empty($row['user_id']) ? $row['user_name'] : $row['group_name'];
-            $principalSubtext = !empty($row['user_id']) ? "@" . $row['user_handle'] : (int)$row['group_members_count'] . " membro(s)";
+            $principalSubtext = !empty($row['user_id']) ? "@" . $row['user_handle'] : (int)$row['group_members_count'] . " membro(s) ativo(s), incluindo subgrupos";
             $principalActive = !empty($row['user_id'])
                 ? filter_var($row['user_active'], FILTER_VALIDATE_BOOLEAN)
                 : filter_var($row['group_active'], FILTER_VALIDATE_BOOLEAN);
@@ -793,10 +796,10 @@ class PermissionService {
             if ($userId !== null) {
                 $recipientIds[] = $userId;
             } elseif ($groupId !== null) {
-                $stmt = $this->pdo->prepare('
+                $stmt = $this->pdo->prepare($this->groupMembershipService->effectiveMembershipsCte() . '
                     SELECT u.id
                     FROM users u
-                    JOIN user_groups ug ON ug.user_id = u.id
+                    JOIN effective_user_groups ug ON ug.user_id = u.id
                     JOIN groups g ON g.id = ug.group_id
                     WHERE ug.group_id = :group_id AND u.active = TRUE AND g.active = TRUE
                 ');
@@ -1190,15 +1193,7 @@ class PermissionService {
 
         // 2. Se for Admin Global
         if ($this->isGlobalAdmin($userId)) {
-            $stmtG = $this->pdo->prepare("
-                SELECT g.id, g.name, g.description
-                FROM groups g
-                JOIN user_groups ug ON g.id = ug.group_id
-                WHERE ug.user_id = ? AND g.active = TRUE
-                ORDER BY g.name ASC
-            ");
-            $stmtG->execute([$userId]);
-            $activeGroups = $stmtG->fetchAll(PDO::FETCH_ASSOC);
+            $activeGroups = $this->groupMembershipService->getUserGroups($userId);
 
             return [
                 'user' => $userData,
@@ -1209,15 +1204,7 @@ class PermissionService {
         }
 
         // 3. Buscar grupos ATIVOS do usuário
-        $stmtG = $this->pdo->prepare("
-            SELECT g.id, g.name, g.description
-            FROM groups g
-            JOIN user_groups ug ON g.id = ug.group_id
-            WHERE ug.user_id = ? AND g.active = TRUE
-            ORDER BY g.name ASC
-        ");
-        $stmtG->execute([$userId]);
-        $activeGroups = $stmtG->fetchAll(PDO::FETCH_ASSOC);
+        $activeGroups = $this->groupMembershipService->getUserGroups($userId);
         $activeGroupIds = array_column($activeGroups, 'id');
 
         // 4. Mapear regras diretas do usuário e regras dos grupos ATIVOS
@@ -1250,6 +1237,11 @@ class PermissionService {
         $stmtP = $this->pdo->prepare($sql);
         $stmtP->execute($params);
         $appliedRules = $stmtP->fetchAll(PDO::FETCH_ASSOC);
+        $teamLabels = array_column($activeGroups, 'membership_label', 'id');
+        foreach ($appliedRules as &$rule) {
+            if (!empty($rule['group_id'])) $rule['group_name'] = $teamLabels[(int)$rule['group_id']] ?? $rule['group_name'];
+        }
+        unset($rule);
 
         // 5. Carregar toda a estrutura documental ativa (Categorias -> Subcategorias -> Assuntos)
         $structure = $this->getResourceTree();
@@ -1636,11 +1628,11 @@ class PermissionService {
             $userFilterSql = 'WHERE u.id IN (' . implode(',', $visibleUserIds) . ')';
         }
 
-        $stmt = $this->pdo->query("
+        $stmt = $this->pdo->query($this->groupMembershipService->allMembershipsCte() . "
             SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
                    COUNT(DISTINCT ug.group_id) AS total_grupos
             FROM users u
-            LEFT JOIN user_groups ug ON u.id = ug.user_id
+            LEFT JOIN all_user_groups ug ON u.id = ug.user_id
             {$userFilterSql}
             GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
             ORDER BY u.name ASC
@@ -1716,15 +1708,7 @@ class PermissionService {
         }
 
         if ($this->isGlobalAdmin($managerUserId)) {
-            $stmt = $this->pdo->prepare("
-                SELECT g.id, g.name, g.description, g.active, ug.created_at AS member_since
-                FROM groups g
-                JOIN user_groups ug ON ug.group_id = g.id
-                WHERE ug.user_id = ?
-                ORDER BY g.name ASC
-            ");
-            $stmt->execute([$targetUserId]);
-            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return $this->groupMembershipService->getUserGroups($targetUserId, true);
         }
 
         $condition = $this->buildPermissionScopeCondition($this->getAdministrativeScope($managerUserId), 'p');
@@ -1732,16 +1716,10 @@ class PermissionService {
             return [];
         }
 
-        $stmt = $this->pdo->prepare("
-            SELECT DISTINCT g.id, g.name, g.description, g.active, ug.created_at AS member_since
-            FROM groups g
-            JOIN user_groups ug ON ug.group_id = g.id
-            JOIN permissions p ON p.group_id = g.id
-            WHERE ug.user_id = ? AND ({$condition})
-            ORDER BY g.name ASC
-        ");
-        $stmt->execute([$targetUserId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $stmt = $this->pdo->query("SELECT DISTINCT p.group_id FROM permissions p WHERE p.group_id IS NOT NULL AND ({$condition})");
+        $visibleIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+        return array_values(array_filter($this->groupMembershipService->getUserGroups($targetUserId),
+            static fn(array $team): bool => in_array($team['id'], $visibleIds, true)));
     }
 
     private function getVisibleUserIdsForAdministrativeScope(int $managerUserId): array {
@@ -1750,7 +1728,7 @@ class PermissionService {
             return [];
         }
 
-        $stmt = $this->pdo->query("
+        $stmt = $this->pdo->query($this->groupMembershipService->effectiveMembershipsCte() . "
             SELECT DISTINCT scoped.user_id
             FROM (
                 SELECT p.user_id
@@ -1762,7 +1740,7 @@ class PermissionService {
                 SELECT ug.user_id
                 FROM permissions p
                 JOIN groups g ON g.id = p.group_id AND g.active = TRUE
-                JOIN user_groups ug ON ug.group_id = g.id
+                JOIN effective_user_groups ug ON ug.group_id = g.id
                 WHERE p.group_id IS NOT NULL AND ({$condition})
             ) scoped
             WHERE scoped.user_id IS NOT NULL

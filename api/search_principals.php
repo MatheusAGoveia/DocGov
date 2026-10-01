@@ -34,6 +34,7 @@ if (!in_array($resourceType, ['category', 'subcategory', 'subject'], true) || $r
 }
 
 $permissionService = new PermissionService($pdo);
+$groupMembershipService = new GroupMembershipService($pdo);
 $resource = $permissionService->getResourceContext($resourceType, $resourceId);
 if ($resource === null) {
     searchPrincipalsResponse(404, ['success' => false, 'error' => 'Recurso não encontrado.']);
@@ -86,7 +87,7 @@ try {
             ];
         }
     } else {
-        $sql = "
+        $sql = $groupMembershipService->effectiveMembershipsCte() . "
             SELECT g.id, g.name, g.description, COUNT(ug.user_id) AS member_count,
                    (
                        SELECT p.permission_level
@@ -98,7 +99,8 @@ try {
                        LIMIT 1
                    ) AS existing_level
             FROM groups g
-            LEFT JOIN user_groups ug ON ug.group_id = g.id
+            LEFT JOIN effective_user_groups ug ON ug.group_id = g.id
+                AND EXISTS (SELECT 1 FROM users member WHERE member.id = ug.user_id AND member.active = TRUE)
             WHERE g.active = TRUE
         ";
         $params = [
@@ -120,7 +122,7 @@ try {
                 'id' => (int)$row['id'],
                 'name' => $row['name'],
                 'type' => 'group',
-                'subtext' => $memberCount . ($memberCount === 1 ? ' membro' : ' membros'),
+                'subtext' => $memberCount . ($memberCount === 1 ? ' membro ativo' : ' membros ativos') . ' · inclui subgrupos',
                 'existing_level' => $row['existing_level'] ? strtolower($row['existing_level']) : null,
             ];
         }

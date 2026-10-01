@@ -3,9 +3,60 @@
 require_once __DIR__ . '/NotificationService.php';
 require_once __DIR__ . '/PermissionService.php';
 
+class DocumentConflictException extends RuntimeException {}
+
 /** Mantém as transições editoriais, a auditoria e os avisos aos responsáveis. */
 class DocumentWorkflowService {
     public function __construct(private PDO $pdo, private PermissionService $permissionService) {}
+
+    /** A decisão editorial e a gravação usam a mesma linha bloqueada. */
+    public function lockDocument(int $documentId, ?string $expectedVersion = null): array {
+        if (!$this->pdo->inTransaction()) {
+            throw new LogicException('O bloqueio editorial exige uma transação ativa.');
+        }
+        $stmt = $this->pdo->prepare('SELECT * FROM documents WHERE id = :id FOR UPDATE');
+        $stmt->execute([':id' => $documentId]);
+        $document = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$document) {
+            throw new RuntimeException('Documento não encontrado.', 404);
+        }
+        if ($expectedVersion !== null && $expectedVersion !== ''
+            && $expectedVersion !== (string)$document['updated_at']) {
+            throw new DocumentConflictException('Este documento foi alterado por outra operação. Suas alterações não foram salvas. Reabra a versão atual antes de tentar novamente.', 409);
+        }
+        return $document;
+    }
+
+    /** A aprovação não pode substituir o conteúdo que recebeu o parecer. */
+    public function assertReviewedContentUnchanged(array $document, array $changes): void {
+        foreach (['subject_id', 'title', 'description', 'content_type', 'section_key', 'text_content', 'structured_content', 'code_language', 'external_url', 'stored_filename'] as $field) {
+            if (!array_key_exists($field, $changes)) continue;
+            $before = $document[$field] ?? null;
+            $after = $changes[$field];
+            if ($field === 'structured_content') {
+                $before = is_string($before) ? json_decode($before, true, 512, JSON_THROW_ON_ERROR) : $before;
+                $after = is_string($after) ? json_decode($after, true, 512, JSON_THROW_ON_ERROR) : $after;
+                $same = $before == $after;
+            } else {
+                $same = (string)$before === (string)$after;
+            }
+            if (!$same) {
+                throw new DocumentConflictException('O conteúdo foi alterado em relação à versão revisada. Salve as alterações e envie o documento novamente para revisão antes de publicar.', 409);
+            }
+        }
+    }
+
+    /** Avisos são posteriores ao commit e não podem desfazer uma gravação válida. */
+    public function notifyAfterCommit(int $documentId, int $actorId, string $action): void {
+        if ($this->pdo->inTransaction()) {
+            throw new LogicException('Notificações editoriais devem ser enviadas após o commit.');
+        }
+        try {
+            $this->notifyForTransition($documentId, $actorId, $action);
+        } catch (Throwable $exception) {
+            error_log('DocGov workflow notification: ' . $exception->getMessage());
+        }
+    }
 
     public static function label(string $status): string {
         return match (strtolower($status)) {
@@ -207,7 +258,7 @@ class DocumentWorkflowService {
         $actorId = $actorId > 0 ? $actorId : null;
 
         $sql = match ($action) {
-            'submitted_for_review' => '
+            'saved_as_draft', 'submitted_for_review' => '
                 UPDATE documents
                 SET reviewed_by = NULL, reviewed_at = NULL,
                     approved_by = NULL, approved_at = NULL,
