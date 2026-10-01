@@ -568,6 +568,7 @@ $userThemeClass = 'light';
     <script src="assets/theme-bootstrap.js"></script>
     
     <link rel="stylesheet" href="assets/style.css">
+    <?php require __DIR__ . '/partials/dialog_assets.php'; ?>
     <link rel="stylesheet" href="assets/structured-content.css">
 </head>
 <body class="bg-[#f8f9fa] dark:bg-[#111318] text-slate-900 dark:text-[#d7dbe1] min-h-screen flex flex-col selection:bg-slate-800 selection:text-white dark:selection:bg-slate-200 dark:selection:text-slate-900">
@@ -942,12 +943,12 @@ $userThemeClass = 'light';
                             if (svg) svg.classList.remove('is-saved');
                         }
                     } else {
-                        alert('Não foi possível atualizar o favorito.');
+                        window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                     }
                 })
                 .catch(() => {
                     if (btnElem) btnElem.disabled = false;
-                    alert('Não foi possível atualizar o favorito.');
+                    window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                 });
         }
 
