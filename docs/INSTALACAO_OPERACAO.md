@@ -44,7 +44,7 @@ psql -v ON_ERROR_STOP=1 -U <usuario_instalacao> -d docsec -f database/schema.sql
 
 **Base existente:** faça backup e identifique as migrações realmente pendentes. Não execute o schema novamente e não decida a ordem apenas pelo nome: há numerações repetidas e arquivos históricos, como `003_resource_permissions.sql`.
 
-O executor `scratch/run_migrations.php` contém uma lista explícita até 025 e ainda **não inclui 026**. Não o considere um atualizador completo. Aplique a migração de visibilidade quando estiver pendente, usando o cliente PostgreSQL configurado:
+O executor `scratch/run_migrations.php` contém uma lista explícita até 027, incluindo visibilidade de assuntos e grupos aninhados. Ele reaplica os scripts da lista e não possui controle de migrações já executadas; aplique somente as pendentes. Aplique a migração de visibilidade quando estiver pendente, usando o cliente PostgreSQL configurado:
 
 ```powershell
 psql -v ON_ERROR_STOP=1 -U <usuario_migracao> -d docsec -f database/migrations/026_subject_visibility.sql
@@ -61,6 +61,8 @@ WHERE table_schema = 'public'
 ```
 
 Não foi identificada uma tabela de controle de execução de migrações. Mantenha registro operacional de versão, scripts aplicados e resultado até consolidar o mecanismo. Veja CR-03 no [review](CODE_REVIEW_2026-10-01.md).
+
+Para habilitar grupos dentro de grupos em uma base existente, use `php scratch/apply_nested_groups_migration.php`, que aplica exclusivamente 027 em uma transação com limites de espera. O código mantém os vínculos diretos antes dessa expansão e não exige reinício do servidor. Consulte [implantação e verificação](grupos-aninhados.md).
 
 ## Frontend e desenvolvimento local
 

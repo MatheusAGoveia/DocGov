@@ -56,4 +56,6 @@ Gerencie permissões no recurso correto. A permissão efetiva usa o maior nível
 
 Configurações, autenticação, diretório, auditoria e tags podem ser delegados por capacidades de equipe. A gestão das equipes e dessas capacidades permanece exclusiva do administrador global.
 
+Em **Equipes → Editar equipe → Subgrupos**, o administrador global pode incluir outras equipes. Membros dos subgrupos recebem os acessos ao conteúdo da equipe superior por caminhos ativos. A tela mostra membros indiretos e equipes superiores; remover um vínculo preserva a equipe e suas outras origens de acesso. Capacidades administrativas globais continuam vinculadas aos membros diretos. Veja [regras e exemplos](grupos-aninhados.md).
+
 Para solicitar suporte, informe a página, ação, horário e identificação do recurso. Evite enviar senhas, tokens ou cookies. Consulte [operação e diagnóstico](INSTALACAO_OPERACAO.md) quando houver erro de banco, upload, sessão ou AD.

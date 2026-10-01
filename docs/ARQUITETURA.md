@@ -70,6 +70,8 @@ Outras tabelas incluem `favorites`, `notifications`, `system_settings`, `permiss
 
 Os níveis hierárquicos são `view < edit < admin`. O maior nível recebido diretamente, por equipe ativa ou por ancestral vence. Não há regra explícita de negação; remover uma concessão não elimina outra origem de acesso. Documentos herdam o escopo do assunto.
 
+Equipes também podem conter subgrupos através de `group_memberships`. `GroupMembershipService` resolve membros diretos e indiretos, sem duplicações e somente por caminhos de equipes ativas. A resolução alcança permissões de conteúdo, diagnóstico, escopo administrativo e contagens de membros. Capacidades administrativas globais continuam usando apenas vínculos diretos. Consulte [grupos aninhados](grupos-aninhados.md).
+
 O administrador global é identificado pelo papel armazenado no banco. O runtime e os serviços verificam a atividade do usuário e o contexto do recurso. Ancestrais exibidos na navegação não representam concessão herdável de escrita.
 
 Assuntos públicos acrescentam leitura a usuários autenticados e ativos, limitada ao conteúdo publicado e à hierarquia ativa. Essa leitura não libera edição, aprovação ou administração. Veja [visibilidade](assuntos-publicos-privados.md).

@@ -1,5 +1,11 @@
 # APIs e rotas
 
+## Grupos aninhados
+
+`POST admin/index.php?tab=editar_grupo&id=<grupo>&group_tab=groups` recebe `group_action=add_subgroup|remove_subgroup`, `group_id` (grupo superior), `child_group_id` e `csrf_token`. Somente administrador global pode executar. Sucesso redireciona com HTTP 302; validação de ciclo, vínculo duplicado ou inexistente retorna 422; CSRF inválido retorna 419; falta de autorização retorna 403. Erros operacionais retornam 503 sem expor detalhes de banco.
+
+Pesquisa de equipes em `api/search_principals.php` e o painel de permissões contam membros ativos diretos e indiretos sem duplicar usuários. Diagnósticos de usuário incluem o caminho de equipes que originou o acesso. Capacidades administrativas globais permanecem limitadas aos vínculos diretos. [Regras e implantação](grupos-aninhados.md).
+
 Inventário inicial do código em 01/10/2026. Os contratos abaixo foram lidos no backend; não houve chamada HTTP nesta etapa. Não existe uma especificação OpenAPI identificada no checkout.
 
 ## Convenções

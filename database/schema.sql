@@ -21,6 +21,7 @@ DROP TABLE IF EXISTS permissions CASCADE;
 DROP TABLE IF EXISTS permission_audit CASCADE;
 DROP TABLE IF EXISTS group_access CASCADE;
 DROP TABLE IF EXISTS user_groups CASCADE;
+DROP TABLE IF EXISTS group_memberships CASCADE;
 DROP TABLE IF EXISTS groups CASCADE;
 DROP TABLE IF EXISTS favorites CASCADE;
 DROP TABLE IF EXISTS document_tags CASCADE;
@@ -443,6 +444,45 @@ CREATE TABLE user_groups (
 
 CREATE INDEX idx_user_groups_user_id ON user_groups(user_id);
 CREATE INDEX idx_user_groups_group_id ON user_groups(group_id);
+
+-- BEGIN NESTED GROUPS
+-- Equipes podem conter outras equipes; somente acessos de conteúdo são herdados.
+CREATE TABLE group_memberships (
+    parent_group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    child_group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    created_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (parent_group_id, child_group_id),
+    CONSTRAINT chk_group_memberships_not_self CHECK (parent_group_id <> child_group_id)
+);
+CREATE INDEX idx_group_memberships_child ON group_memberships(child_group_id);
+CREATE OR REPLACE FUNCTION prevent_group_membership_cycle() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF current_setting('transaction_isolation') NOT IN ('read committed', 'read uncommitted') THEN
+        RAISE EXCEPTION 'Alterações de subgrupos exigem isolamento READ COMMITTED.' USING ERRCODE = '25000';
+    END IF;
+    PERFORM pg_advisory_xact_lock(20261001, 27);
+    IF NEW.parent_group_id = NEW.child_group_id OR EXISTS (
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT NEW.parent_group_id
+            UNION
+            SELECT gm.parent_group_id
+            FROM group_memberships gm JOIN ancestors a ON gm.child_group_id = a.id
+            WHERE TG_OP <> 'UPDATE'
+               OR (gm.parent_group_id, gm.child_group_id) <> (OLD.parent_group_id, OLD.child_group_id)
+        )
+        SELECT 1 FROM ancestors WHERE id = NEW.child_group_id
+    ) THEN
+        RAISE EXCEPTION 'O vínculo entre equipes formaria um ciclo.' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER trg_group_memberships_cycle
+    BEFORE INSERT OR UPDATE ON group_memberships
+    FOR EACH ROW EXECUTE FUNCTION prevent_group_membership_cycle();
+-- END NESTED GROUPS
 
 -- Capacidades de administração global por equipe. Elas são deliberadamente
 -- independentes das permissões hierárquicas de conteúdo.

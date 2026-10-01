@@ -16,6 +16,7 @@ Esta é a entrada central para a documentação do repositório. A primeira orga
 ## Referências existentes
 
 - [Assuntos públicos e privados](assuntos-publicos-privados.md): visibilidade, autorização e migração 026.
+- [Grupos dentro de grupos](grupos-aninhados.md): subgrupos, herança de conteúdo, migração 027 sem reinício e suíte isolada.
 - [Conta de leitura AD](conta-leitura-ad.md): preservação e teste das credenciais por domínio.
 - [Login integrado Windows](windows-integrated-auth.md): referência de infraestrutura; veja a nota sobre o login explícito atual.
 - [Banco de dados](../database/README.md), [arquitetura de permissões](../database/PERMISSIONS_ARCHITECTURE.md) e [matriz de capacidades](../database/CAPABILITIES_MATRIX.md).

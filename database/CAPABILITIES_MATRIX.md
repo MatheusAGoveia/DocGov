@@ -45,6 +45,8 @@
 
 ## 2. Matriz Definitiva de Operações e Capacidades
 
+Equipes podem conter subgrupos. A herança de conteúdo percorre equipes ativas até os grupos superiores; membros do grupo superior não recebem acessos exclusivos dos subgrupos. Somente administradores globais alteram esses vínculos. Capacidades de sistema continuam exigindo associação direta à equipe. Consulte [grupos aninhados](../docs/grupos-aninhados.md).
+
 | Ação Operacional | Recurso Alvo | Nível Mínimo Exigido | Herança Conta? | Quem Pode Executar |
 | :--- | :--- | :--- | :---: | :--- |
 | **CREATE CATEGORY** | Sistema (Raiz) | Admin Global | N/A | Exclusivamente **Admin Geral** (`role = 'admin'`) |

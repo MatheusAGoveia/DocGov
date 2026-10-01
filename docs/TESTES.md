@@ -82,3 +82,15 @@ Exemplos de suítes existentes: `test_subject_visibility_browser.js`, `test_ad_s
 5. Registrar commit, banco/schema, comandos, resultado, arquivos gerados e limitações em cada homologação.
 
 Os resultados antigos de setembro permanecem nos relatórios e documentos de funcionalidade correspondentes. Não devem ser apresentados como testes executados novamente em outubro.
+
+## Grupos aninhados — validação de 01/10/2026
+
+A implementação de subgrupos foi validada com `php scratch/test_nested_groups.php --browser`, em uma base PostgreSQL temporária exclusiva, removida ao final. O pacote Playwright foi fornecido pela variável `DOCGOV_PLAYWRIGHT_PACKAGE`.
+
+- Compatibilidade antes da migração, herança em vários níveis, múltiplos grupos superiores, deduplicação, desativação/reativação e preservação de outras origens de acesso: aprovadas.
+- CSRF, autorização de administrador global, bloqueio de ciclos no serviço e no banco, gravações concorrentes e reversão do vínculo quando a auditoria falha: aprovados.
+- Navegador: inclusão, pesquisa de permissões com contagem indireta, caminho de herança no usuário, confirmação e remoção; computador e celular no tema claro, celular no tema escuro: aprovados, sem erros de execução.
+- Regressões `test_permissions.php`, `test_group_access_admin.php`, `test_system_access_groups.php`, `test_permission_api.php`, `test_hierarchy_resolution.php` e `test_access_integrity.php`: aprovadas na base isolada.
+- Sintaxe dos dez arquivos PHP da mudança e do script JavaScript de navegador: aprovada.
+
+A migração exclusiva 027 foi aplicada ao banco local configurado. Login retornou HTTP 200 e a aba Subgrupos foi verificada no servidor já existente, sem alterar vínculos. O processo do servidor foi preservado; nenhuma base temporária de teste permaneceu. Isso comprova a ativação local, não a publicação em outro ambiente. Veja [uso e implantação](grupos-aninhados.md).
