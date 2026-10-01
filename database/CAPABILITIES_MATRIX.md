@@ -1,5 +1,7 @@
 # Matriz Definitiva de Capacidades do DocGov
 
+> **Atualização — 01/10/2026:** esta matriz descreve principalmente permissões de conteúdo. A publicação segue o workflow com revisão concluída e aprovação administrativa. Capacidades de módulos globais por equipe são um controle separado; consulte [arquitetura](../docs/ARQUITETURA.md) e [guia de uso](../docs/USO_DO_SISTEMA.md).
+
 > **Documento de Formalização Arquitetural**  
 > Este documento consolida a especificação oficial dos privilégios, papéis, níveis de acesso e capacidades operacionais do sistema DocGov.
 
@@ -29,7 +31,7 @@
 - **Escopo**: **Restrito ao recurso específico e seus descendentes**.
 - **Capacidades**:
   - Pode **criar e editar conteúdos** (subcategorias, assuntos e documentos) na pasta sob seu escopo.
-  - Pode **alterar dados e publicar documentos** sob seu escopo de edição.
+  - Pode **alterar dados e enviar documentos para revisão** sob seu escopo de edição. Publicação exige revisão concluída e aprovação por administrador autorizado.
   - **NÃO pode gerenciar permissões da pasta** (a aba `Permissões` fica bloqueada).
 
 ### 👁️ 1.4 Visualizador (Resource Viewer / Reader)
@@ -53,6 +55,7 @@
 | **EDIT SUBJECT** | Assunto | Edit de Recurso | Sim | Admin Geral **OU** Edit/Admin Efetivo do Assunto (`>= edit`) |
 | **CREATE DOCUMENT** | Assunto Pai | Edit de Recurso | Sim | Admin Geral **OU** Edit/Admin Efetivo do Assunto pai (`>= edit`) |
 | **EDIT DOCUMENT** | Assunto Pai / Doc | Edit de Recurso | Sim | Admin Geral **OU** Edit/Admin Efetivo do Assunto pai (`>= edit`) |
+| **REVIEW / APPROVE DOCUMENT** | Documento no assunto | Admin de Recurso | Sim | Admin Geral **OU** Admin Efetivo do documento; aprovação exige estado em revisão e revisão concluída |
 | **MANAGE PERMISSIONS** | Categoria / Subcat / Assunto | Admin de Recurso | Sim | Admin Geral **OU** Admin Efetivo daquela pasta (`admin`) |
 | **VIEW DOCUMENT / CONTENT** | Categoria / Subcat / Assunto / Doc | View de Recurso | Sim | Admin Geral **OU** View Efetivo daquele recurso (`>= view`) |
 
