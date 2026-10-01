@@ -37,6 +37,7 @@ $documentSlugService = new DocumentSlugService($pdo);
 $documentSectionService = new DocumentSectionService($pdo);
 $inlineMediaService = new DocumentInlineMediaService($pdo, dirname(__DIR__));
 $permService = new PermissionService($pdo);
+$groupMembershipService = new GroupMembershipService($pdo);
 $structureArchiveService = new StructureArchiveService($pdo, $permService);
 $structureDeletionService = new StructureDeletionService($pdo, $permService);
 $systemAccessService = new SystemAccessService($pdo, $permService);
@@ -106,6 +107,7 @@ $dashboardPeriodStartOffset = max(0, $dashboardPeriodDays - 1);
 $message = '';
 $errorMessage = '';
 $editDoc = null;
+$failedDocumentSubmission = null;
 $docDetails = null;
 $workflowHistory = [];
 $editCat = null;
@@ -851,15 +853,11 @@ if ($isLogged) {
             $authLogs = $stmtLogs->fetchAll(PDO::FETCH_ASSOC);
 
             // Equipes que o usuário pertence
-            $stmtGroups = $pdo->prepare("
-                SELECT g.id, g.name, g.description, ug.created_at AS joined_at
-                FROM user_groups ug
-                JOIN groups g ON g.id = ug.group_id
-                WHERE ug.user_id = ? AND (g.active = TRUE OR g.active IS NULL)
-                ORDER BY g.name ASC
-            ");
-            $stmtGroups->execute([$targetUserId]);
-            $userGroups = $stmtGroups->fetchAll(PDO::FETCH_ASSOC);
+            $userGroups = $canManageDirectory
+                ? $groupMembershipService->getUserGroups($targetUserId)
+                : $permService->getUserTeamsForAdministrativeScope($currentAdminUserId, $targetUserId);
+            foreach ($userGroups as &$userGroup) $userGroup['joined_at'] = $userGroup['member_since'];
+            unset($userGroup);
 
             // Estatísticas de documentos
             $stmtDocsCount = $pdo->prepare("SELECT COUNT(*) FROM documents WHERE created_by = ?");
@@ -1374,7 +1372,7 @@ if ($isLogged) {
             $errorMessage = "Apenas administradores podem gerenciar equipes.";
         } else {
             $grpAction = strtolower(trim((string)$_POST['group_action']));
-            $allowedGroupActions = ['create_group', 'edit_group', 'toggle_status', 'delete_group', 'add_user', 'remove_user', 'sync_system_capabilities'];
+            $allowedGroupActions = ['create_group', 'edit_group', 'toggle_status', 'delete_group', 'add_user', 'remove_user', 'sync_system_capabilities', 'add_subgroup', 'remove_subgroup'];
 
             if (!in_array($grpAction, $allowedGroupActions, true)) {
                 http_response_code(400);
@@ -1425,6 +1423,23 @@ if ($isLogged) {
                 } catch (Throwable $exception) {
                     http_response_code($exception instanceof InvalidArgumentException ? 422 : 403);
                     $errorMessage = $exception->getMessage();
+                }
+            } elseif (in_array($grpAction, ['add_subgroup', 'remove_subgroup'], true)) {
+                $gId = (int)($_POST['group_id'] ?? 0);
+                $childId = (int)($_POST['child_group_id'] ?? 0);
+                try {
+                    $changed = $groupMembershipService->changeChild($gId, $childId, $currentAdminUserId, $grpAction === 'add_subgroup');
+                    if (!$changed) throw new InvalidArgumentException($grpAction === 'add_subgroup'
+                        ? 'Esta equipe já está incluída como subgrupo.' : 'O vínculo com este subgrupo não foi encontrado.');
+                    header('Location: index.php?tab=editar_grupo&id=' . $gId . '&group_tab=groups&msg=' . ($grpAction === 'add_subgroup' ? 'team_subgroup_added' : 'team_subgroup_removed'));
+                    exit;
+                } catch (InvalidArgumentException $exception) {
+                    http_response_code(422);
+                    $errorMessage = $exception->getMessage();
+                } catch (Throwable $exception) {
+                    http_response_code(503);
+                    error_log('DocGov: falha ao alterar subgrupo: ' . $exception->getMessage());
+                    $errorMessage = 'Não foi possível alterar o vínculo entre equipes. Tente novamente.';
                 }
             } elseif ($grpAction === 'create_group') {
                 $gName = trim((string)($_POST['name'] ?? ''));
@@ -1490,6 +1505,7 @@ if ($isLogged) {
                 $gId = (int)($_POST['group_id'] ?? 0);
                 try {
                     $pdo->beginTransaction();
+                    if ($groupMembershipService->isAvailable()) $pdo->query('SELECT pg_advisory_xact_lock(20261001, 27)');
                     $groupStmt = $pdo->prepare('SELECT name FROM groups WHERE id = :id FOR UPDATE');
                     $groupStmt->execute([':id' => $gId]);
                     $groupName = $groupStmt->fetchColumn();
@@ -1667,7 +1683,7 @@ if ($isLogged) {
         $previousDocumentSectionKey = null;
 
         if ($id && $id > 0) {
-            $stmtCurrentStatus = $pdo->prepare('SELECT status, section_key FROM documents WHERE id = :id');
+            $stmtCurrentStatus = $pdo->prepare('SELECT status, section_key, updated_at FROM documents WHERE id = :id');
             $stmtCurrentStatus->execute([':id' => $id]);
             $currentDocumentState = $stmtCurrentStatus->fetch(PDO::FETCH_ASSOC);
             $previousDocumentStatus = $currentDocumentState['status'] ?? false;
@@ -1835,6 +1851,29 @@ if ($isLogged) {
             if (empty($errorMessage)) {
                 try {
                     $pdo->beginTransaction();
+                    if ($id) {
+                        $lockedDocument = $workflowService->lockDocument($id, (string)($_POST['document_version'] ?? $currentDocumentState['updated_at']));
+                        if (!$permService->canEditDocument($editorUserId, $id) || !$permService->canCreateDocument($editorUserId, $subjectId)) {
+                            throw new RuntimeException('Você não possui permissão para editar este documento.', 403);
+                        }
+                        $previousDocumentStatus = (string)$lockedDocument['status'];
+                        $workflowTransition = $workflowService->prepareAction($workflowAction, $previousDocumentStatus, $editorUserId, $id, $workflowNote);
+                        $status = $workflowTransition['status'];
+                        if ($workflowTransition['action'] === 'approved_and_published') {
+                            $approvalChanges = ['subject_id' => $subjectId, 'title' => $titulo, 'description' => $descricao,
+                                'content_type' => $tipoConteudo, 'section_key' => $documentSectionKey,
+                                'text_content' => $conteudoArmazenado, 'structured_content' => $structuredContent, 'external_url' => $linkExterno];
+                            if ($tipoConteudo === 'code') $approvalChanges['code_language'] = $linguagemCodigo;
+                            if ($storedFilename !== null) $approvalChanges['stored_filename'] = $storedFilename;
+                            $workflowService->assertReviewedContentUnchanged($lockedDocument, $approvalChanges);
+                            $beforeTagIds = array_map('intval', array_column($tagService->getDocumentTags($id), 'id'));
+                            $afterTagIds = array_values(array_unique($requestedTagIds));
+                            sort($beforeTagIds); sort($afterTagIds);
+                            if ($beforeTagIds !== $afterTagIds || array_filter($requestedNewTagNames, static fn($name) => trim($name) !== '')) {
+                                throw new DocumentConflictException('As tags foram alteradas. Salve e envie o conteúdo novamente para revisão antes de publicar.', 409);
+                            }
+                        }
+                    }
                     $slug = $documentSlugService->reserve($subjectId, $titulo, $id ?: null);
                     $publishedAt = $status === 'published' ? date(DATE_ATOM) : null;
                     $structuredContentJson = $structuredContent !== null
@@ -1895,15 +1934,11 @@ if ($isLogged) {
                     $staleInlineFiles = $inlineMediaService->removeUnreferenced($id, $tipoConteudo === 'text' ? (string)$conteudoArmazenado : '');
                     $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
                     $tagService->syncDocumentTags($id, $resolvedTagIds);
-                    try {
-                        $workflowService->applyTransitionMetadata($id, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
-                        $workflowService->record($id, $editorUserId, $workflowTransition['action'], $previousDocumentStatus, $status, $workflowTransition['note']);
-                        $workflowService->notifyForTransition($id, $editorUserId, $workflowTransition['action']);
-                    } catch (Throwable $exception) {
-                        error_log('DocGov workflow: falha ao registrar transição: ' . $exception->getMessage());
-                    }
-                    $usageAuditService->logAdminAction($editorUserId, 'document_updated', 'DOCUMENT', $id);
+                    $workflowService->applyTransitionMetadata($id, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
+                    $workflowService->record($id, $editorUserId, $workflowTransition['action'], $previousDocumentStatus, $status, $workflowTransition['note']);
                     $pdo->commit();
+                    $usageAuditService->logAdminAction($editorUserId, 'document_updated', 'DOCUMENT', $id);
+                    $workflowService->notifyAfterCommit($id, $editorUserId, $workflowTransition['action']);
                     foreach ($staleInlineFiles as $staleInlineFile) {
                         $inlineMediaService->removeStoredFile($staleInlineFile);
                     }
@@ -1934,15 +1969,12 @@ if ($isLogged) {
                     }
                     $resolvedTagIds = $tagService->resolveForDocument($requestedTagIds, $requestedNewTagNames, $editorUserId);
                     $tagService->syncDocumentTags($newId, $resolvedTagIds);
-                    try {
-                        $workflowService->applyTransitionMetadata($newId, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
-                        $workflowService->record($newId, $editorUserId, $workflowTransition['action'], 'draft', $status, $workflowTransition['note']);
-                        $workflowService->notifyForTransition($newId, $editorUserId, $workflowTransition['action']);
-                    } catch (Throwable $exception) {
-                        error_log('DocGov workflow: falha ao registrar criação: ' . $exception->getMessage());
-                    }
-                    $usageAuditService->logAdminAction($editorUserId, 'document_created', 'DOCUMENT', $newId);
+                    if ($newId <= 0) throw new RuntimeException('Não foi possível criar o documento.');
+                    $workflowService->applyTransitionMetadata($newId, $editorUserId, $workflowTransition['action'], $workflowTransition['note']);
+                    $workflowService->record($newId, $editorUserId, $workflowTransition['action'], 'draft', $status, $workflowTransition['note']);
                     $pdo->commit();
+                    $usageAuditService->logAdminAction($editorUserId, 'document_created', 'DOCUMENT', $newId);
+                    $workflowService->notifyAfterCommit($newId, $editorUserId, $workflowTransition['action']);
                     header('Location: index.php?tab=detalhes_documento&id=' . $newId . '&msg=doc_created');
                     exit;
                     }
@@ -1959,7 +1991,17 @@ if ($isLogged) {
                     $isDocumentSlugConflict = $exception instanceof PDOException
                         && (string)$exception->getCode() === '23505'
                         && str_contains((string)($exception->errorInfo[2] ?? ''), 'uk_documents_subject_slug');
-                    if ($isDocumentSlugConflict) {
+                    $failedDocumentSubmission = ['id' => $id, 'titulo' => $titulo, 'descricao' => $descricao,
+                        'tipo_conteudo' => $tipoConteudo, 'section_key' => $documentSectionKey,
+                        'conteudo_html' => $conteudoArmazenado, 'structured_content' => $structuredContent !== null ? json_encode($structuredContent, JSON_THROW_ON_ERROR) : null,
+                        'linguagem_codigo' => $linguagemCodigo, 'link_externo' => $linkExterno,
+                        'assunto_id' => $subjectId, 'subcategoria_id' => (int)($subjectContext['subcategory_id'] ?? $subInput),
+                        'categoria_id' => (int)($subjectContext['category_id'] ?? $catInput),
+                        'document_version' => (string)($_POST['document_version'] ?? $currentDocumentState['updated_at'] ?? '')];
+                    if ($exception instanceof DocumentConflictException) {
+                        http_response_code(409);
+                        $errorMessage = $exception->getMessage();
+                    } elseif ($isDocumentSlugConflict) {
                         // Proteção de última linha caso outro processo externo grave
                         // sem passar pelo serviço transacional de slugs.
                         $errorMessage = 'Já existe um conteúdo com este endereço no assunto. Tente salvar novamente para gerar um novo endereço.';
@@ -1985,19 +2027,23 @@ if ($isLogged) {
             http_response_code(403);
             $errorMessage = 'Você não possui acesso a este documento.';
         } else {
-            $stmtCurrent = $pdo->prepare('SELECT status FROM documents WHERE id = :id');
-            $stmtCurrent->execute([':id' => $documentId]);
-            $previousStatus = (string)$stmtCurrent->fetchColumn();
             try {
+                $pdo->beginTransaction();
+                $currentDocument = $workflowService->lockDocument($documentId, isset($_POST['document_version']) ? (string)$_POST['document_version'] : null);
+                if (!$permService->canEditDocument($currentAdminUserId, $documentId)) throw new RuntimeException('Você não possui acesso a este documento.', 403);
+                $previousStatus = (string)$currentDocument['status'];
                 $transition = $workflowService->prepareAction($workflowAction, $previousStatus, $currentAdminUserId, $documentId, $workflowNote);
                 $workflowService->applyStatus($documentId, $transition['status']);
                 $workflowService->applyTransitionMetadata($documentId, $currentAdminUserId, $transition['action'], $transition['note']);
                 $workflowService->record($documentId, $currentAdminUserId, $transition['action'], $previousStatus, $transition['status'], $transition['note']);
-                $workflowService->notifyForTransition($documentId, $currentAdminUserId, $transition['action']);
+                $pdo->commit();
+                $workflowService->notifyAfterCommit($documentId, $currentAdminUserId, $transition['action']);
                 $usageAuditService->logAdminAction($currentAdminUserId, 'workflow_' . $transition['action'], 'DOCUMENT', $documentId);
                 header('Location: index.php?tab=detalhes_documento&id=' . $documentId . '&msg=workflow_updated');
                 exit;
             } catch (Throwable $exception) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                if ($exception instanceof DocumentConflictException) http_response_code(409);
                 $errorMessage = $exception->getMessage();
             }
         }
@@ -2522,7 +2568,7 @@ if ($isLogged) {
             $errorMessage = 'Acesso negado: documento fora do seu escopo administrativo.';
         } else {
             $stmt = $pdo->prepare("
-                SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.section_key, d.status,
+                SELECT d.id, d.updated_at AS document_version, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.section_key, d.status,
                        d.text_content AS conteudo_html, d.structured_content, d.code_language AS linguagem_codigo, d.external_url AS link_externo,
                        s.id AS assunto_id, s.name AS assunto,
                        sc.id AS subcategoria_id, sc.name AS subcategoria,
@@ -2548,7 +2594,7 @@ if ($isLogged) {
             $stmt = $pdo->prepare("
                 SELECT d.id, d.title AS titulo, d.description AS descricao, d.content_type AS tipo_conteudo, d.section_key, d.status,
                        d.original_filename AS nome_original, d.file_path AS caminho_arquivo, d.file_size AS tamanho_bytes,
-                       d.mime_type AS tipo_mime, d.published_at, d.created_at, d.approval_expires_at,
+                       d.mime_type AS tipo_mime, d.published_at, d.created_at, d.updated_at AS document_version, d.approval_expires_at,
                        d.reviewed_at, d.approved_at, d.rejected_at, d.rejection_reason,
                        s.name AS assunto, sc.name AS subcategoria, c.name AS categoria,
                        u.name AS autor_nome, reviewer.name AS revisor_nome,
@@ -3289,8 +3335,9 @@ foreach ($treeStructure as $cData) {
 }
 
 // Tags podem ser criadas por quem publica conteúdo; o Super Admin apenas faz a curadoria.
+if ($failedDocumentSubmission !== null) $editDoc = $failedDocumentSubmission;
 $tagCatalog = $tagService->allActive();
-$editDocumentTagIds = $editDoc ? $tagService->getDocumentTagIds((int)$editDoc['id']) : [];
+$editDocumentTagIds = $failedDocumentSubmission !== null ? $requestedTagIds : ($editDoc ? $tagService->getDocumentTagIds((int)$editDoc['id']) : []);
 $tagCatalogDetails = $canManageTags ? $tagService->allWithDetails() : [];
 
 // Define o status HTTP antes de iniciar a saída HTML. As telas abaixo ainda
@@ -3839,6 +3886,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'team_member_added') echo "✓ Usuário adicionado à equipe.";
                             if ($_GET['msg'] === 'team_member_removed') echo "✓ Usuário removido da equipe sem excluir seu cadastro.";
                             if ($_GET['msg'] === 'team_system_access_saved') echo "✓ Acessos administrativos da equipe atualizados e auditados.";
+                            if ($_GET['msg'] === 'team_subgroup_added') echo "✓ Subgrupo incluído. A herança de conteúdo vale pelos caminhos de equipes ativas.";
+                            if ($_GET['msg'] === 'team_subgroup_removed') echo "✓ Vínculo com o subgrupo removido. Os demais acessos foram preservados.";
                         ?>
                     </div>
                 <?php endif; ?>
@@ -4824,7 +4873,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 <?php if ($activeTab === 'novo_documento'): ?>
                     <?php
                         // Determine o tipo inicial: edição de documento ou tipo vindo da URL
-                        $isEditMode = ($editDoc !== null);
+                        if ($failedDocumentSubmission !== null) $editDoc = $failedDocumentSubmission;
+                        $isEditMode = !empty($editDoc['id']);
                         $initialType = $isEditMode ? 'documento' : 'documento';
                         $isAdmin = $permService->isGlobalAdmin((int)($loggedUser['id'] ?? 0));
                         $canApproveEditedDocument = $isEditMode && $workflowService->canApprove((int)($loggedUser['id'] ?? 0), (int)$editDoc['id']);
@@ -4896,6 +4946,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 <input type="hidden" id="batch-upload-flag" name="batch_upload" value="">
                                 <?php if ($editDoc): ?>
                                     <input type="hidden" name="id" value="<?= $editDoc['id'] ?>">
+                                    <input type="hidden" name="document_version" value="<?= htmlspecialchars((string)($editDoc['document_version'] ?? ''), ENT_QUOTES, 'UTF-8') ?>">
                                 <?php endif; ?>
 
                                 <!-- Informações básicas -->
@@ -6160,6 +6211,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 ORDER BY g.name ASC
                             ");
                             $groupsList = $stmtGroups->fetchAll(PDO::FETCH_ASSOC);
+                            $groupChildCounts = $groupMembershipService->getChildCounts();
                     ?>
                     <div class="space-y-4">
                         <!-- CABEÇALHO DA PÁGINA DE GRUPOS -->
@@ -6190,7 +6242,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <thead>
                                             <tr class="bg-slate-50 dark:bg-[#2c2e33] border-b border-slate-200 dark:border-[#454956] text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                                                 <th class="py-2.5 px-4">Equipe</th>
-                                                <th class="py-2.5 px-4 text-center w-28">Usuários</th>
+                                                <th class="py-2.5 px-4 text-center w-28">Membros diretos</th>
+                                                <?php if ($groupMembershipService->isAvailable()): ?><th class="py-2.5 px-4 text-center w-28">Subgrupos</th><?php endif; ?>
                                                 <th class="py-2.5 px-4 text-center w-28">Acessos</th>
                                                 <th class="py-2.5 px-4 text-center w-24">Status</th>
                                                 <th class="py-2.5 px-4 text-right w-28">Ações</th>
@@ -6217,6 +6270,9 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                             <span><?= (int)$grp['total_usuarios'] ?></span>
                                                         </a>
                                                     </td>
+                                                    <?php if ($groupMembershipService->isAvailable()): ?>
+                                                    <td class="py-2.5 px-4 text-center"><a href="index.php?tab=editar_grupo&amp;id=<?= (int)$grp['id'] ?>&amp;group_tab=groups" class="font-semibold hover:underline"><?= (int)($groupChildCounts[$grp['id']] ?? 0) ?></a></td>
+                                                    <?php endif; ?>
                                                     <td class="py-2.5 px-4 text-center">
                                                         <a href="index.php?tab=editar_grupo&id=<?= $grp['id'] ?>&group_tab=access" class="inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-[#2c2e33] text-slate-700 dark:text-slate-300 hover:bg-slate-200">
                                                             <span><?= (int)$grp['total_permissoes'] ?></span>
@@ -6301,7 +6357,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         if ($groupTab === 'permissions') {
                             $groupTab = 'access'; // compatibilidade com links antigos
                         }
-                        if (!in_array($groupTab, ['info', 'users', 'access', 'system'], true)) {
+                        if (!in_array($groupTab, ['info', 'users', 'groups', 'access', 'system'], true)) {
                             $groupTab = 'info';
                         }
 
@@ -6336,13 +6392,16 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         </div>
 
                         <!-- Identidade da equipe: informações, membros e diagnóstico de acessos -->
-                        <div class="flex items-center gap-2 border-b border-slate-200 dark:border-[#454956]">
+                        <div class="flex items-center gap-2 overflow-x-auto whitespace-nowrap border-b border-slate-200 dark:border-[#454956]">
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=info" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'info' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Informações
                             </a>
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=users" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'users' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Membros
                             </a>
+                            <?php if ($groupMembershipService->isAvailable()): ?>
+                            <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=groups" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'groups' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">Subgrupos</a>
+                            <?php endif; ?>
                             <a href="index.php?tab=editar_grupo&id=<?= $groupId ?>&group_tab=access" class="px-4 py-2 text-xs font-bold border-b-2 transition <?= $groupTab === 'access' ? 'border-slate-900 dark:border-white text-slate-900 dark:text-white' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300' ?>">
                                 Conteúdo
                             </a>
@@ -6350,6 +6409,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                 Sistema
                             </a>
                         </div>
+
+                        <?php if ($groupTab === 'groups'): ?>
+                            <?php require __DIR__ . '/partials/group-nesting.php'; ?>
+                        <?php endif; ?>
 
                         <!-- CONTEÚDO DA ABA 1: INFORMAÇÕES -->
                         <?php if ($groupTab === 'info'): ?>
@@ -6665,11 +6728,11 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     <?php
                         $currentAdminUserId = (int)($loggedUser['id'] ?? 0);
                         if ($canManageDirectory) {
-                            $usersListStmt = $pdo->query('
+                            $usersListStmt = $pdo->query($groupMembershipService->allMembershipsCte() . '
                                 SELECT u.id, u.name, u.username, u.email, u.role, u.active, u.created_at,
                                        COUNT(DISTINCT ug.group_id) AS total_grupos
                                 FROM users u
-                                LEFT JOIN user_groups ug ON ug.user_id = u.id
+                                LEFT JOIN all_user_groups ug ON ug.user_id = u.id
                                 GROUP BY u.id, u.name, u.username, u.email, u.role, u.active, u.created_at
                                 ORDER BY u.name ASC
                             ');
@@ -6832,15 +6895,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                         $directUserPermissions = [];
                         if ($uData) {
                             if ($canManageDirectory) {
-                                $userTeamsStmt = $pdo->prepare('
-                                    SELECT g.id, g.name, g.description, g.active, ug.created_at
-                                    FROM user_groups ug
-                                    JOIN groups g ON g.id = ug.group_id
-                                    WHERE ug.user_id = :user_id
-                                    ORDER BY g.name ASC
-                                ');
-                                $userTeamsStmt->execute([':user_id' => $targetUserId]);
-                                $userTeams = $userTeamsStmt->fetchAll(PDO::FETCH_ASSOC);
+                                $userTeams = $groupMembershipService->getUserGroups($targetUserId, true);
                             } else {
                                 $userTeams = $permService->getUserTeamsForAdministrativeScope($currentAdminUserId, $targetUserId);
                             }
@@ -6933,6 +6988,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                 <div>
                                                     <?php if ($isGlobalAdminCurrent): ?><a href="index.php?tab=editar_grupo&id=<?= (int)$userTeam['id'] ?>&group_tab=users" class="font-semibold text-slate-900 dark:text-slate-100 hover:underline"><?= htmlspecialchars($userTeam['name']) ?></a><?php else: ?><span class="font-semibold text-slate-900 dark:text-slate-100"><?= htmlspecialchars($userTeam['name']) ?></span><?php endif; ?>
                                                     <p class="text-[10px] text-slate-400 mt-0.5"><?= htmlspecialchars($userTeam['description'] ?: 'Sem descrição') ?></p>
+                                                    <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1"><?= !empty($userTeam['is_direct']) ? 'Membro direto' : 'Via subgrupos: ' . htmlspecialchars($userTeam['membership_label'] ?? '', ENT_QUOTES, 'UTF-8') ?></p>
                                                 </div>
                                                 <span class="text-[10px] font-semibold <?= $userTeam['active'] ? 'text-emerald-600' : 'text-amber-600' ?>"><?= $userTeam['active'] ? 'ATIVA' : 'INATIVA' ?></span>
                                             </div>
@@ -7587,7 +7643,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             // =====================================================================
             // TAGS — escolha livre para o autor, com sugestões apenas informativas.
             // =====================================================================
-            const documentTagCatalog = <?= json_encode($tagCatalog, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            const documentTagCatalog = <?= json_encode($tagCatalog, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) ?>;
             const initialDocumentTagIds = <?= json_encode($editDocumentTagIds) ?>;
 
             function initDocumentTags() {
@@ -7953,7 +8009,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 if (window.GovDocStructuredEditors) {
                     window.GovDocStructuredEditors.init({
                         initialType: <?= json_encode($selectedContentType ?? 'text') ?>,
-                        initialContent: <?= json_encode($initialStructuredContent ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>
+                        initialContent: <?= json_encode($initialStructuredContent ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) ?>
                     });
                 } else {
                     const selectedContentType = document.querySelector('input[name="tipo_conteudo"]:checked');
