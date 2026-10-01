@@ -208,6 +208,7 @@ $backUseHistory = true;
     <script src="assets/theme-bootstrap.js"></script>
     
     <link rel="stylesheet" href="assets/style.css">
+    <?php require __DIR__ . '/partials/dialog_assets.php'; ?>
     <link rel="stylesheet" href="assets/structured-content.css">
     <?php if ($isPdf): ?>
         <!-- Biblioteca PDF.js Local -->
@@ -503,7 +504,7 @@ $backUseHistory = true;
                         function toggleFullscreen() {
                             const elem = document.getElementById('pdfViewerApp');
                             if (!document.fullscreenElement) {
-                                elem.requestFullscreen().catch(err => alert('Erro ao entrar em Tela Cheia.'));
+                                elem.requestFullscreen().catch(err => window.DocGovDialog.alert('Erro ao entrar em Tela Cheia.'));
                             } else {
                                 document.exitFullscreen();
                             }
@@ -882,12 +883,12 @@ $backUseHistory = true;
                             text.textContent = 'Favoritar';
                         }
                     } else {
-                        alert('Não foi possível atualizar o favorito.');
+                        window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                     }
                 })
                 .catch(() => {
                     if (btn) btn.disabled = false;
-                    alert('Não foi possível atualizar o favorito.');
+                    window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                 });
         }
     </script>

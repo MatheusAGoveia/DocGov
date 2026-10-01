@@ -225,7 +225,13 @@
         }
 
         async removePermission(button) {
-            if (!window.confirm('Remover apenas esta regra direta de permissão?')) return;
+            if (!await window.DocGovDialog.confirm({
+                title: 'Remover permissão',
+                message: 'Remover apenas esta regra direta de permissão? As permissões herdadas serão preservadas.',
+                confirmLabel: 'Remover regra',
+                tone: 'danger',
+                opener: button,
+            })) return;
             button.disabled = true;
             try {
                 const payload = await this.request(this.permissionsApi, {
