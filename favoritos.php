@@ -131,6 +131,7 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
     <script src="assets/theme-bootstrap.js"></script>
     
     <link rel="stylesheet" href="assets/style.css">
+    <?php require __DIR__ . '/partials/dialog_assets.php'; ?>
     <style>
         .fav-card-item {
             transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -447,12 +448,12 @@ $totalFavs = count($favDocs) + count($favSubcats) + count($favSubjs);
                         }
                     } else {
                         if (btnElem) btnElem.disabled = false;
-                        alert('Não foi possível atualizar o favorito.');
+                        window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                     }
                 })
                 .catch(() => {
                     if (btnElem) btnElem.disabled = false;
-                    alert('Não foi possível atualizar o favorito.');
+                    window.DocGovDialog.alert('Não foi possível atualizar o favorito.');
                 });
         }
 
