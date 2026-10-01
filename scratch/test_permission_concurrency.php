@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Testa duas concessões simultâneas para a mesma combinação principal/recurso.
 require_once __DIR__ . '/../config/db.php';
 

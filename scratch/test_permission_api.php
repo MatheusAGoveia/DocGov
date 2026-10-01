@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Teste de integração HTTP/JSON do fluxo de administração local.
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/PermissionService.php';

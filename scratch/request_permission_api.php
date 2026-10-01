@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Adaptador CLI usado exclusivamente pelos testes de integração dos endpoints.
 if ($argc < 6) {
     fwrite(STDERR, "Uso inválido\n");

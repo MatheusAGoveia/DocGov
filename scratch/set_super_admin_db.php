@@ -1,16 +1,14 @@
 <?php
-require_once __DIR__ . '/../config/db.php';
-
-$stmt = $pdo->prepare("
-    UPDATE users 
-    SET role = 'admin', active = TRUE 
-    WHERE LOWER(username) IN ('matheus.damiao', 'marcuss', 'marcus_aurelio')
-       OR LOWER(email) LIKE '%matheus.damiao%'
-       OR LOWER(email) LIKE '%marcus_aurelio%'
-");
-$stmt->execute();
-echo "Updated users table for Super Admin accounts! Rows affected: " . $stmt->rowCount() . "\n";
-
-$stmt2 = $pdo->query("SELECT id, username, name, email, role, active FROM users WHERE role = 'admin' OR LOWER(username) IN ('matheus.damiao', 'marcuss')");
-$admins = $stmt2->fetchAll(PDO::FETCH_ASSOC);
-print_r($admins);
+declare(strict_types=1);
+require_once __DIR__ . '/_cli_only.php';
+$options = getopt('', ['username:']);
+$username = trim((string)($options['username'] ?? ''));
+if ($username === '') {
+    fwrite(STDERR, "Informe exatamente a conta desejada com --username.\n");
+    exit(1);
+}
+define('DOCGOV_SKIP_APP_RUNTIME', true);
+require __DIR__ . '/../config/db.php';
+$stmt = $pdo->prepare("UPDATE users SET role = 'admin', active = TRUE WHERE LOWER(username) = LOWER(:username)");
+$stmt->execute([':username' => $username]);
+echo 'Contas atualizadas: ' . $stmt->rowCount() . PHP_EOL;

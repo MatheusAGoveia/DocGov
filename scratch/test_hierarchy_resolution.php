@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Garante que nomes repetidos nunca enviem um documento ao ramo errado.
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/HierarchyService.php';

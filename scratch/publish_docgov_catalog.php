@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/_cli_only.php';
 // Publicação controlada e idempotente do manual em TI > DocGov.
 // Uso: php scratch/publish_docgov_catalog.php [--dry-run]
 if (PHP_SAPI !== 'cli') {

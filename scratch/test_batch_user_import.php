@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/_cli_only.php';
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
 define('DOCGOV_SKIP_APP_RUNTIME', true);
 require __DIR__ . '/../config/db.php';
@@ -62,6 +63,18 @@ final class TestBatchDirectory implements DirectoryImportGateway {
 }
 function batchEntry(string $username, string $name, ?string $email = null): array {
     return ['success' => true, 'entry' => ['samaccountname' => [$username], 'displayname' => [$name], 'mail' => [$email ?? $username . '@example.invalid'], 'objectguid' => [substr(hash('sha256', $username, true), 0, 16)], 'useraccountcontrol' => ['512']]];
+}
+
+if ($mode === '--concurrent-worker') {
+    $token = (string)($argv[2] ?? ''); batchAssert(preg_match('/^[a-f0-9]{12}$/', $token) === 1, 'Token inválido.');
+    $stmt = $pdo->prepare('SELECT id FROM users WHERE username = ?'); $stmt->execute(["batch.{$token}.admin"]); $actor = (int)$stmt->fetchColumn();
+    $stmt = $pdo->prepare('SELECT id FROM groups WHERE name = ?'); $stmt->execute(['Teste importação lote ' . $token]); $group = (int)$stmt->fetchColumn();
+    batchAssert($actor > 0 && $group > 0, 'Fixtures de concorrência ausentes.');
+    $config = batchConfig(); $directory = new TestBatchDirectory(new ActiveDirectoryAuthService($pdo, $config));
+    $name = 'Pessoa Concorrente ' . $token;
+    $directory->entries[$name] = batchEntry("batch.{$token}.concurrent", $name);
+    echo json_encode((new BatchUserImportService($pdo, $directory, $config))->process([$name], 'BATCHTEST', $actor, $group)['results'][0], JSON_THROW_ON_ERROR);
+    exit;
 }
 
 $token = bin2hex(random_bytes(6));

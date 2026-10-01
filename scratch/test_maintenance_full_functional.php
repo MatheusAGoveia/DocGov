@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // scratch/test_maintenance_full_functional.php
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/SystemSettingsService.php';

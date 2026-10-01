@@ -1,17 +1,5 @@
 <?php
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../services/ActiveDirectoryAuthService.php';
-
-$user = 'matheus.damiao';
-$pass = '2603Betim#3';
-$hash = password_hash($pass, PASSWORD_DEFAULT);
-
-$stmt = $pdo->prepare("UPDATE users SET password_hash = ? WHERE LOWER(username) = LOWER(?)");
-$stmt->execute([$hash, $user]);
-echo "Senha de emergência atualizada para '{$pass}' no usuário '{$user}'. Linhas: " . $stmt->rowCount() . "\n";
-
-// Testar login com ActiveDirectoryAuthService
-$ad = new ActiveDirectoryAuthService($pdo);
-$res = $ad->authenticate('BETIM\\matheus.damiao', $pass);
-echo "Resultado do authenticate com {$pass}:\n";
-print_r($res);
+declare(strict_types=1);
+require_once __DIR__ . '/_cli_only.php';
+// Alias do mesmo fluxo protegido; nunca autentica no AD para testar uma senha.
+require __DIR__ . '/set_emergency_password.php';

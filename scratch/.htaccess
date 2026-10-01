@@ -1,0 +1,8 @@
+# Defesa adicional: a guarda CLI dos arquivos PHP também protege outros servidores.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

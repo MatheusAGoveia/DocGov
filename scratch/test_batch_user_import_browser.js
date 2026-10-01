@@ -113,6 +113,11 @@ const fixture = JSON.parse(run('--prepare'));
         console.log('PASS UI: arquivos, limite de 1000, parar e continuar, falha de rede e reprocessamento.');
 
         await page.setViewportSize({ width: 390, height: 844 });
+        await page.evaluate(() => {
+            const sidebar = document.getElementById('sidebar-menu');
+            if (sidebar && !sidebar.classList.contains('-translate-x-full')) window.toggleMobileSidebar();
+        });
+        await page.waitForFunction(() => document.getElementById('sidebar-menu').getBoundingClientRect().right <= 1);
         await panel.scrollIntoViewIfNeeded();
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Painel causa rolagem horizontal no celular.');
         await page.screenshot({ path: path.join(root, 'scratch', 'batch-user-import-mobile.png'), fullPage: false });

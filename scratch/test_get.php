@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // scratch/test_get.php
 // Simula a requisição via URL GET feita pelo usuário
 $_GET['tab'] = 'servidores_ad';

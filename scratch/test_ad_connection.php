@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Smoke test seguro: valida LDAPS/certificado/RootDSE sem testar ou solicitar senha.
 
 $config = require __DIR__ . '/../config/active_directory.php';

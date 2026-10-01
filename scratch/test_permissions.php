@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Testes transacionais do motor de permissões. Nenhuma fixture persiste no banco.
 
 require_once __DIR__ . '/../config/db.php';

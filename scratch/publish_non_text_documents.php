@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/_cli_only.php';
 // Publicação idempotente de materiais de referência para exercitar os editores
 // não textuais. Executar a partir da raiz com: php scratch/publish_non_text_documents.php
 define('DOCGOV_SKIP_APP_RUNTIME', true);

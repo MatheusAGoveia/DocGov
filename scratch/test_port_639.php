@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // scratch/test_port_639.php
 $uri = 'ldaps://diana.betim.pmb:639';
 echo "Testing $uri ...\n";

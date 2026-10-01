@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 require __DIR__ . '/../config/db.php';
 
 function codeAssert(bool $condition, string $message): void

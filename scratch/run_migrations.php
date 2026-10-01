@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // scratch/run_migrations.php - Executa as migrações no banco PostgreSQL
 define('DOCGOV_SKIP_APP_RUNTIME', true);
 require_once __DIR__ . '/../config/db.php';
@@ -30,6 +31,8 @@ $migrationFiles = [
     __DIR__ . '/../database/migrations/023_subject_workspace_workflow.sql',
     __DIR__ . '/../database/migrations/024_dynamic_document_sections.sql',
     __DIR__ . '/../database/migrations/025_document_inline_media.sql',
+    __DIR__ . '/../database/migrations/026_subject_visibility.sql',
+    __DIR__ . '/../database/migrations/027_nested_groups.sql',
 ];
 
 foreach ($migrationFiles as $file) {

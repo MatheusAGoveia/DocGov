@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Verificação somente leitura da integridade do modelo de acessos no banco atual.
 require_once __DIR__ . '/../config/db.php';
 

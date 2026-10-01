@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Adaptador CLI para testes das ações POST do painel administrativo.
 if ($argc < 4) {
     fwrite(STDERR, "Uso inválido\n");

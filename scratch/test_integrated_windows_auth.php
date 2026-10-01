@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Teste sem LDAP: REMOTE_USER válido é provisionado localmente como leitor quando
 // o login integrado está habilitado, sem criar permissões de recursos.
 require_once __DIR__ . '/../config/db.php';

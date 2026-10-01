@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/_cli_only.php';
 // Verificação isolada da auditoria de uso. Nenhum evento de teste é persistido.
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/UsageAuditService.php';

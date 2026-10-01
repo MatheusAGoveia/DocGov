@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 require_once __DIR__ . '/../config/db.php';
 
 echo "=== ÚLTIMOS 10 LOGS DE AUTENTICAÇÃO AD (ad_auth_logs) ===\n\n";

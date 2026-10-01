@@ -1,5 +1,6 @@
 <?php
 
+require_once __DIR__ . '/_cli_only.php';
 require_once __DIR__ . '/../config/db.php';
 
 function duplicateDocumentAssert(bool $condition, string $message): void

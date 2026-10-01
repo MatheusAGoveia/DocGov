@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/_cli_only.php';
 require __DIR__ . '/../config/db.php';
 
 function formattedEditorAssert(bool $condition, string $message): void

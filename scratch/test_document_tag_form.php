@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/_cli_only.php';
 // Renderização transacional do formulário: garante o seletor de tags para quem cria conteúdo.
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../services/TagService.php';
