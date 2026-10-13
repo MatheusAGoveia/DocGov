@@ -5,6 +5,7 @@ require_once __DIR__ . '/DocumentWorkflowService.php';
 require_once __DIR__ . '/UsageAuditService.php';
 require_once __DIR__ . '/TagService.php';
 require_once __DIR__ . '/DocumentSlugService.php';
+require_once __DIR__ . '/UploadRequestService.php';
 
 /** Cria documentos a partir de uma fila de arquivos, com validação integral. */
 final class BatchDocumentUploadService
@@ -49,6 +50,8 @@ final class BatchDocumentUploadService
         }
 
         $workflow = $this->workflowService->prepareAction($workflowAction, null, $actorId, null, $workflowNote);
+        $tagIds = $this->tagService->assertActiveIds($tagIds);
+        $newTagNames = $this->tagService->assertNewNames($newTagNames, count($tagIds));
         $files = $this->normaliseFiles($uploadInput, $requestedTitles);
         $storageDirectory = rtrim(str_replace('\\', '/', $this->projectRoot), '/') . '/storage/documents';
         if (!is_dir($storageDirectory) && !mkdir($storageDirectory, 0755, true) && !is_dir($storageDirectory)) {
@@ -166,7 +169,7 @@ final class BatchDocumentUploadService
         foreach ($names as $index => $rawName) {
             $error = (int)($uploadInput['error'][$index] ?? UPLOAD_ERR_NO_FILE);
             if ($error !== UPLOAD_ERR_OK) {
-                throw new InvalidArgumentException('Não foi possível receber um dos arquivos da fila.');
+                throw new InvalidArgumentException(UploadRequestService::filesError([['error' => $error]]) ?? 'Selecione ao menos um arquivo para o envio.');
             }
 
             $tmpName = (string)($uploadInput['tmp_name'][$index] ?? '');
@@ -181,7 +184,7 @@ final class BatchDocumentUploadService
                 throw new InvalidArgumentException('Formato não suportado: ' . $originalFilename . '.');
             }
             $isVideo = in_array($extension, self::VIDEO_EXTENSIONS, true);
-            $limit = ($isVideo ? 250 : 25) * 1024 * 1024;
+            $limit = ($isVideo ? 50 : 25) * 1024 * 1024;
             if ($size > $limit) {
                 throw new InvalidArgumentException('O arquivo “' . $originalFilename . '” excede o limite permitido.');
             }

@@ -71,7 +71,7 @@ As rotas de mídia de artigo usam `ok` em vez de `success`. Os códigos HTTP e f
 
 As ações editoriais são `save_draft`, `submit_review`, `review_document`, `approve_publish`, `request_changes` e `archive`. Publicação exige documento existente em revisão, administrador autorizado e revisão concluída. O campo legado `status=published` é convertido em submissão para revisão quando `workflow_action` está ausente.
 
-Os limites observados nessa rota incluem 25 MB para arquivos, 250 MB para vídeo, 1 MB para código e 2 MB para HTML formatado. Limites menores do PHP/servidor podem recusar a requisição antes da aplicação.
+Os limites observados nessa rota incluem 25 MB para arquivos, 50 MB para vídeo, 1 MB para código e 2 MB para HTML formatado. Limites menores do PHP/servidor podem recusar a requisição antes da aplicação.
 
 Exemplo conceitual de criação, usando uma sessão e token previamente obtidos:
 

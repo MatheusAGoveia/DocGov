@@ -1,5 +1,12 @@
 <?php
 // api/documents.php - Endpoint JSON para Cadastro e Filtros de Documentos (PostgreSQL com PermissionService)
+require_once __DIR__ . '/../services/UploadRequestService.php';
+if (($uploadRequestError = UploadRequestService::requestError()) !== null) {
+    http_response_code(413);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['success' => false, 'error' => $uploadRequestError], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 require_once __DIR__ . '/../config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/../config/db.php';
@@ -37,6 +44,11 @@ if ($method === 'POST') {
     if (!CsrfService::isValid($csrfCandidate)) {
         http_response_code(419);
         echo json_encode(['success' => false, 'error' => 'Sessão de segurança expirada. Atualize a página e tente novamente.']);
+        exit;
+    }
+    if (($uploadFileError = UploadRequestService::filesError($_FILES)) !== null) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => $uploadFileError], JSON_UNESCAPED_UNICODE);
         exit;
     }
 }
@@ -276,8 +288,8 @@ if ($method === 'POST') {
             echo json_encode(['success' => false, 'error' => 'Formato de arquivo não suportado.']);
             exit;
         }
-        if ($fileSize > ($contentType === 'video' ? 250 : 25) * 1024 * 1024) {
-            echo json_encode(['success' => false, 'error' => $contentType === 'video' ? 'O vídeo excede o limite máximo de 250 MB.' : 'O arquivo excede o limite máximo de 25 MB.']);
+        if ($fileSize > ($contentType === 'video' ? 50 : 25) * 1024 * 1024) {
+            echo json_encode(['success' => false, 'error' => $contentType === 'video' ? 'O vídeo excede o limite máximo de 50 MB.' : 'O arquivo excede o limite máximo de 25 MB.']);
             exit;
         }
         $storedFilename = md5(uniqid(microtime(), true)) . '.' . $fileExtension;

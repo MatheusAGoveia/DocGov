@@ -1,6 +1,14 @@
 <?php
 // admin/index.php - Painel Administrativo de Gestão de Documentos (Ícones 100% SVG)
 require_once __DIR__ . '/../config/session.php';
+require_once __DIR__ . '/../services/UploadRequestService.php';
+$uploadRequestError = UploadRequestService::requestError();
+if ($uploadRequestError !== null && str_contains(strtolower((string)($_SERVER['HTTP_ACCEPT'] ?? '')), 'application/json')) {
+    http_response_code(413);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['success' => false, 'error' => $uploadRequestError], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 docgovStartSession();
 if (!headers_sent()) {
     header('Cache-Control: no-store, no-cache, must-revalidate, private');
@@ -105,7 +113,8 @@ $dashboardPeriodDays = in_array($requestedDashboardPeriod, $dashboardPeriodOptio
     : 14;
 $dashboardPeriodStartOffset = max(0, $dashboardPeriodDays - 1);
 $message = '';
-$errorMessage = '';
+$errorMessage = UploadRequestService::requestError() ?? '';
+if ($errorMessage !== '') http_response_code(413);
 $editDoc = null;
 $failedDocumentSubmission = null;
 $docDetails = null;
@@ -1652,7 +1661,10 @@ if ($isLogged) {
 
     // 1.1 SALVAR / EDITAR DOCUMENTO E LAYOUT VISUAL
     if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_doc'])) {
-        if (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
+        if (UploadRequestService::filesError($_FILES) !== null) {
+            http_response_code(400);
+            $errorMessage = UploadRequestService::filesError($_FILES);
+        } elseif (!CsrfService::isValid($_POST['csrf_token'] ?? null)) {
             http_response_code(419);
             $errorMessage = 'A sessão de segurança expirou. Atualize a página e tente novamente.';
         }
@@ -1827,9 +1839,9 @@ if ($isLogged) {
                 ];
                 if (!in_array($fileExt, $extsPermitidas)) {
                     $errorMessage = "Formato não suportado. Utilize PDF, imagens, textos, DOC/DOCX, áudio ou vídeo.";
-                } elseif ($tamanhoBytes > ($tipoConteudo === 'video' ? 250 : 25) * 1024 * 1024) {
+                } elseif ($tamanhoBytes > ($tipoConteudo === 'video' ? 50 : 25) * 1024 * 1024) {
                     $errorMessage = $tipoConteudo === 'video'
-                        ? "O vídeo excede o limite máximo permitido de 250MB."
+                        ? "O vídeo excede o limite máximo permitido de 50 MB."
                         : "O arquivo excede o limite máximo permitido de 25MB.";
                 } else {
                     $storedFilename = sprintf('%s_%s.%s', uniqid('doc_'), md5($originalFilename . microtime()), $fileExt);
@@ -2005,6 +2017,9 @@ if ($isLogged) {
                         // Proteção de última linha caso outro processo externo grave
                         // sem passar pelo serviço transacional de slugs.
                         $errorMessage = 'Já existe um conteúdo com este endereço no assunto. Tente salvar novamente para gerar um novo endereço.';
+                    } elseif ($exception instanceof InvalidArgumentException) {
+                        http_response_code(422);
+                        $errorMessage = $exception->getMessage();
                     } else {
                         error_log('DocGov: falha ao salvar documento: ' . $exception->getMessage());
                         $errorMessage = 'Não foi possível salvar o documento. Nenhuma alteração parcial foi mantida.';
@@ -2012,6 +2027,17 @@ if ($isLogged) {
                 }
             }
         }
+    }
+
+    // Também preserva o formulário quando a validação falha antes da transação.
+    if (isset($_POST['save_doc']) && !empty($errorMessage) && $failedDocumentSubmission === null && isset($titulo)) {
+        $failedDocumentSubmission = ['id' => $id, 'titulo' => $titulo, 'descricao' => $descricao,
+            'tipo_conteudo' => $tipoConteudo, 'section_key' => $documentSectionKey,
+            'conteudo_html' => $conteudoArmazenado, 'structured_content' => $structuredContent !== null ? json_encode($structuredContent, JSON_THROW_ON_ERROR) : null,
+            'linguagem_codigo' => $linguagemCodigo, 'link_externo' => $linkExterno,
+            'assunto_id' => $subjectId, 'subcategoria_id' => (int)($subjectContext['subcategory_id'] ?? $subInput),
+            'categoria_id' => (int)($subjectContext['category_id'] ?? $catInput),
+            'document_version' => (string)($_POST['document_version'] ?? '')];
     }
 
     // 1.1 TRANSIÇÃO EDITORIAL RÁPIDA (aprovar ou devolver para ajustes sem abrir o editor)
@@ -3337,6 +3363,7 @@ foreach ($treeStructure as $cData) {
 // Tags podem ser criadas por quem publica conteúdo; o Super Admin apenas faz a curadoria.
 if ($failedDocumentSubmission !== null) $editDoc = $failedDocumentSubmission;
 $tagCatalog = $tagService->allActive();
+$inactiveTagNameKeys = $tagService->inactiveNameKeys();
 $editDocumentTagIds = $failedDocumentSubmission !== null ? $requestedTagIds : ($editDoc ? $tagService->getDocumentTagIds((int)$editDoc['id']) : []);
 $tagCatalogDetails = $canManageTags ? $tagService->allWithDetails() : [];
 
@@ -5085,7 +5112,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 16V4m0 0L8 8m4-4 4 4M4 16.5V19a2 2 0 002 2h12a2 2 0 002-2v-2.5"/></svg>
                                                 </div>
                                                 <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Arraste arquivos aqui ou clique para selecionar</p>
-                                                <p class="mt-1 text-[11px] text-slate-400">Até 20 arquivos por vez · arquivos gerais até 25 MB · vídeos até 250 MB</p>
+                                                <p class="mt-1 text-[11px] text-slate-400">Até 20 arquivos por vez · arquivos gerais até 25 MB · vídeos até 50 MB</p>
                                                 <input type="file" id="file-input" name="arquivo_file" multiple aria-label="Selecionar arquivos para envio" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,.txt,.log,.csv,.md,.json,.xml,.doc,.docx,.mp3,.wav,.ogg,.mp4,.webm,.ogv,.m4v,.mov" class="hidden">
                                                 <button type="button" id="batch-select-files" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar arquivos</button>
                                             </div>
@@ -5212,7 +5239,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         </div>
                                         <div id="video-upload-fields" class="rounded-md border-2 border-dashed border-slate-300 bg-white p-5 text-center dark:border-slate-600 dark:bg-[#353842]">
                                             <p class="text-xs font-semibold text-slate-700 dark:text-slate-300">Selecione um vídeo do computador</p>
-                                            <p class="mt-1 text-[11px] text-slate-400">MP4, WEBM, OGV, M4V ou MOV (máximo de 250MB)</p>
+                                            <p class="mt-1 text-[11px] text-slate-400">MP4, WEBM, OGV, M4V ou MOV (máximo de 50 MB)</p>
                                             <input type="file" id="video-file-input" name="video_file" aria-label="Selecionar vídeo" accept="video/mp4,video/webm,video/ogg,video/quicktime,.mp4,.webm,.ogv,.m4v,.mov" class="hidden" onchange="updateVideoFilePreview(this)">
                                             <button type="button" onclick="document.getElementById('video-file-input').click()" class="mt-3 rounded bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white dark:bg-white dark:text-slate-900">Selecionar vídeo</button>
                                             <div id="video-file-preview-name" class="mt-2 text-xs text-slate-500"></div>
@@ -7644,7 +7671,9 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
             // TAGS — escolha livre para o autor, com sugestões apenas informativas.
             // =====================================================================
             const documentTagCatalog = <?= json_encode($tagCatalog, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) ?>;
+            const inactiveDocumentTagNames = <?= json_encode($inactiveTagNameKeys, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) ?>;
             const initialDocumentTagIds = <?= json_encode($editDocumentTagIds) ?>;
+            const initialNewDocumentTagNames = <?= json_encode($failedDocumentSubmission !== null ? $requestedNewTagNames : [], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 
             function initDocumentTags() {
                 const input = document.getElementById('document-tag-input');
@@ -7658,6 +7687,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                 if (!input || !addButton || !selected || !datalist || !suggestions || !suggestionList || !counter || !feedback) return;
 
                 const normalise = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                const inactiveNames = new Set(inactiveDocumentTagNames.map(normalise));
                 const catalogByName = new Map();
                 documentTagCatalog.forEach(tag => {
                     catalogByName.set(normalise(tag.name), tag);
@@ -7676,6 +7706,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     const rawName = String(rawValue || '').replace(/\s+/g, ' ').trim();
                     if (!rawName) return;
                     const known = catalogByName.get(normalise(rawName));
+                    if (!known && inactiveNames.has(normalise(rawName))) {
+                        setFeedback('Essa tag está desativada. Escolha outra tag.');
+                        return;
+                    }
                     const item = known ? { id: Number(known.id), name: known.name, type: known.type_label || 'Tag' } : { id: 0, name: rawName, type: 'Nova tag' };
                     if (!known && (rawName.length < 2 || rawName.length > 80)) {
                         setFeedback('A nova tag deve ter entre 2 e 80 caracteres.');
@@ -7738,7 +7772,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     const frequency = new Map();
                     words.forEach(word => { const key = normalise(word); frequency.set(key, (frequency.get(key) || { name: word, count: 0 })); frequency.get(key).count += 1; });
                     [...frequency.entries()].sort((a, b) => b[1].count - a[1].count || a[1].name.localeCompare(b[1].name, 'pt-BR')).forEach(([key, value]) => {
-                        if (candidates.length >= 6 || catalogByName.has(key) || state.has(`new:${key}`)) return;
+                        if (candidates.length >= 6 || inactiveNames.has(key) || catalogByName.has(key) || state.has(`new:${key}`)) return;
                         candidates.push({ id: 0, name: value.name, known: false });
                     });
                     suggestionList.replaceChildren();
@@ -7757,6 +7791,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                     const tag = documentTagCatalog.find(item => Number(item.id) === Number(id));
                     if (tag) state.set(`id:${tag.id}`, { id: Number(tag.id), name: tag.name, type: tag.type_label || 'Tag' });
                 });
+                initialNewDocumentTagNames.forEach(name => addTag(name));
                 addButton.addEventListener('click', () => addTag(input.value));
                 input.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addTag(input.value); } });
                 ['document-title', 'document-description', 'text-content-input', 'code-source-input'].forEach(id => document.getElementById(id)?.addEventListener('input', refreshSuggestions));
@@ -7978,7 +8013,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             return;
                         }
                         setControlsDisabled(false);
-                        showError(payload?.error || 'Não foi possível concluir o envio. Tente novamente.');
+                        showError(payload?.error || (xhr.status === 413 ? 'O envio excede o limite do servidor. Reduza os arquivos ou envie em lotes menores.' : 'Não foi possível concluir o envio. Tente novamente.'));
                     });
                     xhr.addEventListener('error', () => {
                         setControlsDisabled(false);
@@ -8193,6 +8228,7 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
     <?php require __DIR__ . '/partials/user-detail-modal.php'; ?>
     <script src="../assets/permissions.js"></script>
+    <script id="upload-validation" src="../assets/upload-validation.js?v=<?= filemtime(__DIR__ . '/../assets/upload-validation.js') ?>" data-limits="<?= htmlspecialchars(json_encode(UploadRequestService::limits()), ENT_QUOTES, 'UTF-8') ?>"></script>
     <?php if ($activeTab === 'usuarios' || ($activeTab === 'editar_grupo' && ($groupTab ?? '') === 'users')): ?>
         <script src="../assets/batch-user-import.js"></script>
     <?php endif; ?>

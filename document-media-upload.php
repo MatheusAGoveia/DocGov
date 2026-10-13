@@ -2,6 +2,14 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/services/UploadRequestService.php';
+if (($uploadRequestError = UploadRequestService::requestError()) !== null) {
+    http_response_code(413);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => false, 'error' => $uploadRequestError], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 require_once __DIR__ . '/config/session.php';
 docgovStartSession();
 require_once __DIR__ . '/config/db.php';
@@ -17,13 +25,6 @@ try {
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         http_response_code(405);
         throw new RuntimeException('Método não permitido.');
-    }
-    $postLimit = trim((string)ini_get('post_max_size'));
-    $multiplier = ['K' => 1024, 'M' => 1048576, 'G' => 1073741824][strtoupper(substr($postLimit, -1))] ?? 1;
-    $postLimitBytes = (int)$postLimit * $multiplier;
-    if ($postLimitBytes > 0 && (int)($_SERVER['CONTENT_LENGTH'] ?? 0) > $postLimitBytes) {
-        http_response_code(413);
-        throw new InvalidArgumentException('A imagem excede o limite de envio do servidor. Reduza o arquivo.');
     }
     $userId = (int)($_SESSION['user']['id'] ?? 0);
     if ($userId <= 0) {

@@ -35,6 +35,21 @@ try {
     tagTestAssert(isset($service->mapDocumentTags([$documentId])[$documentId]), 'Mapeamento de tags por documento falhou.');
 
     $service->setActive($tagId, false);
+    $inactiveKeys = $service->inactiveNameKeys();
+    tagTestAssert(in_array("nutanix-$suffix", $inactiveKeys, true), 'Nome desativado não foi incluído no filtro de sugestões.');
+    tagTestAssert(in_array("hci-$suffix", $inactiveKeys, true), 'Sinônimo desativado não foi incluído no filtro de sugestões.');
+    try {
+        $service->resolveForDocument([], ["Nutanix $suffix"], $actorId);
+        throw new RuntimeException('Nome de tag desativada deveria falhar antes do salvamento.');
+    } catch (InvalidArgumentException $exception) {
+        tagTestAssert(str_contains($exception->getMessage(), "Nutanix $suffix") && str_contains($exception->getMessage(), 'desativada'), 'A mensagem deveria identificar a tag desativada.');
+    }
+    try {
+        $service->assertNewNames(["HCI $suffix"]);
+        throw new RuntimeException('Sinônimo de tag desativada deveria ser rejeitado.');
+    } catch (InvalidArgumentException) {
+        // A mesma regra vale para os sinônimos, sem reativação automática.
+    }
     $inactiveDetails = array_values(array_filter($service->allWithDetails(), static fn(array $tag): bool => (int)$tag['id'] === $tagId));
     tagTestAssert(count($inactiveDetails) === 1 && $inactiveDetails[0]['active'] === false, 'Catálogo não marcou a tag inativa corretamente.');
     try {
@@ -44,6 +59,8 @@ try {
         // Esperado.
     }
     $service->setActive($tagId, true);
+    tagTestAssert(!in_array("nutanix-$suffix", $service->inactiveNameKeys(), true), 'Tag reativada continuou bloqueada nas sugestões.');
+    tagTestAssert($service->resolveForDocument([], ["Nutanix $suffix", "Nova $suffix"], $actorId)[0] === $tagId, 'Tag ativa não foi reutilizada.');
     $details = array_values(array_filter($service->allWithDetails(), static fn(array $tag): bool => (int)$tag['id'] === $tagId));
     tagTestAssert(count($details) === 1 && (int)$details[0]['document_count'] === 1, 'Catálogo não apresentou a contagem de documentos.');
 

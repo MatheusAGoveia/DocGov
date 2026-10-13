@@ -71,10 +71,18 @@ Para habilitar grupos dentro de grupos em uma base existente, use `php scratch/a
 Para desenvolvimento isolado, com uma base de teste preparada:
 
 ```powershell
-php -S 127.0.0.1:8000 -t .
+php -d upload_max_filesize=50M -d post_max_size=512M -d memory_limit=768M -d max_input_time=300 -d display_errors=Off -d display_startup_errors=Off -d log_errors=On -S 127.0.0.1:8000 -t .
 ```
 
 Esse servidor ignora `.htaccess` e pode expor pastas internas. Restrinja-o à máquina local e não o use como configuração de publicação. Para validar o bloqueio das pastas, use a configuração real do servidor ou um roteador de desenvolvimento revisado.
+
+### Limites de envio
+
+O portal aceita vídeos de até 50 MB, arquivos gerais de até 25 MB e lotes de até 20 arquivos/500 MB. A configuração versionada em `.user.ini` define `upload_max_filesize=50M`, `post_max_size=512M` (inclui os campos e o envelope multipart), `memory_limit=768M` e `max_input_time=300`, com erros registrados no log e sem avisos técnicos na resposta.
+
+CGI/FastCGI utiliza `.user.ini`; o servidor embutido e o módulo Apache precisam dos mesmos valores no `php.ini` ativo ou na configuração de inicialização. Não use `ini_set()` para aumentar os limites de upload: o PHP já processou o corpo antes de executar a aplicação. Reinicie o processo PHP após alterar `php.ini`; `.user.ini` pode levar até 300 segundos para atualizar por causa do cache.
+
+Configure também o limite do servidor/proxy acima de 512 MB, por exemplo `client_max_body_size 512m` no Nginx ou `maxAllowedContentLength=536870912` no IIS. Confirme os limites no PHP do servidor web; `php --ini` mostra apenas o CLI. O navegador valida os limites ativos antes do envio e os endpoints retornam HTTP 413 com mensagem amigável se o corpo exceder `post_max_size`.
 
 ## Active Directory
 

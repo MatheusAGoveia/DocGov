@@ -21,6 +21,15 @@ final class TagService
         return array_map(fn(array $tag): array => $this->formatTag($tag), $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     }
 
+    /** Nomes e sinônimos reservados, que não podem reaparecer como novas sugestões. @return array<int, string> */
+    public function inactiveNameKeys(): array
+    {
+        $stmt = $this->pdo->query('SELECT normalized_name FROM tags WHERE active = FALSE
+            UNION
+            SELECT ta.normalized_alias FROM tag_aliases ta JOIN tags t ON t.id = ta.tag_id WHERE t.active = FALSE');
+        return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    }
+
     /** @return array<int, array{id:int,name:string,type:string,type_label:string,aliases:array<int,string>,active:bool,document_count:int,created_by_name:?string}> */
     public function allWithDetails(): array
     {
@@ -91,6 +100,10 @@ final class TagService
         if ($existingCount + count($names) > 12) throw new InvalidArgumentException('Use no máximo 12 tags por conteúdo.');
         foreach ($names as $name) {
             if (mb_strlen($name) < 2 || mb_strlen($name) > 80) throw new InvalidArgumentException('Cada nova tag deve ter entre 2 e 80 caracteres.');
+            $existing = $this->resolve($this->normalise($name), false);
+            if ($existing !== null && !in_array($existing['active'], [true, 1, '1', 't', 'true'], true)) {
+                throw new InvalidArgumentException('A tag “' . $name . '” está desativada. Remova essa tag ou escolha outra. Para utilizá-la, solicite a reativação ao administrador.');
+            }
         }
         return $names;
     }

@@ -78,7 +78,7 @@ HTML,
 <h2>Salvar e publicar</h2>
 <p>Salve como rascunho, revise ortografia e URLs, envie para revisão, aguarde parecer e aprovação. Uma edição de conteúdo publicado pode voltar ao fluxo de revisão; confirme o estado mostrado no painel antes de avisar os leitores. Associe tags específicas, sem exagerar, para facilitar a busca transversal.</p>
 <h2>Limites e validação</h2>
-<p>O backend sanitiza o HTML e valida tipos de mídia e tamanho. Arquivos comuns têm limite de 25 MB; vídeos enviados, 250 MB; código, 1 MB. Se o envio falhar, valide formato, tamanho, conexão e permissão de escrita em <code>storage/documents/</code>.</p>
+<p>O backend sanitiza o HTML e valida tipos de mídia e tamanho. Arquivos comuns têm limite de 25 MB; vídeos enviados, 50 MB; código, 1 MB. Se o envio falhar, valide formato, tamanho, conexão e permissão de escrita em <code>storage/documents/</code>.</p>
 HTML,
         ]],
     ],
