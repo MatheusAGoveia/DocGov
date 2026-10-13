@@ -734,7 +734,6 @@ $backUseHistory = true;
                                 allowfullscreen></iframe>
                             <div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2 dark:bg-[#2c2e33]">
                                 <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100">Vídeo incorporado do <?= htmlspecialchars((string)$externalVideo['provider']) ?></p>
-                                <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir origem</a>
                             </div>
                         </div>
                     <?php elseif ($externalVideo['kind'] === 'direct'): ?>
@@ -742,14 +741,12 @@ $backUseHistory = true;
                             <video controls preload="metadata" class="mx-auto max-h-[75vh] w-full" src="<?= htmlspecialchars((string)$externalVideo['url']) ?>">Seu navegador não consegue reproduzir este vídeo externo.</video>
                             <div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2 dark:bg-[#2c2e33]">
                                 <p class="truncate text-xs font-bold text-slate-800 dark:text-slate-100">Vídeo hospedado externamente</p>
-                                <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir origem</a>
                             </div>
                         </div>
                     <?php else: ?>
                         <div class="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center dark:border-[#454956] dark:bg-[#2c2e33]">
                             <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">Vídeo hospedado em site externo</p>
-                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Esse provedor não permite uma prévia segura aqui. Abra o vídeo na origem.</p>
-                            <a href="<?= htmlspecialchars((string)$externalVideo['url']) ?>" target="_blank" rel="noopener noreferrer" class="mt-4 inline-flex rounded bg-slate-900 px-3 py-1.5 text-[10px] font-semibold text-white dark:bg-white dark:text-slate-900">Abrir vídeo externo</a>
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Este vídeo não está disponível para reprodução na plataforma. Solicite ao responsável um arquivo de vídeo ou um link compatível com o player.</p>
                         </div>
                     <?php endif; ?>
 

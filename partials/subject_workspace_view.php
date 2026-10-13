@@ -153,7 +153,13 @@ $decodeStructuredContent = static function (mixed $value): array {
             <?php $video = !empty($document['external_url']) ? VideoEmbedService::resolve((string)$document['external_url']) : ['kind' => 'direct', 'url' => 'document-file.php?id=' . (int)$document['id']]; ?>
             <article class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xs dark:border-[#454956] dark:bg-[#353842]">
                 <div class="flex items-start justify-between gap-3 p-4"><div><h3 class="text-xs font-bold"><?= $sectionEscape($document['title']) ?></h3><?php if (!empty($document['description'])): ?><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400"><?= $sectionEscape($document['description']) ?></p><?php endif; ?></div><a href="ver_conteudo.php?id=<?= (int)$document['id'] ?>" class="text-[10px] font-semibold text-slate-500">Detalhes →</a></div>
-                <?php if (in_array($video['kind'] ?? '', ['youtube', 'vimeo'], true)): ?><iframe class="aspect-video w-full bg-black" src="<?= $sectionEscape($video['embed_url']) ?>" title="<?= $sectionEscape($document['title']) ?>" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe><?php elseif (($video['kind'] ?? '') === 'direct'): ?><video controls preload="metadata" class="aspect-video w-full bg-black"><source src="<?= $sectionEscape($video['url']) ?>"></video><?php else: ?><div class="flex aspect-video items-center justify-center bg-slate-950"><a href="<?= $sectionEscape($video['url'] ?? $document['external_url']) ?>" target="_blank" rel="noopener noreferrer" class="rounded-md bg-white px-4 py-2 text-xs font-semibold text-slate-900">Abrir vídeo</a></div><?php endif; ?>
+                <?php if (in_array($video['kind'] ?? '', ['youtube', 'vimeo'], true)): ?>
+                    <iframe class="aspect-video w-full bg-black" src="<?= $sectionEscape($video['embed_url']) ?>" title="<?= $sectionEscape($document['title']) ?>" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+                <?php elseif (($video['kind'] ?? '') === 'direct'): ?>
+                    <video controls preload="metadata" class="aspect-video w-full bg-black"><source src="<?= $sectionEscape($video['url']) ?>"></video>
+                <?php else: ?>
+                    <div class="flex aspect-video items-center justify-center bg-slate-950 p-6"><p class="text-center text-xs text-slate-200">Este vídeo não está disponível para reprodução na plataforma. Solicite ao responsável um arquivo de vídeo ou um link compatível com o player.</p></div>
+                <?php endif; ?>
             </article>
         <?php endforeach; ?>
     </div>
