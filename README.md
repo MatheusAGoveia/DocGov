@@ -42,7 +42,7 @@ O manifesto npm gerencia bibliotecas e não define comandos de build ou de teste
 php -d upload_max_filesize=50M -d post_max_size=512M -d memory_limit=768M -d max_input_time=300 -d display_errors=Off -d display_startup_errors=Off -d log_errors=On -S 127.0.0.1:8000 -t .
 ```
 
-Abra `http://127.0.0.1:8000/login.php` com uma conta autorizada no ambiente. A preparação inicial de contas está descrita no guia de instalação.
+Abra Sua URL com uma conta autorizada no ambiente. A preparação inicial de contas está descrita no guia de instalação.
 
 **Banco existente:** aplique somente migrações pendentes. `database/schema.sql` contém comandos de remoção de tabelas e deve ser usado apenas em uma base vazia e descartável. O seed contém dados de demonstração.
 
