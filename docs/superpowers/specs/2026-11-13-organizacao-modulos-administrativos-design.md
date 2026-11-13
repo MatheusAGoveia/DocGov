@@ -1,9 +1,9 @@
 # Organização do painel administrativo por funcionalidade
 
-**Data:** 13/11/2026  
-**Estado:** proposta para aprovação; implementação não iniciada  
-**Revisão:** leitura independente concluída, sem perguntas importantes pendentes  
-**Objetivo informado:** facilitar encontrar as funções do sistema.
+- **Data:** 13/11/2026
+- **Estado:** desenho aprovado pelo usuário em 13/11/2026; planejamento em andamento
+- **Revisão:** leitura independente concluída, sem perguntas importantes pendentes
+- **Objetivo informado:** facilitar encontrar as funções do sistema.
 
 ## Intenção
 
@@ -15,7 +15,7 @@ Os números descrevem o checkout inspecionado; as alterações locais de documen
 
 ## Decisões propostas
 
-Estas são escolhas técnicas propostas para atender ao objetivo, ainda não aprovadas pelo usuário:
+Estas são as escolhas técnicas aprovadas para atender ao objetivo:
 
 - Manter PHP, PostgreSQL, os serviços atuais e o modelo de publicação existente.
 - Organizar os manipuladores administrativos por funcionalidade, com nomes explícitos para a ação de cada arquivo.
