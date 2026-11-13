@@ -1,6 +1,10 @@
-# 🔐 Arquitetura Definitiva de Gestão de Acesso — DocGov (Modelo Folder Permissions / Teams)
+# Especificação de origem do modelo de permissões
 
-> **Complemento — 01/10/2026:** assuntos públicos acrescentam leitura para contas autenticadas e ativas, conforme [visibilidade](../docs/assuntos-publicos-privados.md). Capacidades administrativas globais por equipe são separadas das permissões de conteúdo. Publicação exige revisão e aprovação administrativa; veja [arquitetura atual](../docs/ARQUITETURA.md).
+[Documentação](../docs/README.md) · [Permissões atuais](../docs/referencia/permissoes.md)
+
+> Especificação de origem preservada. Inclui pseudocódigo e nomenclatura histórica; para as regras atuais de atividade, assuntos públicos, grupos aninhados e capacidades globais, consulte a referência de permissões acima.
+
+> **Complemento — 01/10/2026:** assuntos públicos acrescentam leitura para contas autenticadas e ativas, conforme [visibilidade](../docs/referencia/assuntos-publicos-privados.md). Capacidades administrativas globais por equipe são separadas das permissões de conteúdo. Publicação exige revisão e aprovação administrativa; veja [arquitetura atual](../docs/referencia/arquitetura.md).
 
 > **Documento de Arquitetura e Especificação Técnica**  
 > **Status:** Implementado; o nome definitivo da tabela é `permissions`

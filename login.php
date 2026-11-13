@@ -45,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errorMsg = 'Domínio corporativo inválido.';
     } elseif (!empty($loginInput) && !empty($senha)) {
         // O domínio vem exclusivamente da lista controlada no formulário.
-        $authResult = $adAuthService->authenticate($selectedAdDomain . '\\' . $loginInput, $senha);
+        $authResult = $adAuthService->authenticate($loginInput, $senha, $selectedAdDomain);
         if ($authResult['success']) {
             $user = $authResult['user'];
             $usageAuditService->log('login', (int)$user['id'], 'PORTAL', null, [
@@ -53,8 +53,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             session_regenerate_id(true);
             $_SESSION['user'] = $adAuthService->buildSessionUser($user);
+            $_SESSION['last_activity_at'] = time();
 
-            unset($_SESSION['admin_logged']);
+            unset($_SESSION['admin_logged'], $_SESSION['session_expired']);
+            session_write_close();
             header('Location: index.php');
             exit;
         } else {
@@ -175,7 +177,7 @@ try {
                         <span><?= htmlspecialchars($errorMsg) ?></span>
                     </div>
                 <?php endif; ?>
-                <form method="POST" action="login.php" class="space-y-4" autocomplete="off">
+                <form method="POST" action="login.php" class="space-y-4" autocomplete="on">
                     <div class="grid grid-cols-[120px_1fr] gap-2">
                         <div>
                             <label for="login-domain" class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider text-[10px]">Domínio</label>
@@ -191,10 +193,11 @@ try {
                             <input type="text" 
                                    name="email" 
                                    id="login-input"
+                                   value="<?= htmlspecialchars($loginInput ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                    required 
                                    class="w-full pl-9 pr-3 py-2.5 text-xs rounded-lg border border-slate-300 dark:border-[#353842] bg-slate-50 dark:bg-[#181a1f] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-white transition" 
                                    placeholder="Ex.: maria.silva"
-                                   autocomplete="off"
+                                   autocomplete="username"
                                    autocapitalize="none"
                                    spellcheck="false">
                             <span class="absolute left-3 top-3 text-slate-400">
@@ -213,7 +216,7 @@ try {
                                    required 
                                    class="w-full pl-9 pr-10 py-2.5 text-xs rounded-lg border border-slate-300 dark:border-[#353842] bg-slate-50 dark:bg-[#181a1f] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-white transition" 
                                    placeholder="••••••••"
-                                   autocomplete="new-password">
+                                   autocomplete="current-password">
                             <span class="absolute left-3 top-3 text-slate-400">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                             </span>

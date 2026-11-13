@@ -123,7 +123,7 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                             </span>
                         </div>
                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                            Monitoramento contínuo de conectividade TCP/TLS, portas ativas e tempo de resposta de todos os servidores corporativos.
+                            A atualização automática verifica a conexão. Use Atualizar Saúde Agora para validar também a conta técnica e a Base DN.
                         </p>
                     </div>
 
@@ -876,18 +876,22 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
     // EXECUÇÃO DO DASHBOARD DE HEALTH CHECK & TELEMETRIA DOS SERVIDORES LDAP
     let healthAutoTimer = null;
+    let healthCheckRunning = false;
+    const healthEscape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 
-    const runLiveHealthCheck = async () => {
+    const runLiveHealthCheck = async (validateAccounts = false) => {
         const grid = document.getElementById('health-check-results-grid');
         const spinner = document.getElementById('health-check-spinner');
         const csrfToken = document.getElementById('ad-csrf-token')?.value || document.querySelector('input[name="csrf_token"]')?.value || '';
 
-        if (!grid) return;
+        if (!grid || healthCheckRunning) return;
+        healthCheckRunning = true;
         spinner?.classList.remove('hidden');
 
         const formData = new FormData();
         formData.append('test_ad_health', '1');
         formData.append('csrf_token', csrfToken);
+        if (validateAccounts) formData.append('validate_ad_accounts', '1');
 
         try {
             const res = await fetch('index.php?tab=servidores_ad', { method: 'POST', body: formData }).then(r => r.json());
@@ -908,6 +912,16 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
                 res.health.forEach(srv => {
                     const isOnline = srv.online;
+                    const hasWarning = isOnline && ['authentication_error', 'directory_error', 'authentication_required'].includes(srv.status);
+                    const statusLabel = !isOnline ? (srv.status === 'protocol_error' ? 'Falha LDAP/TLS' : 'Indisponível')
+                        : srv.status === 'authentication_error' ? 'Conta técnica rejeitada'
+                        : srv.status === 'directory_error' ? 'Falha na Base DN'
+                        : srv.status === 'authentication_required' ? 'Conta técnica necessária'
+                        : srv.status === 'healthy' ? 'Operacional' : 'Conexão ativa';
+                    const badgeClass = !isOnline ? 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/30'
+                        : hasWarning ? 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-500/30'
+                        : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30';
+                    const message = (srv.message || 'Verificação concluída.') + (isOnline && !srv.account_configured ? ' Conta técnica de leitura não configurada.' : '');
                     if (isOnline) {
                         onlineCount++;
                         totalLatency += (srv.latency_ms || 0);
@@ -928,19 +942,19 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                         <div>
                             <div class="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-[#454956] pb-2.5">
                                 <div>
-                                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">${srv.domain || 'BETIM'}</span>
-                                    <h3 class="text-xs font-bold text-slate-900 dark:text-slate-100">${srv.name}</h3>
+                                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">${healthEscape(srv.domain)}</span>
+                                    <h3 class="text-xs font-bold text-slate-900 dark:text-slate-100">${healthEscape(srv.name)}</h3>
                                 </div>
-                                <span class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${isOnline ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30' : 'bg-red-500/15 text-red-700 dark:text-red-300 border border-red-500/30'}">
-                                    <span class="h-1.5 w-1.5 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}"></span>
-                                    ${isOnline ? 'Operacional' : 'Indisponível'}
+                                <span class="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase ${badgeClass}">
+                                    <span class="h-1.5 w-1.5 rounded-full ${!isOnline ? 'bg-red-500' : hasWarning ? 'bg-amber-500' : 'bg-emerald-500'}"></span>
+                                    ${statusLabel}
                                 </span>
                             </div>
 
                             <div class="mt-3 space-y-2 text-xs font-mono">
                                 <div>
                                     <span class="text-[10px] font-sans font-semibold text-slate-400 block">Endereço URI & Porta</span>
-                                    <span class="font-bold text-slate-800 dark:text-slate-200 text-[11px] truncate block" title="${srv.uri}">${srv.uri}</span>
+                                    <span class="font-bold text-slate-800 dark:text-slate-200 text-[11px] truncate block" title="${healthEscape(srv.uri)}">${healthEscape(srv.uri)}</span>
                                 </div>
 
                                 <div>
@@ -954,7 +968,7 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
                                 </div>
 
                                 <div class="p-2 rounded bg-slate-50 dark:bg-[#2c2e33] border border-slate-100 dark:border-slate-800 text-[10px] font-sans text-slate-600 dark:text-slate-300">
-                                    ${srv.message || (isOnline ? 'Comunicação TCP/TLS ativa' : 'Falha no aperto de mão')}
+                                    ${healthEscape(message)}
                                 </div>
                             </div>
                         </div>
@@ -982,19 +996,22 @@ $recentLogs = $stmtLogs ? $stmtLogs->fetchAll(PDO::FETCH_ASSOC) : [];
 
             } else {
                 const errMsg = res.error || 'Erro ao consultar estado de saúde dos servidores.';
-                grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">${errMsg}</div>`;
+                grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">${healthEscape(errMsg)}</div>`;
             }
         } catch (err) {
             spinner?.classList.add('hidden');
-            grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">Erro na requisição de health check: ${err.message}</div>`;
+            grid.innerHTML = `<div class="col-span-full p-4 rounded-lg border border-red-200 bg-red-50 text-xs font-bold text-red-600">Erro na requisição de health check: ${healthEscape(err.message)}</div>`;
+        } finally {
+            healthCheckRunning = false;
+            spinner?.classList.add('hidden');
         }
     };
 
-    document.getElementById('btn-trigger-health-check')?.addEventListener('click', runLiveHealthCheck);
+    document.getElementById('btn-trigger-health-check')?.addEventListener('click', () => runLiveHealthCheck(true));
     
     document.getElementById('chk-auto-refresh-health')?.addEventListener('change', function(e) {
         if (e.target.checked) {
-            if (!healthAutoTimer) healthAutoTimer = setInterval(runLiveHealthCheck, 15000);
+            if (!healthAutoTimer) healthAutoTimer = setInterval(() => runLiveHealthCheck(false), 15000);
         } else {
             if (healthAutoTimer) { clearInterval(healthAutoTimer); healthAutoTimer = null; }
         }

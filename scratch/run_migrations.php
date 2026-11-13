@@ -33,6 +33,7 @@ $migrationFiles = [
     __DIR__ . '/../database/migrations/025_document_inline_media.sql',
     __DIR__ . '/../database/migrations/026_subject_visibility.sql',
     __DIR__ . '/../database/migrations/027_nested_groups.sql',
+    __DIR__ . '/../database/migrations/028_ad_domain_identity.sql',
 ];
 
 foreach ($migrationFiles as $file) {

@@ -1,7 +1,7 @@
 # Organização do painel administrativo por funcionalidade
 
 - **Data:** 13/11/2026
-- **Estado:** desenho aprovado pelo usuário em 13/11/2026; planejamento em andamento
+- **Estado:** primeira etapa implementada e validada em 13/11/2026
 - **Revisão:** leitura independente concluída, sem perguntas importantes pendentes
 - **Objetivo informado:** facilitar encontrar as funções do sistema.
 
@@ -147,4 +147,4 @@ O trabalho deve ser feito sobre o estado local existente e produzir um diff sepa
 
 ## Próximo passo
 
-Após a aprovação deste desenho, produzir o plano de implementação com caminhos, fronteiras, dependências e comandos de regressão. A implementação começa somente depois dessa revisão, conforme a skill de planejamento aplicável.
+Desenho, plano e execução nesta conversa foram aprovados pelo usuário. A primeira etapa foi concluída; consulte o [mapa do painel](../../../admin/README.md) e a [validação](../../historico/validacoes/2026-11-13-modulos-administrativos.md). Consultas e templates permanecem como evolução posterior.

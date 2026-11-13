@@ -39,7 +39,7 @@ DROP TABLE IF EXISTS users CASCADE;
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    username VARCHAR(100) NOT NULL UNIQUE,
+    username VARCHAR(100) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'reader' CHECK (role IN ('admin', 'editor', 'reader')),
@@ -57,6 +57,13 @@ CREATE TRIGGER trg_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- Logins corporativos são únicos dentro de cada domínio, independentemente
+-- do nome completo. As contas locais conservam login único entre si.
+CREATE UNIQUE INDEX uq_users_ad_domain_username
+    ON users (UPPER(COALESCE(ad_domain, '')), LOWER(username)) WHERE auth_source = 'ad';
+CREATE UNIQUE INDEX uq_users_local_username
+    ON users (LOWER(username)) WHERE auth_source <> 'ad';
 
 -- ------------------------------------------------------------------------------
 -- 1.1 CONFIGURAÇÕES CENTRAIS DO SISTEMA

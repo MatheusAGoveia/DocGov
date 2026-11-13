@@ -3,6 +3,8 @@ const net = require('node:net');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+const domainLoginMode = process.argv.includes('--domain-login');
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 function ber(tag, content) {
     content = Buffer.isBuffer(content) ? content : Buffer.concat(content);
@@ -33,14 +35,15 @@ function filters(value) {
     if (value.tag === 0xa0 || value.tag === 0xa1) return children(value.data).flatMap(filters);
     throw new Error('Filtro inesperado: ' + value.tag);
 }
-function done(messageId, tag, code) { return ber(0x30, [integer(messageId), ber(tag, [ber(0x0a, Buffer.from([code])), text(''), text('')])]); }
-function entry(messageId, login, name, disabled = false) {
-    const attrs = { sAMAccountName: login, displayName: name, mail: login + '@test.invalid', objectGUID: Buffer.alloc(16, 1), userAccountControl: disabled ? '514' : '512' };
+function done(messageId, tag, code) { return ber(0x30, [integer(messageId), ber(tag, [ber(0x0a, Buffer.from([code])), text(''), text(code === 49 ? 'AcceptSecurityContext error, data 52e' : '')])]); }
+function entry(messageId, login, name, disabled = false, domain = '') {
+    const attrs = { sAMAccountName: login, displayName: name, mail: login + '@' + (domain || 'test') + '.invalid', objectGUID: domain ? createHash('sha256').update(domain + ':' + login).digest().subarray(0, 16) : Buffer.alloc(16, 1), userAccountControl: disabled ? '514' : '512' };
     return ber(0x30, [integer(messageId), ber(0x64, [text('CN=' + name + ',DC=test,DC=invalid'), ber(0x30, Object.entries(attrs).map(([key, value]) => ber(0x30, [text(key), ber(0x31, [text(value)])])))])]);
 }
 
 (async () => {
     let binds = 0, queries = 0;
+    let loginBinds = 0, loginQueries = 0;
     let verifiedEscape = false;
     const sockets = new Set();
     const server = net.createServer(socket => {
@@ -55,15 +58,35 @@ function entry(messageId, login, name, disabled = false) {
                 const messageId = fields[0].data[0], op = fields[1];
                 if (op.tag === 0x60) {
                     binds++;
-                    const password = children(op.data)[2].data.toString();
-                    socket.write(done(messageId, 0x61, password === 'mock-only' ? 0 : 49));
+                    const bindFields = children(op.data);
+                    const identity = bindFields[1].data.toString();
+                    const password = bindFields[2].data.toString();
+                    const domain = identity.split('\\')[0];
+                    if (domainLoginMode && ['BETIM', 'SAUDE'].includes(domain)) loginBinds++;
+                    const expected = domainLoginMode && identity.endsWith('\\form.session') ? '  Mock*' + domain + '  ' : 'mock-only';
+                    const accepted = password === expected || (domainLoginMode && identity === '' && password === '');
+                    socket.boundDomain = accepted && ['BETIM', 'SAUDE'].includes(domain) ? domain : null;
+                    socket.write(done(messageId, 0x61, accepted ? 0 : 49));
                 } else if (op.tag === 0x63) {
                     queries++;
                     const request = children(op.data);
+                    if (request[6].tag === 0x87) {
+                        const missing = request[0].data.toString().startsWith('DC=missing,');
+                        const entries = missing ? [] : [entry(messageId, 'root', 'Base de teste')];
+                        socket.write(Buffer.concat([...entries, done(messageId, 0x65, missing ? 32 : 0)]));
+                        continue;
+                    }
                     const all = filters(request[6]);
                     const value = all.find(([key]) => key === 'sAMAccountName')[1];
                     let entries = [], code = 0;
-                    if (value === 'Ana Silva' || value === 'ana') entries = [entry(messageId, 'ana', 'Ana Silva')];
+                    if (domainLoginMode) {
+                        loginQueries++;
+                        const domain = request[0].data.toString() === 'DC=betim,DC=test' ? 'betim' : 'saude';
+                        assert(socket.boundDomain === domain.toUpperCase(), 'Consulta LDAP saiu do domínio autenticado.');
+                        const name = value === 'form.homonym' ? 'Maria da Conceição' : domain === 'betim' ? 'José Antônio de Almeida' : 'José Roberto da Costa';
+                        entries = [entry(messageId, value, name, false, domain)];
+                    }
+                    else if (value === 'Ana Silva' || value === 'ana') entries = [entry(messageId, 'ana', 'Ana Silva')];
                     else if (value === 'Nome Igual') entries = [entry(messageId, 'um', 'Nome Igual'), entry(messageId, 'dois', 'Nome Igual')];
                     else if (value === 'Inativo') entries = [entry(messageId, 'inativo', 'Inativo', true)];
                     else if (value === 'Erro Servidor') code = 52;
@@ -79,11 +102,17 @@ function entry(messageId, login, name, disabled = false) {
     try {
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         const port = server.address().port;
-        const result = await promisify(execFile)(process.env.DOCGOV_PHP || 'php', [path.join(__dirname, 'test_batch_directory_ldap.php'), String(port)], { timeout: 20000 });
+        const helper = domainLoginMode ? 'test_ad_domain_identity.php' : 'test_batch_directory_ldap.php';
+        const result = await promisify(execFile)(process.env.DOCGOV_PHP || 'php', [path.join(__dirname, helper), String(port)], { timeout: 60000 });
         process.stdout.write(result.stdout);
-        assert(binds === 2 && queries === 9, `Conexão não foi reutilizada: ${binds} binds, ${queries} consultas.`);
-        assert(verifiedEscape, 'Caracteres do filtro LDAP não foram escapados como valor literal.');
-        console.log('PASS protocolo: uma conexão por lote, filtro LDAP escapado, nenhum bind como usuários importados.');
+        if (domainLoginMode) {
+            assert(loginBinds === 14 && loginQueries === 13, `Fluxo de login inesperado: ${loginBinds} binds, ${loginQueries} consultas.`);
+            console.log('PASS protocolo de login: domínio escolhido, um bind por envio e sessão válida no primeiro acesso.');
+        } else {
+            assert(binds === 2 && queries === 9, `Conexão não foi reutilizada: ${binds} binds, ${queries} consultas.`);
+            assert(verifiedEscape, 'Caracteres do filtro LDAP não foram escapados como valor literal.');
+            console.log('PASS protocolo: uma conexão por lote, filtro LDAP escapado, nenhum bind como usuários importados.');
+        }
     } finally {
         for (const socket of sockets) socket.destroy();
         await new Promise(resolve => server.close(resolve));

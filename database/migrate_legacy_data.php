@@ -18,7 +18,7 @@ try {
     $stmtUser = $pdo->prepare("
         INSERT INTO users (name, username, email, password_hash, role, active)
         VALUES (:name, :username, :email, :password_hash, :role, TRUE)
-        ON CONFLICT (username) DO UPDATE SET role = EXCLUDED.role
+        ON CONFLICT (LOWER(username)) WHERE auth_source <> 'ad' DO UPDATE SET role = EXCLUDED.role
     ");
 
     foreach ($usersSeed as $u) {

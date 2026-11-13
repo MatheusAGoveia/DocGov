@@ -1,41 +1,75 @@
 # Documentação do DocGov
 
-Esta é a entrada central para a documentação do repositório. A primeira organização foi feita em **01/10/2026**, tomando `d904224` como referência de histórico e inspecionando também o checkout local. Há alterações concorrentes na importação de usuários; a revisão dessas alterações deve ocorrer quando estiverem estabilizadas.
+[Repositório](../README.md) · [Contribuição](../CONTRIBUTING.md)
 
-## Guias atuais
+Documentação do código e dos procedimentos do DocGov. Escolha um caminho conforme a tarefa: usar o sistema, desenvolver, consultar uma regra ou operar o ambiente.
 
-| Documento | Público | Cobertura |
-| --- | --- | --- |
-| [Uso do sistema](USO_DO_SISTEMA.md) | Leitores, editores e administradores | Navegação, conteúdo, revisão e acesso |
-| [Arquitetura](ARQUITETURA.md) | Desenvolvimento e infraestrutura | Componentes, dados, autorização e fluxos |
-| [Instalação e operação](INSTALACAO_OPERACAO.md) | Desenvolvimento e infraestrutura | Configuração, banco, implantação, backup e diagnóstico |
-| [APIs e rotas](API.md) | Desenvolvimento | Contratos principais, sessão, CSRF e limitações |
-| [Testes](TESTES.md) | Desenvolvimento e homologação | Verificações, suítes existentes e lacunas |
-| [Code review de 01/10/2026](CODE_REVIEW_2026-10-01.md) | Desenvolvimento e responsáveis pelo sistema | Achados, prioridades e critérios de aceite |
+## Começar
 
-## Referências existentes
+| Perfil | Percurso recomendado |
+| --- | --- |
+| Desenvolvimento | [Início rápido](desenvolvimento/inicio-rapido.md) → [Arquitetura](referencia/arquitetura.md) → [Testes](desenvolvimento/testes.md) |
+| Infraestrutura | [Configuração](referencia/configuracao.md) → [Instalação e operação](operacao/instalacao-e-operacao.md) → [Banco de dados](../database/README.md) |
+| Edição e administração | [Guia de uso](guias/uso-do-sistema.md) → [Permissões](referencia/permissoes.md) → [Importação de usuários](guias/importacao-usuarios-em-lote.md) |
+| Integração | [APIs e rotas](referencia/api.md) → [Identidades AD](referencia/identidades-ad-por-dominio.md) |
 
-- [Assuntos públicos e privados](assuntos-publicos-privados.md): visibilidade, autorização e migração 026.
-- [Grupos dentro de grupos](grupos-aninhados.md): subgrupos, herança de conteúdo, migração 027 sem reinício e suíte isolada.
-- [Conta de leitura AD](conta-leitura-ad.md): preservação e teste das credenciais por domínio.
-- [Login integrado Windows](windows-integrated-auth.md): referência de infraestrutura; veja a nota sobre o login explícito atual.
-- [Banco de dados](../database/README.md), [arquitetura de permissões](../database/PERMISSIONS_ARCHITECTURE.md) e [matriz de capacidades](../database/CAPABILITIES_MATRIX.md).
-- [Revisão de 30/09/2026](CODE_REVIEW_2026-09-30.md) e [homologação de 02/09/2026](RELATORIO_HOMOLOGACAO_PRE_LANCAMENTO_2026-09-02.md): evidências históricas, com escopos e datas próprios.
-- [Catálogo do manual](docgov_catalog.php): fonte PHP do conteúdo destinado ao acervo em TI → DocGov. Sua existência não comprova que esteja publicado ou atualizado no banco.
+## Guias de uso
 
-## Próximos incrementos
+| Documento | Conteúdo |
+| --- | --- |
+| [Uso do sistema](guias/uso-do-sistema.md) | Consulta, favoritos, conteúdo, revisão e administração |
+| [Importação de usuários e membros em lote](guias/importacao-usuarios-em-lote.md) | Lista de entrada, domínio, resultados e reprocessamento |
 
-| Prioridade | Entrega | Critério de conclusão |
-| --- | --- | --- |
-| 1 | Tratar os achados CR-01 a CR-03 | Correções e verificações descritas no code review aprovadas |
-| 2 | Homologar configuração de IIS/Apache e recuperação | Evidência de bloqueio das pastas internas e restauração em ambiente isolado |
-| 3 | Consolidar testes e automação de checks | Comando único para suíte isolada, com saída, falha e limpeza previsíveis |
-| 4 | Ampliar os contratos de API | Payloads/respostas completos, erros uniformes e testes por endpoint |
-| 5 | Documentar importação de usuários após estabilização | Fluxo, limites, autorização, resultados parciais e teste publicados |
-| 6 | Sincronizar o manual no acervo | Conteúdo revisado e publicação controlada com validação de leitura |
+## Referência técnica
 
-## Manutenção dos documentos
+| Documento | Conteúdo |
+| --- | --- |
+| [Arquitetura](referencia/arquitetura.md) | Bootstrap, componentes, serviços, dados e fluxos |
+| [Mapa do painel administrativo](../admin/README.md) | Localização de ações, serviços e funções JavaScript por funcionalidade |
+| [APIs e rotas](referencia/api.md) | Sessão, CSRF, métodos, campos, respostas e autorização |
+| [Configuração](referencia/configuracao.md) | Variáveis, precedência, sessão, limites e segredos |
+| [Banco de dados](../database/README.md) | Modelo atual, instalação e evolução do schema |
+| [Permissões e capacidades](referencia/permissoes.md) | Acesso efetivo, equipes, visibilidade e administração global |
+| [Assuntos públicos e privados](referencia/assuntos-publicos-privados.md) | Regras de leitura e migração 026 |
+| [Grupos aninhados](referencia/grupos-aninhados.md) | Herança de equipes e migração 027 |
+| [Identidades AD por domínio](referencia/identidades-ad-por-dominio.md) | Login, identidade, sessão, diagnóstico e migração 028 |
+| [Avisos e confirmações](referencia/dialogos-do-sistema.md) | Contrato do componente de diálogos e acessibilidade |
+| [Matriz de capacidades de conteúdo](../database/CAPABILITIES_MATRIX.md) | Operações por nível de permissão |
+| [Especificação de origem das permissões](../database/PERMISSIONS_ARCHITECTURE.md) | Algoritmos e contexto do modelo; inclui seções históricas |
 
-Mudanças em autorização devem atualizar arquitetura, guia de uso e matriz de capacidades. Mudanças em endpoints devem atualizar API e testes. Mudanças em banco/configuração devem atualizar instalação e operação. Registre o commit e os comandos de validação nas futuras revisões.
+## Desenvolvimento
 
-Não copie segredos, cookies de sessão, hashes de senha ou dumps de usuários para os guias. Os achados de credenciais apontam os arquivos e a ação necessária sem reproduzir os valores.
+| Documento | Conteúdo |
+| --- | --- |
+| [Início rápido](desenvolvimento/inicio-rapido.md) | Requisitos, configuração local e primeiro acesso |
+| [Testes e verificação](desenvolvimento/testes.md) | Checks de sintaxe, seleção de suítes e isolamento |
+| [Contribuição](../CONTRIBUTING.md) | Fluxo de alteração, convenções e validação |
+| [Manutenção da documentação](desenvolvimento/documentacao.md) | Organização, formato, fontes e atualização |
+
+## Operação
+
+| Documento | Conteúdo |
+| --- | --- |
+| [Instalação e operação](operacao/instalacao-e-operacao.md) | Banco, migrações, uploads, publicação, backup e diagnóstico |
+| [Conta de leitura AD](operacao/conta-leitura-ad.md) | Credenciais técnicas, preservação e teste por domínio |
+| [Login integrado Windows](operacao/windows-integrated-auth.md) | Pré-requisitos de infraestrutura e limites da implementação atual |
+
+## Histórico e material do manual
+
+O [histórico](historico/README.md) reúne revisões, homologações e resultados já registrados. O estado dos achados se refere à data de cada relatório; consulte o código e execute a regressão pertinente antes de decidir pelo encerramento de um item.
+
+O [catálogo do manual](docgov_catalog.php) é a fonte PHP de conteúdo destinada ao acervo TI → DocGov. Ele é separado dos guias do repositório: editar um Markdown não publica nem sincroniza documentos no banco.
+
+```text
+docs/
+├── README.md
+├── guias/                uso e procedimentos do usuário
+├── referencia/           arquitetura, contratos e regras
+├── desenvolvimento/     ambiente, testes e documentação
+├── operacao/             instalação e sustentação
+├── historico/            revisões, homologações e validações
+├── superpowers/plans/    planos de implementação existentes
+└── docgov_catalog.php    fonte do manual publicado no acervo
+```
+
+Os arquivos substituídos foram removidos. Novos conteúdos devem seguir a [convenção documental](desenvolvimento/documentacao.md).

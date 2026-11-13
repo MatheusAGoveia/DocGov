@@ -1,47 +1,69 @@
 # DocGov
 
-Portal interno de gestão documental e conhecimento. Organiza o acervo em **categoria → subcategoria → assunto → documento**, com acesso por usuário/equipe, revisão editorial e autenticação corporativa pelo Active Directory.
+Portal interno de gestão documental e conhecimento, com autenticação corporativa, controle de acesso por usuário/equipe e revisão editorial.
 
-## Comece aqui
+O acervo segue a hierarquia **categoria → subcategoria → assunto → documento**. O portal reúne artigos, arquivos, links, código, vídeos, fluxos e organogramas, além da documentação de processos por assunto.
 
-| Necessidade | Documento |
+## Documentação
+
+| Quero… | Consulte |
 | --- | --- |
-| Consultar, editar e revisar conteúdos | [Guia de uso](docs/USO_DO_SISTEMA.md) |
-| Entender componentes, dados e permissões | [Arquitetura](docs/ARQUITETURA.md) |
-| Preparar ambiente, atualizar e recuperar o sistema | [Instalação e operação](docs/INSTALACAO_OPERACAO.md) |
-| Integrar ou manter os endpoints | [APIs e rotas](docs/API.md) |
-| Escolher e executar verificações | [Testes](docs/TESTES.md) |
-| Priorizar problemas encontrados na varredura | [Code review de 01/10/2026](docs/CODE_REVIEW_2026-10-01.md) |
-| Consultar toda a documentação e suas pendências | [Índice da documentação](docs/README.md) |
+| Executar o projeto para desenvolvimento | [Início rápido](docs/desenvolvimento/inicio-rapido.md) |
+| Entender a aplicação e seus serviços | [Arquitetura](docs/referencia/arquitetura.md) |
+| Encontrar ações e funções do painel | [Mapa do painel administrativo](admin/README.md) |
+| Consultar endpoints e autenticação | [APIs e rotas](docs/referencia/api.md) |
+| Configurar banco, sessão e AD | [Configuração](docs/referencia/configuracao.md) |
+| Instalar, atualizar ou recuperar o ambiente | [Instalação e operação](docs/operacao/instalacao-e-operacao.md) |
+| Usar o portal e administrar conteúdos | [Guia de uso](docs/guias/uso-do-sistema.md) |
+| Executar verificações | [Testes](docs/desenvolvimento/testes.md) |
+| Contribuir com o projeto | [Guia de contribuição](CONTRIBUTING.md) |
 
-## Visão técnica
+O [índice completo](docs/README.md) inclui permissões, importação de usuários, integração AD e registros históricos.
 
-- Backend PHP, páginas renderizadas no servidor e serviços em `services/`, sem framework ou manifesto Composer no checkout inspecionado.
-- PostgreSQL via PDO; o banco de execução é definido em `config/db.php`. O arquivo SQLite em `data/` é legado, não a conexão atual.
-- Frontend com JavaScript/CSS, Quill e visualizadores de arquivos. Há assets locais e dependências externas carregadas pelas páginas.
-- Conteúdos de texto, arquivo, link, código, vídeo, fluxo e organograma; seções configuráveis no banco.
-- Permissões hierárquicas em `PermissionService`; capacidades administrativas globais em `SystemAccessService`.
+## Tecnologias
 
-## Execução e alterações
+| Camada | Implementação |
+| --- | --- |
+| Aplicação | PHP, páginas renderizadas no servidor e serviços sem framework |
+| Persistência | PostgreSQL via PDO; arquivos em armazenamento local |
+| Interface | JavaScript e CSS, Quill e visualizadores de documentos |
+| Identidade | Active Directory por LDAP/LDAPS e sessão PHP |
+| Dependências frontend | npm, com versões resolvidas em `package-lock.json` |
 
-Siga o [guia de instalação](docs/INSTALACAO_OPERACAO.md) antes de preparar o ambiente. Em uma base existente, aplique apenas as migrações pendentes. `schema.sql` é destinado a uma base vazia e `seed.sql` contém contas de teste.
+O manifesto npm gerencia bibliotecas e não define comandos de build ou de testes. A conexão de execução usa PostgreSQL.
 
-A varredura inicial identificou scripts operacionais sem bloqueio HTTP, credenciais literais em utilitários e lacunas no executor de migrações. Os detalhes e critérios de correção estão no [relatório de revisão](docs/CODE_REVIEW_2026-10-01.md). A configuração do servidor publicado não foi inspecionada.
+## Desenvolvimento local
 
-## Organização
+1. Confira os [requisitos e a preparação do banco](docs/desenvolvimento/inicio-rapido.md).
+2. Copie `config/local.php.example` para `config/local.php` e configure uma base exclusiva de desenvolvimento.
+3. Com essa base preparada, inicie o servidor a partir da raiz:
 
-```text
-admin/       painel e partials administrativos
-api/         endpoints JSON de estrutura, documentos e permissões
-assets/      scripts, estilos e bibliotecas locais
-config/      conexão, sessão, runtime e configuração AD
-database/    schema, migrações e especificações de acesso
-docs/        guias, revisões e catálogo de conteúdo do manual
-partials/    componentes compartilhados das páginas
-services/    regras de negócio e persistência
-storage/     documentos, imagens da estrutura, logo e mídia de artigos
-uploads/     avatars
-scratch/     testes, adaptadores e utilitários operacionais
+```powershell
+php -d upload_max_filesize=50M -d post_max_size=512M -d memory_limit=768M -d max_input_time=300 -d display_errors=Off -d display_startup_errors=Off -d log_errors=On -S 127.0.0.1:8000 -t .
 ```
 
-Documentação estruturada a partir do código em 01/10/2026. Os resultados desta etapa são de revisão estática e sintaxe; não representam homologação do ambiente publicado.
+Abra `http://127.0.0.1:8000/login.php` com uma conta autorizada no ambiente. A preparação inicial de contas está descrita no guia de instalação.
+
+**Banco existente:** aplique somente migrações pendentes. `database/schema.sql` contém comandos de remoção de tabelas e deve ser usado apenas em uma base vazia e descartável. O seed contém dados de demonstração.
+
+O servidor embutido atende somente ao desenvolvimento local. A publicação exige HTTPS e bloqueio de acesso direto às pastas internas, conforme o [guia de operação](docs/operacao/instalacao-e-operacao.md).
+
+## Estrutura do repositório
+
+```text
+admin/       painel administrativo e importação de usuários
+api/         endpoints JSON
+assets/      JavaScript, CSS e bibliotecas servidas localmente
+config/      conexão, sessão, runtime e integração AD
+database/    schema, migrações, seed e especificações de dados
+docs/        documentação organizada por finalidade
+partials/    componentes PHP compartilhados
+services/    regras de negócio, autorização e persistência
+scratch/     testes, fixtures e utilitários operacionais
+storage/     documentos, imagens e mídia de artigos
+uploads/     avatares
+```
+
+## Escopo da documentação
+
+Os guias descrevem o código do checkout revisado em **13/11/2026**. Resultados anteriores permanecem no [histórico](docs/historico/README.md), com seus próprios limites. A reorganização documental não representa homologação funcional, validação de capacidade ou aprovação de uma implantação.

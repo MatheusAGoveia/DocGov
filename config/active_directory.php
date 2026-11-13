@@ -75,7 +75,10 @@ if (isset($pdo) && $pdo instanceof PDO && class_exists('SystemSettingsService'))
                     'ca_certificate' => (string)($dom['ca_certificate'] ?? ''),
                     'service_bind_dn' => (string)($dom['service_bind_dn'] ?? ''),
                     'service_bind_password' => (string)($dom['service_bind_password'] ?? ''),
-                    'aliases' => array_unique(array_filter([$k, (string)($dom['netbios_domain'] ?? ''), (string)($dom['dns_domain'] ?? ''), 'betim.pmb', 'betim.mg.gov.br'])),
+                    'aliases' => array_unique(array_filter(array_merge(
+                        [$k, (string)($dom['netbios_domain'] ?? ''), (string)($dom['dns_domain'] ?? '')],
+                        $k === 'BETIM' ? ['betim.pmb', 'betim.mg.gov.br'] : []
+                    ))),
                     'enabled' => !isset($dom['enabled']) || (bool)$dom['enabled'],
                     'is_primary' => !empty($dom['is_primary']),
                 ];

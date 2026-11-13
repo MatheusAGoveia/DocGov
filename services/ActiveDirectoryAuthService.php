@@ -17,7 +17,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
      * sem permissões de recursos. A autorização continua sob controle do DocGov.
      * A senha recebida nunca é registrada no banco, sessão ou logs.
      */
-    public function authenticate(string $login, #[\SensitiveParameter] string $password): array {
+    public function authenticate(string $login, #[\SensitiveParameter] string $password, ?string $selectedDomainKey = null): array {
         $startTime = microtime(true);
         $userIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
@@ -25,7 +25,9 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             return $this->failure('unavailable', 'A integração com o Active Directory está desativada no ambiente.');
         }
 
-        $identity = $this->resolveIdentity($login);
+        $identity = $selectedDomainKey === null
+            ? $this->resolveIdentity($login)
+            : $this->resolveIdentityForDomain($login, $selectedDomainKey);
         if ($identity === null) {
             return $this->failure('invalid_username', 'Informe um usuário corporativo válido (ex.: BETIM\\maria.silva).');
         }
@@ -33,6 +35,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         $username = $identity['username'];
         $domain = $identity['domain'];
         $domainKey = $domain['key'] ?? 'BETIM';
+        $canonicalLogin = $domainKey . '\\' . $username;
         $serverUri = $domain['uri'] ?? 'LDAP';
         $serverName = $domain['name'] ?? $domainKey;
 
@@ -48,7 +51,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             $this->logAdAuthAttempt($domainKey, $username, $serverUri, $serverName, 'server_unreachable', 'Servidores do Active Directory inacessíveis.', $latencyMs, $userIp);
             
             // Tentar Fallback de Emergência Break-Glass se habilitado
-            $breakGlassUser = $this->tryBreakGlassEmergencyLogin($login, $password);
+            $breakGlassUser = $this->tryBreakGlassEmergencyLogin($canonicalLogin, $password);
             if ($breakGlassUser !== null) {
                 return [
                     'success' => true,
@@ -62,42 +65,18 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         }
 
         try {
-            $bindIdentities = [];
             $netbiosDomain = !empty($domain['netbios_domain']) ? $domain['netbios_domain'] : $domainKey;
-            if (!empty($netbiosDomain)) {
-                $bindIdentities[] = $netbiosDomain . '\\' . $username;
-            }
-            $dnsDomain = !empty($domain['dns_domain']) ? $domain['dns_domain'] : '';
-            if (!empty($dnsDomain)) {
-                $bindIdentities[] = $username . '@' . $dnsDomain;
-            }
-            $typedHint = trim((string)($identity['typed_domain_hint'] ?? ''));
-            if ($typedHint !== '' && str_contains($typedHint, '.')) {
-                $bindIdentities[] = $username . '@' . $typedHint;
-            }
-            $bindIdentities[] = $username;
-            $bindIdentities = array_values(array_unique($bindIdentities));
-
-            $bound = false;
+            // Uma seleção de domínio produz uma única validação de credenciais.
+            // Não repetir a senha como UPN ou login sem domínio após uma rejeição.
+            $bound = @ldap_bind($ldap, $netbiosDomain . '\\' . $username, $password);
             $lastDiagnosticMessage = '';
-
-            foreach ($bindIdentities as $bindIdentity) {
-                if (@ldap_bind($ldap, $bindIdentity, $password)) {
-                    $bound = true;
-                    break;
-                }
-                $diag = '';
-                if (defined('LDAP_OPT_DIAGNOSTIC_MESSAGE')) {
-                    @ldap_get_option($ldap, LDAP_OPT_DIAGNOSTIC_MESSAGE, $diag);
-                }
-                if ($diag !== '') {
-                    $lastDiagnosticMessage = $diag;
-                }
+            if (!$bound && defined('LDAP_OPT_DIAGNOSTIC_MESSAGE')) {
+                @ldap_get_option($ldap, LDAP_OPT_DIAGNOSTIC_MESSAGE, $lastDiagnosticMessage);
             }
 
             if (!$bound) {
                 // Tentar Fallback de Emergência Break-Glass se a conta possuir senha local cadastrada no sistema
-                $breakGlassUser = $this->tryBreakGlassEmergencyLogin($login, $password);
+                $breakGlassUser = $this->tryBreakGlassEmergencyLogin($canonicalLogin, $password);
                 if ($breakGlassUser !== null) {
                     return [
                         'success' => true,
@@ -283,7 +262,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
                     $condition = "(|(sAMAccountName={$escaped})(displayName={$escaped})(cn={$escaped}))";
                 }
                 $search = @ldap_search($ldap, $domain['base_dn'], "(&(objectCategory=person)(objectClass=user){$condition})", [
-                    'displayName', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl', 'department', 'title', 'telephoneNumber',
+                    'displayName', 'cn', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl', 'department', 'title', 'telephoneNumber',
                 ], 0, 3, 2);
                 $errorCode = 0;
                 if (!$search || !ldap_parse_result($ldap, $search, $errorCode) || !in_array($errorCode, [0, 4], true)) {
@@ -328,10 +307,10 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             $lock = $this->pdo->prepare('SELECT pg_advisory_xact_lock(81831, hashtext(?))');
             $lock->execute([$guid]);
             $lock = $this->pdo->prepare('SELECT pg_advisory_xact_lock(81832, hashtext(?))');
-            $lock->execute([$username]);
+            $lock->execute([$domainKey . '\\' . $username]);
         }
-        $stmt = $this->pdo->prepare('SELECT * FROM users WHERE ad_object_guid = ? OR LOWER(username) = LOWER(?) ORDER BY id');
-        $stmt->execute([$guid, $username]);
+        $stmt = $this->pdo->prepare("SELECT * FROM users WHERE ad_object_guid = ? OR (LOWER(username) = LOWER(?) AND ((auth_source = 'ad' AND UPPER(ad_domain) = ?) OR (auth_source <> 'ad' AND ? = ?))) ORDER BY id");
+        $stmt->execute([$guid, $username, $domainKey, $domainKey, strtoupper((string)($this->config['default_domain'] ?? 'BETIM'))]);
         $existing = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if ($existing !== []) {
             if (count($existing) !== 1 || $existing[0]['auth_source'] !== 'ad' || strtoupper((string)$existing[0]['ad_domain']) !== $domainKey || (!empty($existing[0]['ad_object_guid']) && strtolower($existing[0]['ad_object_guid']) !== $guid)) {
@@ -407,7 +386,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
                 $ldap,
                 $baseDn,
                 '(&(objectCategory=person)(objectClass=user)(sAMAccountName=*))',
-                ['displayName', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl'],
+                ['displayName', 'cn', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl'],
                 0,
                 500
             );
@@ -436,7 +415,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
                 }
 
                 try {
-                    $stmtCheck = $this->pdo->prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) AND (ad_domain = ? OR auth_source = 'ad')");
+                    $stmtCheck = $this->pdo->prepare("SELECT id FROM users WHERE LOWER(username) = LOWER(?) AND auth_source = 'ad' AND UPPER(ad_domain) = ?");
                     $stmtCheck->execute([$sam, $targetDomain['key']]);
                     $exists = (bool)$stmtCheck->fetchColumn();
 
@@ -595,6 +574,28 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         return false;
     }
 
+    private function resolveIdentityForDomain(string $login, string $selectedDomainKey): ?array {
+        $selectedDomainKey = strtoupper(trim($selectedDomainKey));
+        if ($selectedDomainKey === '') {
+            return null;
+        }
+        $selected = null;
+        foreach (($this->config['domains'] ?? []) as $key => $domain) {
+            if (strtoupper((string)($domain['key'] ?? $key)) === $selectedDomainKey) {
+                $selected = $domain;
+                break;
+            }
+        }
+        if ($selected === null || (isset($selected['enabled']) && !$selected['enabled'])) {
+            return null;
+        }
+        // Um prefixo/sufixo digitado só é aceito se confirmar a seleção da tela.
+        // Login simples recebe a chave escolhida, nunca o domínio padrão.
+        $qualified = str_contains($login, '\\') || str_contains($login, '@');
+        $identity = $this->resolveIdentity($qualified ? $login : $selectedDomainKey . '\\' . $login);
+        return $identity !== null && $identity['domain']['key'] === $selectedDomainKey ? $identity : null;
+    }
+
     private function resolveIdentity(string $login): ?array {
         $login = strtolower(trim($login));
         $domainHint = '';
@@ -629,6 +630,18 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
 
         $domains = $this->config['domains'] ?? [];
         $defaultKey = strtoupper((string)($this->config['default_domain'] ?? 'BETIM'));
+
+        // A chave explícita do domínio tem prioridade sobre qualquer alias.
+        foreach ($domains as $key => $domain) {
+            $domainKey = strtoupper((string)($domain['key'] ?? $key));
+            if ($domainHint !== '' && strtolower($domainKey) === $domainHint) {
+                if (isset($domain['enabled']) && !$domain['enabled']) {
+                    return null;
+                }
+                $domain['key'] = $domainKey;
+                return ['username' => $login, 'domain' => $domain, 'typed_domain_hint' => $domainHint];
+            }
+        }
 
         // Um domínio informado explicitamente precisa corresponder a um domínio
         // habilitado. Nunca converta uma identidade desconhecida para o padrão.
@@ -685,7 +698,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             $ldap,
             (string)$domain['base_dn'],
             "(&(objectCategory=person)(objectClass=user)(sAMAccountName={$escapedUsername}))",
-            ['displayName', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl'],
+            ['displayName', 'cn', 'mail', 'userPrincipalName', 'sAMAccountName', 'objectGUID', 'userAccountControl'],
             0,
             1
         );
@@ -707,12 +720,7 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         bool $allowSuperAdmin = true,
         bool $createOnly = false
     ): array {
-        $name = trim((string)($directoryUser['displayname'][0] ?? $username));
-        $email = strtolower(trim((string)(
-            $directoryUser['mail'][0]
-            ?? $directoryUser['userprincipalname'][0]
-            ?? ($username . '@' . $this->getDomainDnsName($domainKey))
-        )));
+        $domainKey = strtoupper(trim($domainKey));
         $objectGuid = isset($directoryUser['objectguid'][0])
             ? strtolower(bin2hex($directoryUser['objectguid'][0]))
             : null;
@@ -724,10 +732,38 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             $existing = $stmtByGuid->fetch(PDO::FETCH_ASSOC) ?: null;
         }
         if (!$existing) {
-            $stmtByUsername = $this->pdo->prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND ((auth_source = 'ad' AND ad_domain = ?) OR (auth_source <> 'ad' AND ? = ?)) LIMIT 1");
+            $stmtByUsername = $this->pdo->prepare("SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND ((auth_source = 'ad' AND UPPER(ad_domain) = ?) OR (auth_source <> 'ad' AND ? = ?)) ORDER BY CASE WHEN auth_source = 'ad' THEN 0 ELSE 1 END LIMIT 1");
             $stmtByUsername->execute([$username, $domainKey, $domainKey, strtoupper((string)($this->config['default_domain'] ?? 'BETIM'))]);
             $existing = $stmtByUsername->fetch(PDO::FETCH_ASSOC) ?: null;
         }
+
+        if ($existing && $existing['auth_source'] === 'ad') {
+            if (strtoupper((string)$existing['ad_domain']) !== $domainKey
+                || ($objectGuid !== null && !empty($existing['ad_object_guid']) && strtolower((string)$existing['ad_object_guid']) !== $objectGuid)) {
+                throw new DomainException('A identidade do AD não corresponde ao cadastro deste domínio. Solicite a revisão ao administrador.');
+            }
+        } elseif ($existing && $objectGuid !== null && !empty($existing['ad_object_guid'])) {
+            throw new DomainException('O identificador do AD já pertence a outro cadastro. Solicite a revisão ao administrador.');
+        }
+
+        // Nome completo é um atributo cadastral, não uma chave de identidade.
+        // Pessoas de domínios diferentes podem ter nomes e logins iguais ou diferentes.
+        $name = trim((string)($directoryUser['displayname'][0] ?? ''));
+        if ($name === '') {
+            $name = trim((string)($directoryUser['cn'][0] ?? ''));
+        }
+        if ($name === '') {
+            $name = (string)($existing['name'] ?? $username);
+        }
+        $email = trim((string)($directoryUser['mail'][0] ?? ''));
+        if ($email === '') {
+            $email = trim((string)($directoryUser['userprincipalname'][0] ?? ''));
+        }
+        if ($email === '') {
+            $email = (string)($existing['email'] ?? ($username . '@' . $this->getDomainDnsName($domainKey)));
+        }
+        $email = strtolower($email);
+        $objectGuid = $objectGuid ?? ($existing['ad_object_guid'] ?? null);
 
         if ($createOnly && $existing !== null) {
             // Um login normal pode ter criado a conta durante a consulta. Repetir é seguro.
@@ -875,10 +911,15 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
 
     public function tryBreakGlassEmergencyLogin(string $login, string $password): ?array {
         try {
-            $username = strtolower(trim(basename(str_replace('\\', '/', $login))));
-            $stmt = $this->pdo->prepare("SELECT * FROM users WHERE LOWER(username) = ? AND active = TRUE LIMIT 1");
-            $stmt->execute([$username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $identity = $this->resolveIdentity($login);
+            if ($identity === null) {
+                return null;
+            }
+            $domainKey = $identity['domain']['key'];
+            $stmt = $this->pdo->prepare("SELECT * FROM users WHERE LOWER(username) = ? AND active = TRUE AND ((auth_source = 'ad' AND UPPER(ad_domain) = ?) OR (auth_source <> 'ad' AND ? = ?)) LIMIT 2");
+            $stmt->execute([$identity['username'], $domainKey, $domainKey, strtoupper((string)($this->config['default_domain'] ?? 'BETIM'))]);
+            $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $user = count($users) === 1 ? $users[0] : null;
 
             if ($user && !empty($user['password_hash']) && password_verify($password, $user['password_hash'])) {
                 $role = strtolower((string)($user['role'] ?? ''));
@@ -929,13 +970,15 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
     }
 
     public function testServerConnection(string $uri, string $caCert = '', string $bindDn = '', #[\SensitiveParameter] string $bindPass = '', string $baseDn = ''): array {
+        $state = ['success' => false, 'tcp_connected' => false, 'ldap_available' => false,
+            'authenticated' => null, 'directory_readable' => null, 'status' => 'configuration_error'];
         if (!extension_loaded('ldap')) {
-            return ['success' => false, 'error' => 'A extensão PHP LDAP não está instalada ou ativada no servidor web.'];
+            return array_replace($state, ['error' => 'A extensão PHP LDAP não está instalada ou ativada no servidor web.']);
         }
 
         $uri = trim($uri);
         if ($uri === '') {
-            return ['success' => false, 'error' => 'URI do servidor LDAP/LDAPS não informada.'];
+            return array_replace($state, ['error' => 'URI do servidor LDAP/LDAPS não informada.']);
         }
 
         // 1. Extração rigorosa de Host e Porta TCP para teste direto de Socket
@@ -947,11 +990,14 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         if ($parsedUrl === false || !in_array($scheme, ['ldap', 'ldaps'], true)
             || $host === '' || $port < 1 || $port > 65535
             || isset($parsedUrl['user']) || isset($parsedUrl['pass'])) {
-            return ['success' => false, 'error' => 'Informe uma URI LDAP/LDAPS válida com porta entre 1 e 65535.'];
+            return array_replace($state, ['error' => 'Informe uma URI LDAP/LDAPS válida com porta entre 1 e 65535.']);
         }
         $bindDn = trim($bindDn);
         if (($bindDn === '') !== ($bindPass === '')) {
-            return ['success' => false, 'error' => 'Informe o login e a senha da conta de leitura para testar a autenticação.'];
+            return array_replace($state, ['error' => 'Informe o login e a senha da conta de leitura para testar a autenticação.']);
+        }
+        if ($caCert !== '' && !is_readable($caCert)) {
+            return array_replace($state, ['error' => 'O arquivo do certificado CA configurado não foi encontrado ou não pode ser lido.']);
         }
 
         // 2. Teste físico de conectividade TCP via Socket antes do aperto de mão LDAP
@@ -960,33 +1006,18 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
         $socket = @fsockopen($host, $port, $errno, $errstr, 2.5);
         if (!$socket) {
             $socketMsg = $errstr !== '' ? $errstr : "Não foi possível estabelecer conexão TCP com {$host}:{$port}";
-            return [
-                'success' => false,
+            return array_replace($state, [
+                'status' => 'connection_error',
                 'error' => "Servidor ou porta inacessível [{$uri}]: {$socketMsg} (Erro {$errno}). Verifique o endereço IP/Host e a porta TCP {$port} no Firewall."
-            ];
+            ]);
         }
         fclose($socket);
+        $state['tcp_connected'] = true;
 
-        // 3. Configurações de certificado TLS/SSL
-        if (!empty($caCert) && file_exists($caCert)) {
-            putenv("LDAPTLS_CACERT={$caCert}");
-            if (defined('LDAP_OPT_X_TLS_CACERTFILE')) {
-                @ldap_set_option(null, LDAP_OPT_X_TLS_CACERTFILE, $caCert);
-            }
-        } else {
-            putenv('LDAPTLS_REQCERT=never');
-            if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT') && defined('LDAP_OPT_X_TLS_NEVER')) {
-                @ldap_set_option(null, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_NEVER);
-            }
-        }
-
-        @ldap_set_option(null, LDAP_OPT_DEBUG_LEVEL, 0);
-        @ldap_set_option(null, LDAP_OPT_REFERRALS, 0);
-        @ldap_set_option(null, LDAP_OPT_PROTOCOL_VERSION, 3);
-
-        $conn = @ldap_connect($uri);
+        // Usar a mesma configuração TLS do login, inclusive ao alternar domínios.
+        $conn = $this->connect(['uri' => $uri, 'ca_certificate' => $caCert, 'key' => 'teste']);
         if (!$conn) {
-            return ['success' => false, 'error' => "Não foi possível inicializar o conector para [{$uri}]."];
+            return array_replace($state, ['error' => "Não foi possível inicializar o conector para [{$uri}]."]);
         }
 
         @ldap_set_option($conn, LDAP_OPT_PROTOCOL_VERSION, 3);
@@ -1000,42 +1031,53 @@ final class ActiveDirectoryAuthService implements DirectoryImportGateway {
             $bound = @ldap_bind($conn, $bindDn, $bindPass);
             if (!$bound) {
                 $err = ldap_error($conn);
+                $errorCode = ldap_errno($conn);
+                $responded = !in_array($errorCode, [-1, 81, 91], true);
+                $diagnostic = '';
+                if (defined('LDAP_OPT_DIAGNOSTIC_MESSAGE')) {
+                    @ldap_get_option($conn, LDAP_OPT_DIAGNOSTIC_MESSAGE, $diagnostic);
+                }
+                $adCode = preg_match('/data\s+([0-9a-fA-F]+)/i', $diagnostic, $matches) ? strtolower($matches[1]) : null;
                 @ldap_unbind($conn);
-                return [
-                    'success' => false,
-                    'error' => "Conexão aberta com [{$uri}], mas a autenticação da Conta Técnica (Bind DN) falhou: {$err}"
-                ];
+                return array_replace($state, ['ldap_available' => $responded, 'authenticated' => false,
+                    'status' => $responded ? 'authentication_error' : 'protocol_error', 'ad_error_code' => $adCode,
+                    'error' => $responded
+                        ? "Servidor acessível, mas a conta técnica foi rejeitada: {$err}." . ($adCode === '52e' ? ' Atualize o usuário ou a senha da conta de leitura.' : '')
+                        : "A porta respondeu, mas a conexão LDAP/TLS falhou: {$err}."]);
             }
+            $state['ldap_available'] = true;
+            $state['authenticated'] = true;
             if ($baseDn !== '') {
                 $read = @ldap_read($conn, $baseDn, '(objectClass=*)', ['distinguishedName'], 0, 1, 3);
                 if ($read === false || ldap_count_entries($conn, $read) < 1) {
                     @ldap_unbind($conn);
-                    return ['success' => false, 'authenticated' => true, 'error' => 'A conta autenticou, mas não foi possível ler a Base DN configurada. Confira a Base DN e a permissão de leitura da conta.'];
+                    return array_replace($state, ['directory_readable' => false, 'status' => 'directory_error', 'error' => 'A conta autenticou, mas não foi possível ler a Base DN configurada. Confira a Base DN e a permissão de leitura da conta.']);
                 }
             }
             @ldap_unbind($conn);
-            return [
+            return array_replace($state, [
                 'success' => true,
-                'authenticated' => true,
-                'directory_readable' => $baseDn !== '',
+                'status' => 'healthy',
+                'directory_readable' => $baseDn !== '' ? true : null,
                 'message' => $baseDn !== '' ? 'Conta de leitura validada: autenticação e consulta ao diretório bem-sucedidas.' : "Conexão de rede e Autenticação BIND bem-sucedidas no servidor [{$uri}]!"
-            ];
+            ]);
         } else {
             $bound = @ldap_bind($conn);
             if (!$bound) {
                 $err = ldap_error($conn);
+                $responded = !in_array(ldap_errno($conn), [-1, 81, 91], true);
                 @ldap_unbind($conn);
-                return [
-                    'success' => false,
-                    'error' => "Falha no protocolo LDAP/TLS no servidor [{$uri}]: {$err}."
-                ];
+                return array_replace($state, ['ldap_available' => $responded,
+                    'status' => $responded ? 'authentication_required' : 'protocol_error',
+                    'error' => $responded ? "Servidor acessível; uma conta de leitura é necessária: {$err}." : "Falha no protocolo LDAP/TLS no servidor [{$uri}]: {$err}."]);
             }
             @ldap_unbind($conn);
-            return [
+            return array_replace($state, [
                 'success' => true,
-                'authenticated' => false,
-                'message' => "Conexão TCP e protocolo LDAP/TLS validados com sucesso no servidor [{$uri}]!"
-            ];
+                'ldap_available' => true,
+                'status' => 'available',
+                'message' => "Servidor acessível: conexão TCP e protocolo LDAP/TLS validados em [{$uri}]. A conta técnica não foi testada."
+            ]);
         }
     }
 

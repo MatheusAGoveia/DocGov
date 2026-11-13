@@ -1,53 +1,92 @@
-# 🐘 Modelagem de Banco de Dados PostgreSQL — DocGov
+# Banco de dados do DocGov
 
-> **Atualização — 01/10/2026:** o detalhamento abaixo registra a modelagem inicial e não cobre sozinho as extensões atuais. Consulte [arquitetura](../docs/ARQUITETURA.md), [instalação e operação](../docs/INSTALACAO_OPERACAO.md) e o [índice da documentação](../docs/README.md). `schema.sql` é para base vazia; em uma base existente, aplique somente as migrações pendentes. O seed contém contas/dados de demonstração e não deve ser usado como carga automática de produção. O executor atual em `scratch/run_migrations.php` ainda omite a migração 026.
+[Documentação](../docs/README.md) · [Arquitetura](../docs/referencia/arquitetura.md) · [Instalação e operação](../docs/operacao/instalacao-e-operacao.md)
 
-Este diretório contém a modelagem física, scripts DDL e dados de teste (seed) para o banco de dados oficial do sistema **DocGov**.
+A aplicação usa PostgreSQL via PDO. A conexão é configurada em `config/db.php`.
 
----
+## Arquivos e responsabilidades
 
-## 📁 Estrutura de Arquivos
+| Arquivo/diretório | Finalidade |
+| --- | --- |
+| [schema.sql](schema.sql) | Estrutura de uma base nova; contém limpeza com `DROP TABLE` |
+| [migrations/](migrations/) | Evolução incremental de instalações existentes |
+| [seed.sql](seed.sql) | Dados e contas de demonstração para desenvolvimento |
+| [migrate_legacy_data.php](migrate_legacy_data.php) | Utilitário de dados legados/demonstração; exige revisão antes do uso |
+| [PERMISSIONS_ARCHITECTURE.md](PERMISSIONS_ARCHITECTURE.md) | Especificação de origem do modelo de acesso, incluindo contexto histórico |
+| [CAPABILITIES_MATRIX.md](CAPABILITIES_MATRIX.md) | Matriz de operações por nível de acesso ao conteúdo |
 
-```text
-database/
-├── schema.sql      # Script DDL com a criação de tabelas, chaves, constraints, índices e triggers
-├── seed.sql        # Script DML com a carga inicial de desenvolvimento
-└── README.md       # Documentação da arquitetura e guia de execução
+O schema declara PostgreSQL 14+. O modelo atual é mais amplo que a hierarquia inicial de documentos.
+
+## Modelo de dados
+
+| Área | Tabelas principais |
+| --- | --- |
+| Identidade | `users` |
+| Hierarquia | `categories`, `subcategories`, `subjects` |
+| Documentos e mídia | `documents`, `document_sections`, `document_inline_media` |
+| Workflow documental | `document_workflow_history` |
+| Processo do assunto | `subject_workspaces`, `subject_workspace_history` |
+| Tags | `tags`, `tag_aliases`, `document_tags` |
+| Equipes | `groups`, `user_groups`, `group_memberships` |
+| Permissões | `permissions`, `permission_audit` |
+| Capacidades globais | `group_system_capabilities`, `system_capability_audit` |
+| Preferências e operação | `favorites`, `notifications`, `system_settings`, `usage_audit_events` |
+
+```mermaid
+flowchart LR
+    C[categories] --> SC[subcategories]
+    SC --> S[subjects]
+    S --> D[documents]
+    S --> SW[subject_workspaces]
+    D --> M[document_inline_media]
+    U[users] --> UG[user_groups]
+    G[groups] --> UG
+    G --> GM[group_memberships]
+    U --> P[permissions]
+    G --> P
 ```
 
----
+O diagrama mostra vínculos principais; consulte o DDL para chaves, cardinalidades, constraints, índices e triggers. Os binários ficam no sistema de arquivos; o banco mantém os vínculos e metadados. Banco e arquivos precisam permanecer compatíveis em um backup/restauro.
 
-## 🚀 Como Executar no PostgreSQL
+## Criar uma base nova
 
-### 1. Criar o Banco de Dados (caso ainda não exista)
-```sql
-CREATE DATABASE docsec;
+Crie uma base vazia com uma conta de instalação apropriada. Exemplo para desenvolvimento local, a partir da raiz:
+
+```powershell
+createdb -h 127.0.0.1 -U postgres docgov_dev
+psql -h 127.0.0.1 -U postgres -d docgov_dev -v ON_ERROR_STOP=1 -f database/schema.sql
 ```
 
-### 2. Executar a Estrutura (Schema)
-No terminal da sua máquina (via `psql`):
-```bash
-psql -U postgres -d docsec -f database/schema.sql
-```
+Confirme o destino antes de aplicar: `schema.sql` contém comandos de remoção de tabelas. Configure a conta da aplicação e seus privilégios conforme o ambiente.
 
-### 3. Executar o Seed Inicial
-```bash
-psql -U postgres -d docsec -f database/seed.sql
-```
+O seed é opcional e contém contas/dados de demonstração. Leia seu conteúdo antes de aplicá-lo em uma base descartável; não o use como carga automática de produção ou procedimento de criação de administrador.
 
----
+## Atualizar uma base existente
 
-## 🧱 Arquitetura Relacional (Fonte Única de Verdade)
+1. Registre a versão de código/schema e faça backup restaurável do banco e dos arquivos.
+2. Compare a estrutura existente com as migrações exigidas pelo código de destino.
+3. Identifique dependências e aplique somente as migrações pendentes, com interrupção em erro.
+4. Valide a estrutura resultante e a regressão da funcionalidade.
+5. Registre arquivos executados, data, resultado e plano de recuperação.
 
-```text
-users (1) ────< favorites >──── (N) documents
-                                       │
-categories (1) ──< subcategories (1) ──< subjects (1) ──< documents (N)
-```
+Não reaplique o schema nem execute indiscriminadamente todos os SQLs por ordem alfabética. Há numerações históricas repetidas; `003_resource_permissions.sql` é um marcador legado e `003_permissions_model.sql` define o modelo consolidado.
 
-1. **`users`**: Armazena usuários do sistema (`admin`, `editor`, `reader`). `password_hash` é opcional para acomodar futura autenticação via LDAP/Active Directory.
-2. **`categories`**: Categorias de topo (ex: Recursos Humanos). Ordenação alfabética automática por nome (`ORDER BY name ASC`).
-3. **`subcategories`**: Subcategorias vinculadas obrigatoriamente a uma Categoria. Unicidade composta `(category_id, slug)`.
-4. **`subjects`**: Assuntos vinculados obrigatoriamente a uma Subcategoria. Unicidade composta `(subcategory_id, slug)`.
-5. **`documents`**: Central de conteúdos. Suporta tipos `'file'`, `'text'` e `'link'`, status (`'draft'`, `'published'`, `'inactive'`), e caminhos de armazenamento físico no sistema de arquivos local (`storage/documents/`).
-6. **`favorites`**: Relacionamento N:N entre Usuários e Documentos favoritados. Unicidade por `(user_id, document_id)`.
+O executor [scratch/run_migrations.php](../scratch/run_migrations.php) contém uma lista explícita até **028** e transação por arquivo. Ele reaplica a lista; não mantém uma tabela de versões já executadas. Seu uso exige revisão do estado inicial e não substitui a identificação de pendências.
+
+## Migrações recentes
+
+| Migração | Efeito | Procedimento |
+| --- | --- | --- |
+| [026_subject_visibility.sql](migrations/026_subject_visibility.sql) | Visibilidade pública/privada por assunto | [Assuntos públicos e privados](../docs/referencia/assuntos-publicos-privados.md) |
+| [027_nested_groups.sql](migrations/027_nested_groups.sql) | Vínculos entre equipes e proteção contra ciclos | [Grupos aninhados](../docs/referencia/grupos-aninhados.md) |
+| [028_ad_domain_identity.sql](migrations/028_ad_domain_identity.sql) | Unicidade de login por domínio e de contas locais | [Identidades AD](../docs/referencia/identidades-ad-por-dominio.md) |
+
+A migração 028 cria os índices antes de remover `users_username_key`; não renomeia contas nem transfere permissões. E-mail e GUID continuam protegidos contra conflitos. Execute-a na transação descrita no procedimento da funcionalidade.
+
+Não há runner geral de rollback identificado. Retornar somente o código pode ser insuficiente após uma mudança de schema; o procedimento de recuperação deve considerar banco e arquivos.
+
+## Fontes relacionadas
+
+- [Configuração da conexão e precedência](../docs/referencia/configuracao.md).
+- [Permissões e capacidades atuais](../docs/referencia/permissoes.md).
+- [Testes e isolamento do banco](../docs/desenvolvimento/testes.md).

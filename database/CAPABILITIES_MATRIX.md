@@ -1,6 +1,8 @@
-# Matriz Definitiva de Capacidades do DocGov
+# Matriz de capacidades de conteúdo
 
-> **Atualização — 01/10/2026:** esta matriz descreve principalmente permissões de conteúdo. A publicação segue o workflow com revisão concluída e aprovação administrativa. Capacidades de módulos globais por equipe são um controle separado; consulte [arquitetura](../docs/ARQUITETURA.md) e [guia de uso](../docs/USO_DO_SISTEMA.md).
+[Documentação](../docs/README.md) · [Permissões atuais](../docs/referencia/permissoes.md)
+
+> **Atualização — 01/10/2026:** esta matriz descreve principalmente permissões de conteúdo. A publicação segue o workflow com revisão concluída e aprovação administrativa. Capacidades de módulos globais por equipe são um controle separado; consulte [arquitetura](../docs/referencia/arquitetura.md) e [guia de uso](../docs/guias/uso-do-sistema.md).
 
 > **Documento de Formalização Arquitetural**  
 > Este documento consolida a especificação oficial dos privilégios, papéis, níveis de acesso e capacidades operacionais do sistema DocGov.
@@ -45,7 +47,7 @@
 
 ## 2. Matriz Definitiva de Operações e Capacidades
 
-Equipes podem conter subgrupos. A herança de conteúdo percorre equipes ativas até os grupos superiores; membros do grupo superior não recebem acessos exclusivos dos subgrupos. Somente administradores globais alteram esses vínculos. Capacidades de sistema continuam exigindo associação direta à equipe. Consulte [grupos aninhados](../docs/grupos-aninhados.md).
+Equipes podem conter subgrupos. A herança de conteúdo percorre equipes ativas até os grupos superiores; membros do grupo superior não recebem acessos exclusivos dos subgrupos. Somente administradores globais alteram esses vínculos. Capacidades de sistema continuam exigindo associação direta à equipe. Consulte [grupos aninhados](../docs/referencia/grupos-aninhados.md).
 
 | Ação Operacional | Recurso Alvo | Nível Mínimo Exigido | Herança Conta? | Quem Pode Executar |
 | :--- | :--- | :--- | :---: | :--- |
