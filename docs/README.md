@@ -11,7 +11,7 @@ Documentação do código e dos procedimentos do DocGov. Escolha um caminho conf
 | Desenvolvimento | [Início rápido](desenvolvimento/inicio-rapido.md) → [Arquitetura](referencia/arquitetura.md) → [Testes](desenvolvimento/testes.md) |
 | Infraestrutura | [Configuração](referencia/configuracao.md) → [Instalação e operação](operacao/instalacao-e-operacao.md) → [Banco de dados](../database/README.md) |
 | Edição e administração | [Guia de uso](guias/uso-do-sistema.md) → [Permissões](referencia/permissoes.md) → [Importação de usuários](guias/importacao-usuarios-em-lote.md) |
-| Integração | [APIs e rotas](referencia/api.md) → [Identidades AD](referencia/identidades-ad-por-dominio.md) |
+| Integração | [Configurar uma integração](guias/integracoes.md) → [API de integração v1](referencia/api-integracao.md) → [APIs e rotas](referencia/api.md) → [Identidades AD](referencia/identidades-ad-por-dominio.md) |
 
 ## Guias de uso
 
@@ -19,6 +19,7 @@ Documentação do código e dos procedimentos do DocGov. Escolha um caminho conf
 | --- | --- |
 | [Uso do sistema](guias/uso-do-sistema.md) | Consulta, favoritos, conteúdo, revisão e administração |
 | [Importação de usuários e membros em lote](guias/importacao-usuarios-em-lote.md) | Lista de entrada, domínio, resultados e reprocessamento |
+| [Integrações com outros sistemas](guias/integracoes.md) | Emissão e troca de chaves, primeira conexão, consultas e diagnóstico |
 
 ## Referência técnica
 
@@ -27,10 +28,11 @@ Documentação do código e dos procedimentos do DocGov. Escolha um caminho conf
 | [Arquitetura](referencia/arquitetura.md) | Bootstrap, componentes, serviços, dados e fluxos |
 | [Mapa do painel administrativo](../admin/README.md) | Localização de ações, serviços e funções JavaScript por funcionalidade |
 | [APIs e rotas](referencia/api.md) | Sessão, CSRF, métodos, campos, respostas e autorização |
+| [API de integração v1](referencia/api-integracao.md) | Chaves, endpoints somente leitura, paginação, limites e implantação |
 | [Configuração](referencia/configuracao.md) | Variáveis, precedência, sessão, limites e segredos |
 | [Banco de dados](../database/README.md) | Modelo atual, instalação e evolução do schema |
 | [Permissões e capacidades](referencia/permissoes.md) | Acesso efetivo, equipes, visibilidade e administração global |
-| [Assuntos públicos e privados](referencia/assuntos-publicos-privados.md) | Regras de leitura e migração 026 |
+| [Assuntos públicos e privados](referencia/assuntos-publicos-privados.md) | Regras de leitura, entrada de visitantes e migração 026 |
 | [Grupos aninhados](referencia/grupos-aninhados.md) | Herança de equipes e migração 027 |
 | [Identidades AD por domínio](referencia/identidades-ad-por-dominio.md) | Login, identidade, sessão, diagnóstico e migração 028 |
 | [Avisos e confirmações](referencia/dialogos-do-sistema.md) | Contrato do componente de diálogos e acessibilidade |

@@ -34,3 +34,4 @@ require __DIR__ . '/modules/documents/actions/batch.php';
 require __DIR__ . '/modules/structure/actions/save-category.php';
 require __DIR__ . '/modules/structure/actions/save-subcategory.php';
 require __DIR__ . '/modules/structure/actions/save-subject.php';
+require __DIR__ . '/modules/integrations/actions/manage.php';

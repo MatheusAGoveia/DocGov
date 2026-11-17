@@ -38,6 +38,8 @@ require_once __DIR__ . '/../services/DocumentInlineMediaService.php';
 require_once __DIR__ . '/../services/StructuredContentService.php';
 require_once __DIR__ . '/../services/StructureArchiveService.php';
 require_once __DIR__ . '/../services/StructureDeletionService.php';
+require_once __DIR__ . '/../services/ApiClientService.php';
+$apiClientService = new ApiClientService($pdo);
 $tagService = new TagService($pdo);
 $hierarchyService = new HierarchyService($pdo);
 $subjectWorkspaceService = new SubjectWorkspaceService($pdo);
@@ -194,7 +196,8 @@ $restrictedTabCapabilities = [
     'usuarios' => $canUseUsersArea,
     'editar_usuario' => $canUseUsersArea,
 ];
-$superAdminOnlyTabs = ['grupos', 'editar_grupo'];
+// Chaves de API concedem leitura em nome de contas: área exclusiva do Super Admin.
+$superAdminOnlyTabs = ['grupos', 'editar_grupo', 'integracoes'];
 if ($isLogged && !$isGlobalAdminCurrent && in_array($activeTab, $superAdminOnlyTabs, true)) {
     http_response_code(403);
     $activeTab = 'visao_geral';
@@ -1465,6 +1468,12 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                                         <span class="menu-label font-bold">Configurações</span>
                                     </a>
                                     <?php endif; ?>
+                                    <?php if ($isGlobalAdminCurrent): ?>
+                                    <a href="index.php?tab=integracoes" class="menu-item-content flex items-center gap-2.5 px-3 py-2 rounded-md transition text-decoration-none <?= $activeTab === 'integracoes' ? 'bg-slate-100 dark:bg-[#353842] text-slate-900 dark:text-white font-bold shadow-2xs' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#3e424e]' ?>" title="Integrações (API)">
+                                        <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+                                        <span class="menu-label font-bold">Integrações (API)</span>
+                                    </a>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </nav>
@@ -1574,6 +1583,8 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
                             if ($_GET['msg'] === 'workspace_reopened') echo "Documentação reaberta para edição.";
                             if ($_GET['msg'] === 'user_imported') echo "✓ Usuário localizado no Active Directory e importado para " . htmlspecialchars($appName) . ".";
                             if ($_GET['msg'] === 'settings_saved') echo "✓ Configurações do sistema atualizadas.";
+                            if ($_GET['msg'] === 'api_client_created') echo "✓ Chave da API criada. Copie-a agora: ela não será exibida novamente.";
+                            if ($_GET['msg'] === 'api_client_revoked') echo "✓ Chave da API revogada.";
                             if ($_GET['msg'] === 'tag_catalog_saved') echo "✓ Catálogo de tags atualizado.";
                             if ($_GET['msg'] === 'direct_user_access_saved') echo "✓ Acesso individual salvo e o usuário foi notificado.";
                             if ($_GET['msg'] === 'direct_user_access_removed') echo "✓ Acesso individual removido.";
@@ -3244,6 +3255,10 @@ $settingsLastUpdate = $pdo->query('SELECT MAX(updated_at) FROM system_settings')
 
                 <?php if ($activeTab === 'configuracoes'): ?>
                     <?php require __DIR__ . '/partials/system-settings.php'; ?>
+                <?php endif; ?>
+
+                <?php if ($activeTab === 'integracoes' && $isGlobalAdminCurrent): ?>
+                    <?php require __DIR__ . '/partials/api-clients.php'; ?>
                 <?php endif; ?>
 
                 <?php if ($activeTab === 'servidores_ad' && $canManageAuthentication): ?>

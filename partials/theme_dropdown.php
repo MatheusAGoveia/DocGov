@@ -132,7 +132,8 @@ if (typeof window.toggleThemeDropdown === 'undefined') {
         window.applyAppThemeUI(themeKey);
         document.querySelectorAll('.theme-dropdown-menu').forEach(m => m.classList.add('hidden'));
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-        if (!csrfToken) return;
+        // Visitantes guardam a preferência apenas no navegador.
+        if (!csrfToken || !PORTAL_THEME_API_URL) return;
         fetch(PORTAL_THEME_API_URL, {
             method: 'POST',
             credentials: 'same-origin',

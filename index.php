@@ -9,12 +9,16 @@ if (!headers_sent()) {
 require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/CsrfService.php';
 require_once __DIR__ . '/services/ProfileAvatarService.php';
+require_once __DIR__ . '/services/GuestAccessService.php';
 $csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
-$isPortalLoginRequired = !$loggedUser;
+// Visitantes entram pelo botão "Entrar sem conta" ou por um link público; o motor de permissões
+// limita o acervo deles aos documentos publicados de assuntos públicos.
+$isGuestVisitor = !$loggedUser && GuestAccessService::isActive($appSettings);
+$isPortalLoginRequired = !$loggedUser && !$isGuestVisitor;
 if ($isPortalLoginRequired) {
-    header('Location: login.php');
+    header('Location: ' . GuestAccessService::loginUrl());
     exit;
 }
 $userId = $loggedUser ? (int)$loggedUser['id'] : 0;
@@ -109,7 +113,10 @@ $canManageSubjectWorkspace = false;
 $subjectDocumentSections = [];
 $subjectDocumentsBySection = [];
 $searchCategoryOptions = [];
-$searchTagOptions = $tagService->allActive();
+// Visitantes só veem tags de documentos que podem ler, sem revelar nomes de conteúdo privado.
+$searchTagOptions = $isGuestVisitor
+    ? $tagService->activeForPublishedSubjects($allowedSubjectIds)
+    : $tagService->allActive();
 if (!empty($allowedCatIds)) {
     $categoryIdsSql = implode(',', array_map('intval', $allowedCatIds));
     $searchCategoryOptions = $pdo->query("SELECT name, slug FROM categories WHERE id IN ($categoryIdsSql) AND active = TRUE ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -402,7 +409,13 @@ if ($searchMode) {
                     $isShowingPublishedWorkspaceSnapshot = true;
                 }
             }
-            $subjectWorkspaceHistory = $subjectWorkspaceService->history((int)$assRes['id'], 60);
+            // Visitantes veem somente o processo homologado: sem versão aprovada
+            // vigente, a seção fica vazia e o histórico (com autores) não é carregado.
+            if ($isGuestVisitor && !$isShowingPublishedWorkspaceSnapshot
+                && ($subjectWorkspace['documentation_status'] ?? 'draft') !== 'approved') {
+                $subjectWorkspace = $subjectWorkspaceService->emptyWorkspace((int)$assRes['id']);
+            }
+            $subjectWorkspaceHistory = $isGuestVisitor ? [] : $subjectWorkspaceService->history((int)$assRes['id'], 60);
             if ($isShowingPublishedWorkspaceSnapshot) {
                 foreach ($subjectWorkspaceHistory as $historyIndex => $historyEntry) {
                     if (($historyEntry['action'] ?? '') === 'approve') {
@@ -601,7 +614,9 @@ $userThemeClass = 'light';
                                 Início
                             </a>
 
+                            <?php if ($loggedUser): ?>
                             <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">Favoritos</a>
+                            <?php endif; ?>
                         </nav>
                     </div>
 
@@ -632,7 +647,7 @@ $userThemeClass = 'light';
                             </div>
                         </form>
 
-                        <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
+                        <?php $themeApiUrl = $loggedUser ? 'api_user.php' : ''; require __DIR__ . '/partials/theme_dropdown.php'; ?>
 
                         <?php if ($loggedUser): ?>
                             <!-- PAINEL ADMIN SE FOR ADMIN/EDITOR -->
@@ -659,7 +674,8 @@ $userThemeClass = 'light';
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                             </a>
                         <?php else: ?>
-                            <a href="login.php" class="btn-accent text-xs font-semibold px-3.5 py-1.5 rounded-xl transition">
+                            <span class="hidden sm:inline-flex items-center rounded-full border border-slate-200 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:border-slate-700 dark:text-slate-400" title="Navegando sem conta: somente documentos públicos">Visitante</span>
+                            <a href="<?= htmlspecialchars(GuestAccessService::loginUrl(), ENT_QUOTES, 'UTF-8') ?>" class="btn-accent text-xs font-semibold px-3.5 py-1.5 rounded-xl transition">
                                 Entrar
                             </a>
                         <?php endif; ?>
@@ -678,15 +694,15 @@ $userThemeClass = 'light';
                 <div id="mobile-menu-drawer" class="portal-header-mobile-menu hidden md:hidden pt-3 pb-2 px-2 border-t border-slate-100 dark:border-slate-800 mt-2 space-y-1">
                     <form action="index.php" method="GET" class="portal-drawer-search mb-2 hidden px-3"><input type="search" name="q" placeholder="Pesquisar no acervo" aria-label="Pesquisar no acervo" class="input-minimal w-full px-3 py-2 text-sm"></form>
                     <a href="index.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Início</a>
-                    <a href="favoritos.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Favoritos</a>
                     <?php if ($loggedUser): ?>
+                        <a href="favoritos.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Favoritos</a>
                         <a href="minha_conta.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Minha Conta</a>
                         <?php if ($canAccessAdminPanel): ?>
                             <a href="admin/index.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">Painel Admin</a>
                         <?php endif; ?>
                         <a href="logout.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-800">Sair</a>
                     <?php else: ?>
-                        <a href="login.php" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-800">Entrar</a>
+                        <a href="<?= htmlspecialchars(GuestAccessService::loginUrl(), ENT_QUOTES, 'UTF-8') ?>" class="block px-3 py-2 rounded-lg text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-800">Entrar com conta</a>
                     <?php endif; ?>
                 </div>
 
@@ -700,6 +716,7 @@ $userThemeClass = 'light';
                 <section class="min-w-0">
 
             <?php require __DIR__ . '/partials/back_navigation.php'; ?>
+            <?php require __DIR__ . '/partials/guest_notice.php'; ?>
 
             <!-- TÍTULO DA SEÇÃO PRINCIPAL -->
             <div class="mb-8 flex items-center justify-between">

@@ -9,9 +9,10 @@ require_once __DIR__ . '/services/PermissionService.php';
 require_once __DIR__ . '/services/DocumentInlineMediaService.php';
 
 $id = (int)($_GET['id'] ?? 0);
+// Visitantes (userId 0) só alcançam mídia de documentos públicos via PermissionService.
 $userId = (int)($_SESSION['user']['id'] ?? 0);
-if ($id <= 0 || $userId <= 0) {
-    http_response_code($userId <= 0 ? 401 : 404);
+if ($id <= 0) {
+    http_response_code(404);
     exit;
 }
 
@@ -25,11 +26,12 @@ try {
     }
     $documentId = (int)($media['document_id'] ?? 0);
     $permissions = new PermissionService($pdo);
+    // Upload ainda sem vínculo pertence somente ao autor autenticado.
     $allowed = $documentId > 0
         ? $permissions->canViewDocument($userId, $documentId)
-        : (int)($media['uploaded_by'] ?? 0) === $userId;
+        : $userId > 0 && (int)($media['uploaded_by'] ?? 0) === $userId;
     if (!$allowed) {
-        http_response_code(403);
+        http_response_code($userId > 0 ? 403 : 401);
         exit;
     }
 

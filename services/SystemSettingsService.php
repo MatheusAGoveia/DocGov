@@ -13,6 +13,8 @@ final class SystemSettingsService {
         'support_email' => '',
         'timezone' => 'America/Sao_Paulo',
         'session_timeout_minutes' => 120,
+        // Visitantes sem conta leem somente documentos publicados de assuntos públicos.
+        'guest_access_enabled' => true,
         'cors_enabled' => false,
         'cors_allowed_origins' => [],
         'cors_allowed_methods' => ['GET', 'POST', 'DELETE', 'OPTIONS'],

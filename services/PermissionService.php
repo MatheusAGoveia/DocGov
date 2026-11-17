@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/NotificationService.php';
 require_once __DIR__ . '/GroupMembershipService.php';
+require_once __DIR__ . '/GuestAccessService.php';
 /**
  * services/PermissionService.php
  * Motor Central de Autorização e Permissões do DocGov
@@ -16,11 +17,14 @@ require_once __DIR__ . '/GroupMembershipService.php';
  * 7. ADMIN GLOBAL: `users.role = 'admin'` concede nível 'admin' (3) em todo o sistema.
  * 8. EXPLICABILIDADE DE FONTES: Retorna lista detalhada com a rastreabilidade da origem de cada regra aplicável.
  * 9. ASSUNTO PÚBLICO: Leitura para usuários autenticados ativos, sem conceder edição ou liberar irmãos privados.
+ * 10. VISITANTE (userId <= 0): Somente leitura de assuntos públicos, quando a leitura anônima está habilitada.
  */
 
 class PermissionService {
     private PDO $pdo;
     private GroupMembershipService $groupMembershipService;
+    /** null = segue a configuração `guest_access_enabled`; a API informa o valor explicitamente. */
+    private ?bool $anonymousPublicRead;
 
     private const LEVEL_MAP = [
         'none'  => 0,
@@ -36,9 +40,17 @@ class PermissionService {
         3 => 'admin',
     ];
 
-    public function __construct(PDO $pdo) {
+    public function __construct(PDO $pdo, ?bool $anonymousPublicRead = null) {
         $this->pdo = $pdo;
         $this->groupMembershipService = new GroupMembershipService($pdo);
+        $this->anonymousPublicRead = $anonymousPublicRead;
+    }
+
+    private function allowsAnonymousPublicRead(): bool {
+        if ($this->anonymousPublicRead === null) {
+            $this->anonymousPublicRead = GuestAccessService::readEnabled($this->pdo);
+        }
+        return $this->anonymousPublicRead;
     }
 
     public static function normalizeSubjectVisibility(mixed $visibility): string {
@@ -121,8 +133,11 @@ class PermissionService {
         $resourceType = strtolower(trim($resourceType));
 
         // 1. Validação básica de entrada
-        if ($userId <= 0 || $resourceId <= 0) {
+        if ($resourceId <= 0) {
             return $this->buildResult('none', 0, []);
+        }
+        if ($userId <= 0) {
+            return $this->getAnonymousPermission($resourceType, $resourceId);
         }
 
         // 2. O recurso precisa existir até para o Admin Global. Isso evita
@@ -192,6 +207,35 @@ class PermissionService {
         $effectiveLevel = self::VALUE_MAP[$maxValue] ?? 'none';
 
         return $this->buildResult($effectiveLevel, $maxValue, $sources);
+    }
+
+    /**
+     * Visitante sem conta: somente leitura nascida em um assunto público ativo.
+     * Categoria e subcategoria não recebem permissão herdável; o estado
+     * publicado do documento é conferido por canViewDocument().
+     */
+    private function getAnonymousPermission(string $resourceType, int $resourceId): array {
+        if (!in_array($resourceType, ['subject', 'document'], true) || !$this->allowsAnonymousPublicRead()) {
+            return $this->buildResult('none', 0, []);
+        }
+
+        $subject = $this->resolveResourceChain($resourceType, $resourceId)[0] ?? null;
+        if ($subject === null || $subject['type'] !== 'subject' || empty($subject['is_public'])) {
+            return $this->buildResult('none', 0, []);
+        }
+
+        return $this->buildResult('view', self::LEVEL_MAP['view'], [[
+            'principal_type' => 'guest',
+            'principal_id' => 0,
+            'principal_name' => 'Visitantes (sem conta)',
+            'resource_type' => 'subject',
+            'resource_id' => $subject['id'],
+            'resource_name' => $subject['name'],
+            'permission_level' => 'view',
+            'permission_value' => self::LEVEL_MAP['view'],
+            'is_inherited' => $resourceType === 'document',
+            'description' => 'Assunto público: leitura para visitantes sem conta',
+        ]]);
     }
 
     /**
@@ -1418,19 +1462,20 @@ class PermissionService {
 
         foreach ($fullTree as $cat) {
             $catId = (int)$cat['id'];
-            $catDirectView = $userId > 0 ? $this->canView($userId, 'category', $catId) : false;
+            // Visitantes (userId 0) recebem apenas assuntos públicos do próprio motor.
+            $catDirectView = $this->canView($userId, 'category', $catId);
 
             $accessibleSubs = [];
 
             foreach ($cat['subcategories'] as $sub) {
                 $subId = (int)$sub['id'];
-                $subDirectView = $catDirectView || ($userId > 0 ? $this->canView($userId, 'subcategory', $subId) : false);
+                $subDirectView = $catDirectView || $this->canView($userId, 'subcategory', $subId);
 
                 $accessibleSubjs = [];
 
                 foreach ($sub['subjects'] as $subj) {
                     $subjId = (int)$subj['id'];
-                    $subjView = $subDirectView || ($userId > 0 ? $this->canView($userId, 'subject', $subjId) : false);
+                    $subjView = $subDirectView || $this->canView($userId, 'subject', $subjId);
 
                     if ($subjView) {
                         $accessibleSubjs[] = $subj;

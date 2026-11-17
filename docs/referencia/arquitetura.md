@@ -18,7 +18,7 @@ Referência da organização do código, revisada em 13/11/2026. Descreve o chec
 
 O sistema é um monólito PHP com múltiplos pontos de entrada. As páginas montam HTML, chamam serviços e consultam o PostgreSQL. As APIs retornam JSON e compartilham os mesmos serviços de autorização. O frontend utiliza JavaScript convencional e bibliotecas de edição/visualização.
 
-No painel, `admin/index.php` conserva bootstrap, autorização, consultas de tela e renderização. `admin/dispatch.php` inclui 29 manipuladores em `admin/modules/<área>/actions/`, na ordem original e no mesmo escopo. Os arquivos internos recusam acesso HTTP direto. As 33 funções JavaScript antes incorporadas à entrada estão em cinco arquivos de `assets/admin/`, com dados serializados por `admin/partials/client-config.php`. O [mapa do painel](../../admin/README.md) indica o arquivo de cada comportamento.
+No painel, `admin/index.php` conserva bootstrap, autorização, consultas de tela e renderização. `admin/dispatch.php` inclui 30 manipuladores em `admin/modules/<área>/actions/`: os 29 da extração, na ordem original e no mesmo escopo, e por último o de integrações (chaves da API). Os arquivos internos recusam acesso HTTP direto. As 33 funções JavaScript antes incorporadas à entrada estão em cinco arquivos de `assets/admin/`, com dados serializados por `admin/partials/client-config.php`. O [mapa do painel](../../admin/README.md) indica o arquivo de cada comportamento.
 
 ```mermaid
 flowchart LR
@@ -93,7 +93,9 @@ Equipes também podem conter subgrupos através de `group_memberships`. `GroupMe
 
 O administrador global é identificado pelo papel armazenado no banco. O runtime e os serviços verificam a atividade do usuário e o contexto do recurso. Ancestrais exibidos na navegação não representam concessão herdável de escrita.
 
-Assuntos públicos acrescentam leitura a usuários autenticados e ativos, limitada ao conteúdo publicado e à hierarquia ativa. Essa leitura não libera edição, aprovação ou administração. Veja [visibilidade](assuntos-publicos-privados.md).
+Assuntos públicos acrescentam leitura a usuários autenticados e ativos e, com a entrada de visitantes ligada, a quem entra sem conta (`userId` 0), limitada ao conteúdo publicado e à hierarquia ativa. Essa leitura não libera edição, aprovação ou administração. Veja [visibilidade](assuntos-publicos-privados.md).
+
+A [API de integração](api-integracao.md) (`api/v1/`, `ApiClientService`) autentica cada requisição por chave e reutiliza o mesmo motor: chave pública lê como visitante; chave vinculada lê como a conta associada, sempre restrita a documentos publicados.
 
 As capacidades `system.settings.manage`, `system.authentication.manage`, `system.directory.manage`, `system.audit.view` e `system.tags.manage` são separadas das permissões de conteúdo. Apenas o administrador global modifica as capacidades e a gestão de equipes.
 

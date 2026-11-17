@@ -7,10 +7,11 @@ require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/AccessService.php';
 require_once __DIR__ . '/services/CategoryImageService.php';
 
+// Visitantes (userId 0) veem apenas imagens de ramos com assunto público.
 $userId = (int)($_SESSION['user']['id'] ?? 0);
 $categoryId = (int)($_GET['id'] ?? 0);
 
-if ($userId <= 0 || $categoryId <= 0) {
+if ($categoryId <= 0) {
     http_response_code(403);
     exit;
 }

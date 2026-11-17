@@ -21,6 +21,20 @@ final class TagService
         return array_map(fn(array $tag): array => $this->formatTag($tag), $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     }
 
+    /**
+     * Tags ativas usadas por documentos publicados dos assuntos informados, no
+     * formato de allActive(). Evita expor nomes de tags de conteúdo fora do escopo.
+     * @param array<int, int> $subjectIds
+     */
+    public function activeForPublishedSubjects(array $subjectIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $subjectIds), static fn(int $id): bool => $id > 0)));
+        if ($ids === []) return [];
+        $stmt = $this->pdo->prepare("\n            SELECT t.id, t.name, t.tag_type,\n                   COALESCE(array_agg(ta.alias ORDER BY ta.alias) FILTER (WHERE ta.id IS NOT NULL), '{}') AS aliases\n            FROM tags t\n            LEFT JOIN tag_aliases ta ON ta.tag_id = t.id\n            WHERE t.active = TRUE\n              AND EXISTS (\n                  SELECT 1 FROM document_tags dt\n                  JOIN documents d ON d.id = dt.document_id\n                  WHERE dt.tag_id = t.id AND d.status = 'published' AND d.subject_id = ANY(CAST(:subjects AS int[]))\n              )\n            GROUP BY t.id, t.name, t.tag_type\n            ORDER BY t.name ASC\n        ");
+        $stmt->execute([':subjects' => '{' . implode(',', $ids) . '}']);
+        return array_map(fn(array $tag): array => $this->formatTag($tag), $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+
     /** Nomes e sinônimos reservados, que não podem reaparecer como novas sugestões. @return array<int, string> */
     public function inactiveNameKeys(): array
     {

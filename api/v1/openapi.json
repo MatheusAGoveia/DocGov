@@ -1,0 +1,203 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DocGov — API de integração",
+    "version": "1.0",
+    "description": "API somente leitura para integrar outros sistemas ao acervo do DocGov. Cada requisição é autenticada por uma chave emitida pelo Super Admin em Administração → Integrações (API). Uma chave pública lê apenas documentos publicados de assuntos públicos; uma chave vinculada a uma conta lê o que essa conta pode ler, sempre limitado a documentos publicados. Os links retornados em `links` são relativos ao diretório `api/v1/`."
+  },
+  "servers": [{ "url": "/api/v1", "description": "Instalação na raiz do domínio. Se o DocGov estiver em subdiretório, ajuste para /<subdiretorio>/api/v1 ou para a URL-base completa." }],
+  "security": [{ "bearerAuth": [] }, { "apiKeyHeader": [] }],
+  "paths": {
+    "/status.php": {
+      "get": {
+        "summary": "Valida a chave e retorna sua identificação",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "Chave válida",
+            "headers": {
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/RateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/RateLimitRemaining" },
+              "X-RateLimit-Reset": { "$ref": "#/components/headers/RateLimitReset" }
+            },
+            "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/Success" }, { "properties": { "data": { "$ref": "#/components/schemas/Status" } } }] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Maintenance" }
+        }
+      }
+    },
+    "/tree.php": {
+      "get": {
+        "summary": "Hierarquia legível: categorias → subcategorias → assuntos",
+        "operationId": "getTree",
+        "responses": {
+          "200": {
+            "description": "Árvore filtrada pelo escopo da chave",
+            "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/Success" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/CategoryNode" } }, "meta": { "type": "object", "properties": { "subjects": { "type": "integer" } } } } }] } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Maintenance" }
+        }
+      }
+    },
+    "/documents.php": {
+      "get": {
+        "summary": "Lista paginada de documentos publicados, ou detalhe com o parâmetro id",
+        "operationId": "getDocuments",
+        "parameters": [
+          { "name": "id", "in": "query", "description": "Quando informado, retorna o detalhe do documento com o campo content.", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "subject_id", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "subcategory_id", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "category_id", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
+          { "name": "q", "in": "query", "description": "Texto procurado no título e na descrição.", "schema": { "type": "string", "maxLength": 120 } },
+          { "name": "content_type", "in": "query", "schema": { "$ref": "#/components/schemas/ContentType" } },
+          { "name": "tag", "in": "query", "description": "Nome ou apelido de uma tag ativa.", "schema": { "type": "string", "maxLength": 80 } },
+          { "name": "updated_since", "in": "query", "description": "Data ISO 8601; retorna documentos alterados a partir dela (sincronização incremental).", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "per_page", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista (data é um array e meta traz a paginação) ou detalhe (data é um objeto com content)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "allOf": [{ "$ref": "#/components/schemas/Success" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Document" } }, "meta": { "$ref": "#/components/schemas/Pagination" } } }] },
+                    { "allOf": [{ "$ref": "#/components/schemas/Success" }, { "properties": { "data": { "$ref": "#/components/schemas/DocumentDetail" } } }] }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/InvalidParameter" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Maintenance" }
+        }
+      }
+    },
+    "/document-file.php": {
+      "get": {
+        "summary": "Baixa o arquivo anexo de um documento publicado",
+        "operationId": "getDocumentFile",
+        "parameters": [{ "name": "id", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1 } }],
+        "responses": {
+          "200": { "description": "Conteúdo binário (Content-Disposition: attachment)", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/InvalidParameter" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Maintenance" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "Authorization: Bearer dgv_<prefixo>_<segredo>" },
+      "apiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-API-Key", "description": "Alternativa quando o servidor não repassa o cabeçalho Authorization ao PHP." }
+    },
+    "headers": {
+      "RateLimitLimit": { "schema": { "type": "integer" }, "description": "Requisições permitidas por minuto" },
+      "RateLimitRemaining": { "schema": { "type": "integer" }, "description": "Requisições restantes na janela atual" },
+      "RateLimitReset": { "schema": { "type": "integer" }, "description": "Segundos até a próxima janela; não é um timestamp Unix" }
+    },
+    "responses": {
+      "Unauthorized": { "description": "Chave ausente, inválida, expirada, revogada ou vinculada a conta inativa", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "Recurso inexistente ou fora do escopo da chave", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "InvalidParameter": { "description": "Parâmetro inválido", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RateLimited": { "description": "Limite por minuto excedido; aguarde Retry-After segundos", "headers": { "Retry-After": { "schema": { "type": "integer" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Maintenance": { "description": "Manutenção com a área de APIs afetada, antes da autenticação da chave. Retry-After é opcional.", "headers": { "Retry-After": { "schema": { "type": "integer" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MaintenanceError" } } } }
+    },
+    "schemas": {
+      "Success": { "type": "object", "required": ["success", "data"], "properties": { "success": { "type": "boolean", "enum": [true] }, "data": {}, "meta": { "type": "object" } } },
+      "Error": {
+        "type": "object",
+        "required": ["success", "error", "code"],
+        "properties": {
+          "success": { "type": "boolean", "enum": [false] },
+          "error": { "type": "string", "description": "Mensagem legível" },
+          "code": { "type": "string", "enum": ["unauthorized", "rate_limited", "method_not_allowed", "invalid_parameter", "not_found", "no_file", "file_missing", "internal_error"] }
+        }
+      },
+      "MaintenanceError": {
+        "type": "object",
+        "required": ["success", "error", "message"],
+        "properties": {
+          "success": { "type": "boolean", "enum": [false] },
+          "error": { "type": "string", "enum": ["maintenance"] },
+          "message": { "type": "string", "description": "Mensagem de manutenção configurada no portal" }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "api_version": { "type": "string" },
+          "server_time": { "type": "string", "format": "date-time" },
+          "client": { "type": "object", "properties": { "id": { "type": "integer" }, "name": { "type": "string" }, "access_scope": { "type": "string", "enum": ["public", "user"] }, "rate_limit_per_minute": { "type": "integer" } } }
+        }
+      },
+      "Pagination": { "type": "object", "properties": { "page": { "type": "integer" }, "per_page": { "type": "integer" }, "total": { "type": "integer" }, "total_pages": { "type": "integer" } } },
+      "ContentType": { "type": "string", "enum": ["file", "text", "link", "code", "video", "flow", "orgchart"] },
+      "NodeRef": { "type": "object", "properties": { "id": { "type": "integer" }, "name": { "type": "string" }, "slug": { "type": "string" } } },
+      "SubjectNode": {
+        "allOf": [{ "$ref": "#/components/schemas/NodeRef" }],
+        "properties": { "description": { "type": "string" }, "visibility": { "type": "string", "enum": ["public", "private"] }, "published_documents": { "type": "integer" } }
+      },
+      "SubcategoryNode": {
+        "allOf": [{ "$ref": "#/components/schemas/NodeRef" }],
+        "properties": { "description": { "type": "string" }, "subjects": { "type": "array", "items": { "$ref": "#/components/schemas/SubjectNode" } } }
+      },
+      "CategoryNode": {
+        "allOf": [{ "$ref": "#/components/schemas/NodeRef" }],
+        "properties": { "description": { "type": "string" }, "subcategories": { "type": "array", "items": { "$ref": "#/components/schemas/SubcategoryNode" } } }
+      },
+      "Document": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "slug": { "type": "string" },
+          "description": { "type": "string" },
+          "content_type": { "$ref": "#/components/schemas/ContentType" },
+          "section": { "type": "object", "properties": { "key": { "type": "string" }, "label": { "type": "string" } } },
+          "category": { "$ref": "#/components/schemas/NodeRef" },
+          "subcategory": { "$ref": "#/components/schemas/NodeRef" },
+          "subject": { "allOf": [{ "$ref": "#/components/schemas/NodeRef" }], "properties": { "visibility": { "type": "string", "enum": ["public", "private"] } } },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "published_at": { "type": "string", "format": "date-time", "nullable": true },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "file": {
+            "type": "object",
+            "nullable": true,
+            "properties": { "name": { "type": "string" }, "mime_type": { "type": "string" }, "extension": { "type": "string" }, "size_bytes": { "type": "integer", "nullable": true } }
+          },
+          "external_url": { "type": "string", "nullable": true },
+          "links": { "type": "object", "properties": { "self": { "type": "string" }, "file": { "type": "string", "nullable": true } } }
+        }
+      },
+      "DocumentDetail": {
+        "allOf": [{ "$ref": "#/components/schemas/Document" }],
+        "properties": {
+          "content": {
+            "type": "object",
+            "description": "file: baixe por links.file · html: HTML sanitizado · code: código-fonte · structured: fluxo/organograma · url: link externo",
+            "properties": {
+              "format": { "type": "string", "enum": ["file", "html", "code", "structured", "url", "none"] },
+              "html": { "type": "string" },
+              "language": { "type": "string" },
+              "source": { "type": "string" },
+              "data": { "type": "object" },
+              "url": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

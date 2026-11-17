@@ -66,6 +66,8 @@ O upload em lote é avaliado antes do salvamento individual. A recuperação de 
 | Salvar configurações gerais/manutenção | [settings/actions/save.php](modules/settings/actions/save.php) | SystemSettingsService |
 | Gerenciar tags | [tags/actions/manage.php](modules/tags/actions/manage.php) | [TagService](../services/TagService.php) |
 | Exportar auditoria AD em CSV | [audit/actions/export.php](modules/audit/actions/export.php) | Consulta de auditoria e autorização existentes |
+| Criar ou revogar chaves da API de integração (Super Admin) | [integrations/actions/manage.php](modules/integrations/actions/manage.php), tela em [api-clients.php](partials/api-clients.php) | [ApiClientService](../services/ApiClientService.php); [guia de uso](../docs/guias/integracoes.md) e [contrato da API](../docs/referencia/api-integracao.md) |
+| Ligar/desligar a entrada de visitantes | [settings/actions/save.php](modules/settings/actions/save.php) | [GuestAccessService](../services/GuestAccessService.php) e SystemSettingsService |
 
 Os blocos históricos [test-connection-legacy.php](modules/authentication/actions/test-connection-legacy.php) e [replicate-legacy.php](modules/users/actions/replicate-legacy.php) conservam a posição e as condições anteriores. O despacho não os funde; os caminhos iniciais correspondentes podem encerrar a requisição antes deles.
 

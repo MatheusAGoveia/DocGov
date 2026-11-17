@@ -122,7 +122,10 @@ try {
     visibilityAssert(!$permissions->canViewSubject($reader, $f['subjects']['sibling']), 'Assunto privado irmão vazou.');
     visibilityAssert($permissions->canViewDocument($reader, $f['documents']['public']), 'Documento publicado não abriu.');
     foreach (['private', 'sibling', 'draft', 'review', 'private_file'] as $key) visibilityAssert(!$permissions->canViewDocument($reader, $f['documents'][$key]), 'Leitor acessou ' . $key);
-    foreach ([0, $f['users']['inactive'], 2147483647] as $user) visibilityAssert(!$permissions->canViewDocument($user, $f['documents']['public']), 'Visitante, usuário inativo ou inexistente recebeu acesso.');
+    foreach ([$f['users']['inactive'], 2147483647] as $user) visibilityAssert(!$permissions->canViewDocument($user, $f['documents']['public']), 'Usuário inativo ou inexistente recebeu acesso.');
+    // Visitantes seguem a configuração de acesso sem conta (coberta em test_guest_access.php).
+    visibilityAssert(!(new PermissionService($pdo, false))->canViewDocument(0, $f['documents']['public']), 'Visitante recebeu acesso com a leitura anônima desligada.');
+    visibilityAssert((new PermissionService($pdo, true))->canViewDocument(0, $f['documents']['public']), 'Visitante não leu o assunto público com a leitura anônima ligada.');
     visibilityAssert(!$permissions->canCreateSubject($reader, $f['subcategories']['public']) && !$permissions->canEditDocument($reader, $f['documents']['public']) && !$permissions->canAdminSubcategory($reader, $f['subcategories']['public']) && !$permissions->canAccessAdminPanel($reader), 'Publicidade concedeu escrita ou administração.');
     visibilityAssert($permissions->canEditDocument($f['users']['editor'], $f['documents']['public']), 'Permissão de edição existente foi perdida.');
     visibilityAssert($permissions->canViewDocument($f['users']['global'], $f['documents']['draft']), 'Administração perdeu acesso a rascunhos.');

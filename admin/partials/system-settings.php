@@ -94,6 +94,10 @@ $settingsMaintenanceEndLocal = !empty($currentSystemSettings['maintenance_end_at
                 <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Segurança</p>
                 <h2 class="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">Sessão administrativa</h2>
                 <label class="mt-4 block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Expirar após inatividade</span><div class="flex items-center gap-2"><input type="number" name="session_timeout_minutes" min="15" max="480" required value="<?= (int)$currentSystemSettings['session_timeout_minutes'] ?>" class="input-minimal w-28 px-3 py-2 text-xs"><span class="text-xs text-slate-400">minutos</span></div><span class="mt-1 block text-[10px] text-slate-400">Entre 15 minutos e 8 horas.</span></label>
+                <label class="mt-4 flex cursor-pointer items-start gap-2.5 rounded-md border border-slate-200 p-3 dark:border-[#565b68]">
+                    <input type="checkbox" name="guest_access_enabled" value="1" class="mt-0.5 h-4 w-4 rounded" <?= GuestAccessService::isEnabled($currentSystemSettings) ? 'checked' : '' ?>>
+                    <span><span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Permitir entrada sem conta (visitantes)</span><span class="mt-0.5 block text-[10px] leading-4 text-slate-400">Exibe “Entrar sem conta” no login. Visitantes leem apenas documentos publicados de assuntos públicos e não usam favoritos, notificações nem o painel. Desligar encerra o acesso de visitantes imediatamente.</span></span>
+                </label>
             </section>
 
             <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-xs dark:border-[#454956] dark:bg-[#353842]">

@@ -9,10 +9,25 @@ require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/CsrfService.php';
 require_once __DIR__ . '/services/VideoEmbedService.php';
 require_once __DIR__ . '/services/RichTextSanitizer.php';
+require_once __DIR__ . '/services/GuestAccessService.php';
+require_once __DIR__ . '/services/AccessService.php';
 $csrfToken = CsrfService::token();
 
 $loggedUser = $_SESSION['user'] ?? null;
+$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
 $docId = (int)($_GET['id'] ?? 0);
+$accessService = new AccessService($pdo);
+$canAccessRequestedDocument = $docId > 0 && $accessService->canAccessDocument($userId, $docId);
+$isGuestVisitor = !$loggedUser && GuestAccessService::isActive($appSettings);
+if (!$loggedUser && !$isGuestVisitor) {
+    // Links públicos dispensam a passagem pelo login, mantendo a mesma autorização.
+    if (!$canAccessRequestedDocument || !GuestAccessService::isEnabled($appSettings)) {
+        header('Location: ' . GuestAccessService::loginUrl());
+        exit;
+    }
+    GuestAccessService::start();
+    $isGuestVisitor = true;
+}
 
 if ($docId <= 0) {
     header('Location: index.php');
@@ -46,11 +61,20 @@ if (!$doc) {
     exit;
 }
 
-require_once __DIR__ . '/services/AccessService.php';
-$accessService = new AccessService($pdo);
-$userId = $loggedUser ? (int)$loggedUser['id'] : 0;
+if (!$canAccessRequestedDocument && $isGuestVisitor) {
+    // Visitante fora do acervo público: oferece a entrada com conta sem mostrar o conteúdo.
+    http_response_code(403);
+    $guestLoginUrl = htmlspecialchars(GuestAccessService::loginUrl(), ENT_QUOTES, 'UTF-8');
+    die("
+        <div style='font-family: sans-serif; text-align: center; padding: 50px;'>
+            <h2 style='color: #e11d48;'>Documento indisponível para visitantes</h2>
+            <p style='color: #64748b;'>Visitantes consultam apenas documentos públicos. Entre com sua conta para continuar.</p>
+            <p><a href='{$guestLoginUrl}' style='color: #0f172a; text-decoration: underline;'>Entrar com sua conta</a> &middot; <a href='index.php' style='color: #0f172a; text-decoration: underline;'>Voltar para a Home</a></p>
+        </div>
+    ");
+}
 
-if (!$accessService->canAccessDocument($userId, $docId)) {
+if (!$canAccessRequestedDocument) {
     http_response_code(403);
     die("
         <div style='font-family: sans-serif; text-align: center; padding: 50px;'>
@@ -267,14 +291,19 @@ $backUseHistory = true;
                             <a href="index.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
                                 Início
                             </a>
+                            <?php if ($loggedUser): ?>
                             <a href="favoritos.php" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-slate-800/50 transition flex items-center">
                                 <span>Favoritos</span>
                             </a>
+                            <?php endif; ?>
                         </nav>
                     </div>
 
                     <div class="flex items-center gap-2">
-                        <?php require __DIR__ . '/partials/theme_dropdown.php'; ?>
+                        <?php $themeApiUrl = $loggedUser ? 'api_user.php' : ''; require __DIR__ . '/partials/theme_dropdown.php'; ?>
+                        <?php if ($isGuestVisitor): ?>
+                            <a href="<?= htmlspecialchars(GuestAccessService::loginUrl(), ENT_QUOTES, 'UTF-8') ?>" class="btn-accent text-xs font-semibold px-3.5 py-1.5 rounded-xl transition">Entrar</a>
+                        <?php endif; ?>
                     </div>
                 </div>
             </header>
@@ -287,6 +316,7 @@ $backUseHistory = true;
                 <section class="min-w-0">
 
             <?php require __DIR__ . '/partials/back_navigation.php'; ?>
+            <?php require __DIR__ . '/partials/guest_notice.php'; ?>
 
             <!-- CARD DE CONTEÚDO -->
             <div class="bg-white dark:bg-[#353842] rounded-md border border-slate-200 dark:border-[#454956] shadow-xs p-4 sm:p-5 md:p-6">

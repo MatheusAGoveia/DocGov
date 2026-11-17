@@ -32,6 +32,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_system_s
             $supportEmail = strtolower(trim((string)($_POST['support_email'] ?? '')));
             $timezoneInput = trim((string)($_POST['timezone'] ?? 'America/Sao_Paulo'));
             $sessionTimeout = (int)($_POST['session_timeout_minutes'] ?? 120);
+            $guestAccessEnabled = isset($_POST['guest_access_enabled']);
             $corsEnabled = isset($_POST['cors_enabled']);
             $corsCredentials = isset($_POST['cors_allow_credentials']);
             $origins = array_values(array_unique(array_filter(array_map('trim', preg_split('/\R+/', (string)($_POST['cors_allowed_origins'] ?? '')) ?: []))));
@@ -191,6 +192,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_system_s
                 'support_email' => $supportEmail,
                 'timezone' => $timezoneInput,
                 'session_timeout_minutes' => $sessionTimeout,
+                GuestAccessService::SETTING_KEY => $guestAccessEnabled,
                 'cors_enabled' => $corsEnabled,
                 'cors_allowed_origins' => $origins,
                 'cors_allowed_methods' => $corsMethods ?: ['GET', 'POST', 'OPTIONS'],
@@ -222,6 +224,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['save_system_s
                 'action' => 'system_settings_updated',
                 'maintenance_enabled' => $maintenanceEnabled,
                 'cors_enabled' => $corsEnabled,
+                'guest_access_enabled' => $guestAccessEnabled,
                 'system_logo_updated' => $newLogoPath !== null || $removeSystemLogo,
                 'portal_theme' => $selectedPortalTheme,
             ]);

@@ -2,7 +2,7 @@
 
 [Documentação](../README.md)
 
-Referência dos endpoints do checkout, revisada em 13/11/2026 por leitura do backend. Não foram feitas chamadas HTTP nesta reorganização. Não há especificação OpenAPI no repositório; os formatos documentados abaixo descrevem as rotas existentes.
+Referência das rotas internas do portal, originalmente revisada em 13/11/2026 por leitura do backend. Não foram feitas chamadas HTTP naquela reorganização. A API externa v1 tem [referência própria](api-integracao.md), [guia de configuração](../guias/integracoes.md) e [especificação OpenAPI](../../api/v1/openapi.json); os contratos abaixo descrevem as rotas internas.
 
 ## Navegação
 
@@ -16,7 +16,7 @@ Referência dos endpoints do checkout, revisada em 13/11/2026 por leitura do bac
 
 ## Convenções
 
-As APIs usam **sessão PHP por cookie**. Não foi identificado um mecanismo de token de API. CORS e autenticação são controles separados.
+As APIs desta página usam **sessão PHP por cookie** e atendem o próprio portal. Para integrar outros sistemas, use a [API de integração v1](api-integracao.md) em `api/v1/`, somente leitura e autenticada por chave (`Authorization: Bearer`). CORS e autenticação são controles separados.
 
 Nas APIs administrativas, envie o token CSRF da sessão em `X-CSRF-Token` ou `csrf_token`. As rotas de categorias, subcategorias, assuntos e documentos leem campos de formulário; use `application/x-www-form-urlencoded` ou `multipart/form-data` quando houver upload. `api/permissions.php` também aceita JSON, mesclado com os parâmetros da URL/formulário.
 
@@ -184,4 +184,4 @@ As imagens de artigos aceitam JPEG, PNG, GIF e WebP, até 10 MB e 8000 px por la
 
 ## Próxima versão do contrato
 
-Ainda não há schemas OpenAPI, paginação uniforme ou um formato único de erros para todas as rotas. Algumas rotas de leitura não restringem explicitamente o método HTTP. Ao alterar um contrato, registre os campos, erros e comportamento de autorização e atualize a regressão correspondente; essas limitações não devem ser interpretadas como funcionalidades já implementadas.
+As rotas internas desta página ainda não têm schemas OpenAPI, paginação uniforme ou um formato único de erros. A especificação OpenAPI existente cobre somente `api/v1/`. Algumas rotas internas de leitura não restringem explicitamente o método HTTP. Ao alterar um contrato, registre os campos, erros e comportamento de autorização e atualize a regressão correspondente; essas limitações não devem ser interpretadas como funcionalidades já implementadas.

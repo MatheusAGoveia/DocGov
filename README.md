@@ -12,6 +12,7 @@ O acervo segue a hierarquia **categoria → subcategoria → assunto → documen
 | Entender a aplicação e seus serviços | [Arquitetura](docs/referencia/arquitetura.md) |
 | Encontrar ações e funções do painel | [Mapa do painel administrativo](admin/README.md) |
 | Consultar endpoints e autenticação | [APIs e rotas](docs/referencia/api.md) |
+| Conectar outro sistema ao acervo | [Guia de integrações](docs/guias/integracoes.md) |
 | Configurar banco, sessão e AD | [Configuração](docs/referencia/configuracao.md) |
 | Instalar, atualizar ou recuperar o ambiente | [Instalação e operação](docs/operacao/instalacao-e-operacao.md) |
 | Usar o portal e administrar conteúdos | [Guia de uso](docs/guias/uso-do-sistema.md) |

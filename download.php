@@ -63,19 +63,9 @@ if (in_array($doc['content_type'], ['link', 'video'], true) && empty($doc['store
 
 // 2. CONTEÚDO DO TIPO ARQUIVO (FILE)
 if (in_array($doc['content_type'], ['file', 'video'], true)) {
-    $filename = basename((string)($doc['stored_filename'] ?: ($doc['file_path'] ? basename($doc['file_path']) : '')));
-    $filePath = null;
-
-    // Aceita somente um arquivo real contido em uma das duas raízes permitidas.
-    foreach ([__DIR__ . '/storage/documents', __DIR__ . '/uploads/docs'] as $candidateRoot) {
-        $root = realpath($candidateRoot);
-        if ($root === false || $filename === '') continue;
-        $candidate = realpath($root . DIRECTORY_SEPARATOR . $filename);
-        if ($candidate !== false && str_starts_with($candidate, $root . DIRECTORY_SEPARATOR) && is_file($candidate)) {
-            $filePath = $candidate;
-            break;
-        }
-    }
+    // Aceita somente um arquivo real contido em uma das raízes permitidas.
+    require_once __DIR__ . '/services/DocumentFileLocator.php';
+    $filePath = DocumentFileLocator::resolve(__DIR__, $doc);
 
     if ($filePath === null) {
         http_response_code(404);

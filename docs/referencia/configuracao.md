@@ -53,7 +53,8 @@ Altere essas opções pelos fluxos administrativos autorizados. Credenciais téc
 
 | Propriedade | Comportamento |
 | --- | --- |
-| Transporte | Cookie de sessão PHP; sem token de API dedicado |
+| Transporte | Cookie de sessão PHP; a [API de integração](api-integracao.md) usa chave própria, sem sessão |
+| Visitantes | Configuração `guest_access_enabled`, padrão ligado: botão “Entrar sem conta” e leitura somente de assuntos públicos |
 | Cookie | `HttpOnly`, `SameSite=Lax`, vida útil de sessão do navegador |
 | `Secure` | Ativado quando PHP identifica HTTPS ou porta 443 |
 | Inatividade | Configuração `session_timeout_minutes`, padrão 120 minutos, limitada pelo runtime a 15–480 minutos |

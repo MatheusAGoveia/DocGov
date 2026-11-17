@@ -53,7 +53,8 @@ if (PHP_SAPI !== 'cli' && !headers_sent()) {
             header('Access-Control-Allow-Origin: ' . $responseOrigin);
             header('Vary: Origin');
             header('Access-Control-Allow-Methods: ' . implode(', ', $appSettings['cors_allowed_methods'] ?? ['GET', 'POST', 'OPTIONS']));
-            header('Access-Control-Allow-Headers: Content-Type, X-CSRF-Token, X-Requested-With');
+            // Authorization e X-API-Key atendem a API de integração (api/v1).
+            header('Access-Control-Allow-Headers: Content-Type, X-CSRF-Token, X-Requested-With, Authorization, X-API-Key');
             if ($allowCredentials) {
                 header('Access-Control-Allow-Credentials: true');
             }

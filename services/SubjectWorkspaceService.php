@@ -46,6 +46,12 @@ final class SubjectWorkspaceService
         return array_replace($defaults, $row);
     }
 
+    /** Estado vazio do processo, usado quando o leitor não pode ver a versão em elaboração. */
+    public function emptyWorkspace(int $subjectId): array
+    {
+        return $this->defaults($subjectId);
+    }
+
     /** @return array<string,mixed>|null */
     public function latestApprovedSnapshot(int $subjectId): ?array
     {

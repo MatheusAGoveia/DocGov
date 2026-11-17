@@ -11,6 +11,7 @@ require_once __DIR__ . '/config/db.php';
 require_once __DIR__ . '/services/PermissionService.php';
 require_once __DIR__ . '/services/ActiveDirectoryAuthService.php';
 require_once __DIR__ . '/services/UsageAuditService.php';
+require_once __DIR__ . '/services/GuestAccessService.php';
 $permService = new PermissionService($pdo);
 $adAuthService = new ActiveDirectoryAuthService($pdo);
 $usageAuditService = new UsageAuditService($pdo);
@@ -23,12 +24,16 @@ foreach ($adConfig['domains'] ?? [] as $dKey => $dVal) {
 }
 $availableAdDomains = array_keys($adDomainsMap);
 $selectedAdDomain = strtoupper((string)($adConfig['default_domain'] ?? 'BETIM'));
+$guestAccessEnabled = GuestAccessService::isEnabled($appSettings);
+$requestedNext = (string)($_POST['next'] ?? $_GET['next'] ?? '');
+$accountNextPath = GuestAccessService::safeNextPath($requestedNext, false);
+$guestNextPath = GuestAccessService::safeNextPath($requestedNext);
 
 // A tela de entrada sempre termina no acervo. O painel administrativo é uma
 // escolha posterior, disponível no botão Admin para quem tiver permissão.
 if (isset($_SESSION['user'])) {
     unset($_SESSION['admin_logged']);
-    header('Location: index.php');
+    header('Location: ' . $accountNextPath);
     exit;
 }
 
@@ -36,7 +41,19 @@ $errorMsg = '';
 // A política do portal exige credenciais explícitas em toda nova sessão.
 // REMOTE_USER pode existir no IIS/Apache, mas não inicia sessão automaticamente.
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['guest_access'])) {
+    // Entrada sem conta: o PermissionService limita a leitura aos assuntos públicos.
+    if (!$guestAccessEnabled) {
+        http_response_code(403);
+        $errorMsg = 'O acesso sem conta está desativado. Entre com sua conta corporativa.';
+    } else {
+        GuestAccessService::start();
+        $usageAuditService->log('login', null, 'PORTAL', null, ['auth_source' => 'guest']);
+        session_write_close();
+        header('Location: ' . $guestNextPath);
+        exit;
+    }
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $loginInput = trim($_POST['email'] ?? '');
     $senha = (string)($_POST['senha'] ?? '');
     $selectedAdDomain = strtoupper(trim((string)($_POST['ad_domain'] ?? $selectedAdDomain)));
@@ -52,12 +69,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'auth_source' => (string)($user['auth_source'] ?? 'ad'),
             ]);
             session_regenerate_id(true);
+            GuestAccessService::end();
             $_SESSION['user'] = $adAuthService->buildSessionUser($user);
             $_SESSION['last_activity_at'] = time();
 
             unset($_SESSION['admin_logged'], $_SESSION['session_expired']);
             session_write_close();
-            header('Location: index.php');
+            header('Location: ' . $accountNextPath);
             exit;
         } else {
             $errorMsg = $authResult['message'];
@@ -178,6 +196,7 @@ try {
                     </div>
                 <?php endif; ?>
                 <form method="POST" action="login.php" class="space-y-4" autocomplete="on">
+                    <input type="hidden" name="next" value="<?= htmlspecialchars($accountNextPath, ENT_QUOTES, 'UTF-8') ?>">
                     <div class="grid grid-cols-[120px_1fr] gap-2">
                         <div>
                             <label for="login-domain" class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider text-[10px]">Domínio</label>
@@ -232,6 +251,24 @@ try {
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
                     </button>
                 </form>
+
+                <?php if ($guestAccessEnabled): ?>
+                    <div class="my-5 flex items-center gap-3" aria-hidden="true">
+                        <span class="h-px flex-1 bg-slate-200 dark:bg-[#353842]"></span>
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">ou</span>
+                        <span class="h-px flex-1 bg-slate-200 dark:bg-[#353842]"></span>
+                    </div>
+                    <form method="POST" action="login.php" data-guest-access-form>
+                        <input type="hidden" name="guest_access" value="1">
+                        <input type="hidden" name="next" value="<?= htmlspecialchars($guestNextPath, ENT_QUOTES, 'UTF-8') ?>">
+                        <button type="submit"
+                                class="w-full border border-slate-300 dark:border-[#353842] bg-white dark:bg-transparent hover:bg-slate-50 dark:hover:bg-[#181a1f] text-slate-800 dark:text-slate-100 font-bold py-3 px-4 rounded-lg text-xs transition flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                            <span>Entrar sem conta</span>
+                        </button>
+                        <p class="mt-2 text-center text-[11px] text-slate-500 dark:text-slate-400">Visitantes consultam apenas os documentos públicos.</p>
+                    </form>
+                <?php endif; ?>
             </div>
 
         </div>
