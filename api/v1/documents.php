@@ -1,25 +1,116 @@
 <?php
 /**
- * api/v1/documents.php — documentos publicados legíveis pela chave (GET).
+ * api/v1/documents.php — consulta e salvamento autorizado de publicações.
  *
  * Lista:   documents.php?subject_id=&subcategory_id=&category_id=&q=&content_type=&tag=&updated_since=&page=&per_page=
  * Detalhe: documents.php?id=<id> (inclui o conteúdo conforme o tipo)
+ * Escrita: POST com escopo user_write e edição no assunto; rascunho/revisão.
  */
 declare(strict_types=1);
 define('DOCGOV_API_V1_ENDPOINT', true);
+define('DOCGOV_API_ALLOWED_METHODS', ['GET', 'HEAD', 'POST']);
 require __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/../../services/TagService.php';
 require_once __DIR__ . '/../../services/RichTextSanitizer.php';
+
+if ($requestMethod === 'POST') {
+    if ($apiClient['access_scope'] !== ApiClientService::SCOPE_USER_WRITE) {
+        docgovApiError(403, 'forbidden', 'Esta chave permite somente leitura.');
+    }
+    require_once __DIR__ . '/../../services/UploadRequestService.php';
+    require_once __DIR__ . '/../../services/DocumentWriteService.php';
+    if (($uploadError = UploadRequestService::requestError() ?? UploadRequestService::filesError($_FILES)) !== null) {
+        docgovApiError(413, 'invalid_parameter', $uploadError);
+    }
+    $mediaType = strtolower(trim(explode(';', (string)($_SERVER['CONTENT_TYPE'] ?? ''))[0]));
+    if (!in_array($mediaType, ['application/json', 'application/x-www-form-urlencoded', 'multipart/form-data'], true)) {
+        docgovApiError(415, 'unsupported_media_type', 'Use JSON, formulário ou multipart/form-data.');
+    }
+    try {
+        $input = $_POST;
+        if ($mediaType === 'application/json') {
+            $rawBody = file_get_contents('php://input', false, null, 0, 8388609);
+            if ($rawBody === false || strlen($rawBody) > 8388608) {
+                docgovApiError(413, 'invalid_parameter', 'O JSON excede o limite de 8 MB.');
+            }
+            $input = json_decode($rawBody, true, 64, JSON_THROW_ON_ERROR);
+            if (!is_array($input) || !str_starts_with(ltrim($rawBody), '{')) {
+                throw new InvalidArgumentException('Envie um objeto JSON.');
+            }
+        }
+        $allowedFields = ['id', 'subject_id', 'title', 'description', 'content_type', 'section_key', 'text_content',
+            'code_language', 'structured_content', 'external_url', 'video_source', 'video_url', 'workflow_action',
+            'workflow_note', 'document_version'];
+        if (array_diff(array_keys($input), $allowedFields) !== []) {
+            throw new InvalidArgumentException('A requisição contém campos não suportados.');
+        }
+        foreach ($input as $field => $value) {
+            if (!in_array($field, ['id', 'subject_id', 'structured_content'], true) && $value !== null && !is_string($value)) {
+                throw new InvalidArgumentException('O campo ' . $field . ' deve ser texto.');
+            }
+        }
+        foreach (['id', 'subject_id'] as $idField) {
+            if (isset($input[$idField]) && ((!is_int($input[$idField]) && !is_string($input[$idField]))
+                || !preg_match('/^\d{1,10}$/', (string)$input[$idField]) || (int)$input[$idField] > DOCGOV_API_MAX_ID)) {
+                throw new InvalidArgumentException('ID inválido: ' . $idField);
+            }
+        }
+        $isCreate = (int)($input['id'] ?? 0) === 0;
+        if ($isCreate && (int)($input['subject_id'] ?? 0) <= 0) {
+            throw new InvalidArgumentException('Informe subject_id para criar a publicação.');
+        }
+        if (!$isCreate && (!is_string($input['document_version'] ?? null) || trim($input['document_version']) === '')) {
+            throw new InvalidArgumentException('Envie document_version para editar o documento.');
+        }
+        $workflowAction = $input['workflow_action'] ?? 'save_draft';
+        if (!in_array($workflowAction, ['save_draft', 'submit_review'], true)) {
+            throw new InvalidArgumentException('A integração pode salvar rascunhos ou enviar para revisão.');
+        }
+        $input['workflow_action'] = $workflowAction;
+        $saved = (new DocumentWriteService($pdo))->save($apiViewerId, $input, $_FILES);
+        $apiUsageAudit->log('admin_action', $apiViewerId, 'DOCUMENT', $saved['id'], [
+            'action' => $isCreate ? 'api_document_created' : 'api_document_updated',
+            'channel' => 'api', 'api_client_id' => $apiClient['id'],
+        ]);
+        docgovApiSend($isCreate ? 201 : 200, ['success' => true, 'data' => $saved]);
+    } catch (Throwable $exception) {
+        $errorStatus = in_array((int)$exception->getCode(), [403, 404, 409, 422], true) ? (int)$exception->getCode()
+            : (($exception instanceof InvalidArgumentException || $exception instanceof JsonException) ? 422 : 500);
+        if ($errorStatus === 500) error_log('DocGov API v1 escrita: ' . $exception->getMessage());
+        $errorCode = [403 => 'forbidden', 404 => 'not_found', 409 => 'conflict', 422 => 'invalid_parameter'][$errorStatus] ?? 'internal_error';
+        docgovApiError($errorStatus, $errorCode, $errorStatus === 500 ? 'Não foi possível salvar o documento.' : $exception->getMessage());
+    }
+}
 
 const DOCGOV_API_CONTENT_TYPES = ['file', 'text', 'link', 'code', 'video', 'flow', 'orgchart'];
 const DOCGOV_API_QUERY_MAX = 120;
 
 $tagService = new TagService($pdo);
 $allowedSubjectIds = docgovApiSubjectIds($apiPermissions->getAccessibleResourceTree($apiViewerId));
+$documentId = docgovApiIntParam('id', 0, 0, DOCGOV_API_MAX_ID);
+$statusFilter = $documentId > 0 ? 'all' : (docgovApiStringParam('status', 16) ?: 'published');
+if (!in_array($statusFilter, ['published', 'draft', 'review', 'inactive', 'all'], true)) {
+    docgovApiError(422, 'invalid_parameter', 'Status inválido.');
+}
+$readUnpublished = $apiClient['access_scope'] === ApiClientService::SCOPE_USER_WRITE && $statusFilter !== 'published';
+if ($documentId === 0 && $statusFilter !== 'published' && !$readUnpublished) {
+    docgovApiError(403, 'forbidden', 'Esta chave consulta somente documentos publicados.');
+}
+$baseParams = [':allowed_subjects' => docgovApiIntArray($allowedSubjectIds)];
+$statusCondition = "d.status = 'published'";
+if ($readUnpublished) {
+    $editableSubjectIds = array_values(array_filter($allowedSubjectIds, static fn(int $id): bool => $apiPermissions->canCreateDocument($apiViewerId, $id)));
+    $statusCondition = "(d.status = 'published' OR d.subject_id = ANY(CAST(:editable_subjects AS int[])))";
+    $baseParams[':editable_subjects'] = docgovApiIntArray($editableSubjectIds);
+    if ($statusFilter !== 'all') {
+        $statusCondition .= ' AND d.status = :document_status';
+        $baseParams[':document_status'] = $statusFilter;
+    }
+}
 
 $baseSelect = "
     SELECT d.id, d.title, d.slug, d.description, d.content_type, d.section_key, ds.label AS section_label,
-           d.published_at, d.updated_at, d.original_filename, d.stored_filename, d.mime_type,
+           d.published_at, d.updated_at, d.status, d.original_filename, d.stored_filename, d.mime_type,
            d.file_extension, d.file_size, d.external_url,
            s.id AS subject_id, s.name AS subject_name, s.slug AS subject_slug, s.visibility AS subject_visibility,
            sc.id AS subcategory_id, sc.name AS subcategory_name, sc.slug AS subcategory_slug,
@@ -31,7 +122,7 @@ $baseFrom = "
     JOIN subjects s ON s.id = d.subject_id
     JOIN subcategories sc ON sc.id = s.subcategory_id
     JOIN categories c ON c.id = sc.category_id
-    WHERE d.status = 'published' AND d.trashed_at IS NULL
+    WHERE {$statusCondition} AND d.trashed_at IS NULL
       AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE
       AND d.subject_id = ANY(CAST(:allowed_subjects AS int[]))
 ";
@@ -51,6 +142,8 @@ function docgovApiFormatDocument(array $row, array $tags): array
         'slug' => (string)$row['slug'],
         'description' => (string)($row['description'] ?? ''),
         'content_type' => (string)$row['content_type'],
+        'status' => (string)$row['status'],
+        'document_version' => (string)$row['updated_at'],
         'section' => ['key' => (string)$row['section_key'], 'label' => (string)$row['section_label']],
         'category' => ['id' => (int)$row['category_id'], 'name' => (string)$row['category_name'], 'slug' => (string)$row['category_slug']],
         'subcategory' => ['id' => (int)$row['subcategory_id'], 'name' => (string)$row['subcategory_name'], 'slug' => (string)$row['subcategory_slug']],
@@ -97,10 +190,9 @@ function docgovApiDocumentContent(array $row): array
 // ---------------------------------------------------------------------------
 // Detalhe
 // ---------------------------------------------------------------------------
-$documentId = docgovApiIntParam('id', 0, 0, DOCGOV_API_MAX_ID);
 if ($documentId > 0) {
     $stmt = $pdo->prepare($baseSelect . ', d.text_content, d.code_language, d.structured_content' . $baseFrom . ' AND d.id = :id');
-    $stmt->execute([':allowed_subjects' => docgovApiIntArray($allowedSubjectIds), ':id' => $documentId]);
+    $stmt->execute($baseParams + [':id' => $documentId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     // Defesa em profundidade: a consulta já restringe o escopo; o motor confirma.
     if (!$row || !$apiPermissions->canViewDocument($apiViewerId, $documentId)) {
@@ -135,7 +227,7 @@ if ($contentType !== '' && !in_array($contentType, DOCGOV_API_CONTENT_TYPES, tru
 }
 
 $where = '';
-$params = [':allowed_subjects' => docgovApiIntArray($allowedSubjectIds)];
+$params = $baseParams;
 if ($subjectFilter > 0) {
     $where .= ' AND s.id = :subject_id';
     $params[':subject_id'] = $subjectFilter;

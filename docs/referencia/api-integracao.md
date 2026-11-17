@@ -2,7 +2,7 @@
 
 [Documentação](../README.md) · [Guia de configuração e uso](../guias/integracoes.md) · [APIs e rotas do portal](api.md) · [Especificação OpenAPI](../../api/v1/openapi.json)
 
-API **somente leitura** para que outros sistemas consultem o acervo do DocGov: site institucional, intranet, busca corporativa, robôs de sincronização. Ela é separada das rotas internas em `api/*.php`, que usam sessão por cookie e CSRF.
+API para que outros sistemas consultem o acervo do DocGov e, com o escopo de escrita autorizado, criem e editem publicações. Ela é separada das rotas internas em `api/*.php`, que usam sessão por cookie e CSRF.
 
 Referência conferida com o código disponível em **17/11/2026**. Para emitir uma chave e testar a primeira conexão, comece pelo [guia de integrações](../guias/integracoes.md).
 
@@ -13,6 +13,7 @@ Referência conferida com o código disponível em **17/11/2026**. Para emitir u
 - [Autenticação](#autenticação)
 - [Endpoints](#endpoints)
 - [Exemplos com cURL](#exemplos-com-curl)
+- [Criação e edição de publicações](#criação-e-edição-de-publicações)
 - [Formato das respostas](#formato-das-respostas)
 - [Sincronização incremental](#sincronização-incremental)
 - [Implantação](#implantação)
@@ -23,9 +24,9 @@ Referência conferida com o código disponível em **17/11/2026**. Para emitir u
 | Item | Contrato |
 | --- | --- |
 | Base | `<instalação>/api/v1/` |
-| Métodos | `GET` (e `HEAD`); qualquer outro responde 405 |
+| Métodos | `GET` e `HEAD`; `documents.php` também aceita `POST` com escopo de escrita. Outros métodos respondem 405 |
 | Autenticação | Chave por requisição, sem sessão e sem cookies |
-| Conteúdo exposto | Somente documentos **publicados**, de assuntos e hierarquia **ativos** |
+| Conteúdo exposto | Publicados na leitura; escopo de escrita também lê pendências nos assuntos editáveis. Hierarquia deve estar ativa; lixeira nunca é exposta |
 | Autorização | Mesmo motor do portal (`PermissionService`) |
 | Formato | JSON UTF-8; arquivos em `document-file.php` |
 | Limite | Por chave, por minuto (padrão 120) |
@@ -42,6 +43,7 @@ O **Super Admin** emite e revoga chaves em **Administração → Sistema → Int
 | --- | --- |
 | Somente documentos públicos | O mesmo acervo de um visitante sem conta. Funciona mesmo que a entrada de visitantes no portal esteja desligada. |
 | Leitura de uma conta | Os documentos publicados que a conta informada pode ler. Use uma conta de serviço com permissões mínimas. Contas de administrador global são recusadas; se a conta for desativada ou promovida a administrador global, a chave para de funcionar. |
+| Ler e escrever com conta permitida (`user_write`) | Leitura da conta e criação/edição nos assuntos em que ela tem edição; consulta de pendências editáveis. Exige conta ativa, única e sem papel de administrador global, como o escopo `user`. |
 
 Também é possível definir validade (data) e limite por minuto (10–1000). O token aparece **uma única vez** após a criação; o banco guarda apenas o prefixo de identificação e o hash SHA-256. Se a chave for perdida ou exposta, revogue-a e gere outra: a revogação vale na requisição seguinte.
 
@@ -66,6 +68,7 @@ A chave **nunca** é aceita na URL. Chave ausente, inválida, expirada, revogada
 | `tree.php` | Categorias → subcategorias → assuntos legíveis, com `slug`, `description`, `visibility` e `published_documents` |
 | `documents.php` | Lista paginada de documentos publicados |
 | `documents.php?id=<id>` | Detalhe de um documento, com o campo `content` |
+| `POST documents.php` | Cria/edita uma publicação com chave `user_write` e edição no assunto |
 | `document-file.php?id=<id>` | Download do arquivo anexo (`Content-Disposition: attachment`) |
 
 Filtros de `documents.php`:
@@ -79,8 +82,9 @@ Filtros de `documents.php`:
 | `tag` | Nome ou apelido de uma tag ativa, até 80 caracteres; tag não encontrada retorna lista vazia |
 | `updated_since` | Data ISO 8601, por exemplo `2026-11-01T00:00:00-03:00`, até 40 caracteres; comparação inclusiva (`updated_at >= updated_since`) |
 | `page`, `per_page` | Página de 1 a 100000 (padrão 1); `per_page` de 1 a 100 (padrão 20) |
+| `status` | Padrão `published`. Com `user_write`, aceita `draft`, `review`, `inactive` e `all`, limitando pendências aos assuntos editáveis; demais chaves recebem 403 se pedirem pendências |
 
-A lista é ordenada por `updated_at` decrescente e depois por `id`. Rascunhos, itens em revisão, inativos ou na lixeira nunca aparecem, nem para chaves vinculadas a editores.
+A lista é ordenada por `updated_at` decrescente e depois por `id`. As chaves `public` e `user` continuam consultando somente publicados. Com `user_write`, o detalhe de pendências e a listagem com `status` dependem da edição da conta no assunto. Inativos podem ser consultados nesse contexto, mas não podem voltar ao fluxo pelo salvamento; lixeira nunca aparece.
 
 IDs aceitos têm valor máximo de 2147483647. Os filtros de listagem são combinados entre si. A busca em `q` considera título e descrição, sem diferenciar maiúsculas de minúsculas; ela não pesquisa o corpo do documento.
 
@@ -95,7 +99,7 @@ O campo `content` aparece somente no detalhe e depende do tipo:
 | `file` | Nenhum | Anexo disponível em `links.file` |
 | `none` | Nenhum | Sem representação adicional de conteúdo |
 
-A lista e o detalhe trazem `id`, `title`, `slug`, `description`, `content_type`, `section`, `category`, `subcategory`, `subject`, `tags`, `published_at`, `updated_at`, `file`, `external_url` e `links`. As datas são serializadas com fuso; `published_at`, `file` e `external_url` podem ser nulos. `file.size_bytes` também pode ser nulo. `tags` contém nomes das tags ativas.
+A lista e o detalhe trazem `id`, `title`, `slug`, `description`, `content_type`, `status`, `document_version`, `section`, `category`, `subcategory`, `subject`, `tags`, `published_at`, `updated_at`, `file`, `external_url` e `links`. Use `document_version` sem conversão ao editar; ele preserva a precisão da versão do banco. As datas de apresentação são serializadas com fuso; `published_at`, `file` e `external_url` podem ser nulos. `file.size_bytes` também pode ser nulo. `tags` contém nomes das tags ativas.
 
 Os links em `links` são relativos à URL-base completa de `api/v1/`. Quando não existe arquivo local, `file` e `links.file` são nulos; links e vídeos externos usam `external_url` e `content.url`. Não concatene esses caminhos à raiz do domínio quando o DocGov estiver em subdiretório.
 
@@ -136,6 +140,68 @@ curl --fail --silent --show-error \
 ```
 
 `--fail-with-body` exige cURL 7.76 ou superior. Em versões anteriores, use `--fail` e confira o status HTTP; o corpo de erro pode não ser exibido. O download entrega bytes, não um envelope JSON. Os outros endpoints retornam JSON. A chave deve acompanhar **todas** as requisições, inclusive downloads.
+
+## Criação e edição de publicações
+
+`POST documents.php` exige chave `user_write` **e** edição da conta no assunto/documento. Sessão, cookie e CSRF não substituem a chave. A rota interna `api/documents.php` mantém seus próprios controles por sessão e CSRF; ambas usam `DocumentWriteService` e o workflow existente.
+
+Aceita `application/json`, `application/x-www-form-urlencoded` e `multipart/form-data`. O corpo JSON deve ser um objeto e ter até 8 MB. Não envie `user_id`, `created_by`, `status` ou campos de armazenamento: o autor vem da conta vinculada e o estado vem da ação editorial. Campos não suportados são recusados.
+
+| Campo | Regra |
+| --- | --- |
+| `id` | Ausente/zero cria; positivo edita |
+| `subject_id` | Assunto editável; obrigatório na criação. Se informado na edição, o destino também exige edição |
+| `title` | Obrigatório, até 255 caracteres |
+| `description` | Resumo opcional |
+| `section_key` | Seção ativa do catálogo; define o tipo/editor. Como alternativa, envie `content_type` para a seção padrão |
+| `text_content` | HTML ou código, conforme a seção |
+| `code_language` | Linguagem do código |
+| `structured_content` | Objeto JSON ou string JSON com o fluxo/organograma |
+| `external_url` | Endereço de link externo |
+| `video_source`, `video_url` | `upload` ou `url`; endereço HTTP/HTTPS para vídeo externo |
+| `file`, `video_file` | Partes de arquivo em multipart; obrigatórias ao criar arquivo/vídeo local |
+| `workflow_action` | `save_draft` (padrão) ou `submit_review`; aprovação, arquivamento e exclusão não são oferecidos pela integração |
+| `workflow_note` | Observação editorial |
+| `document_version` | Obrigatório na edição; copie o valor exato retornado pela consulta ou pelo último salvamento |
+
+O salvamento exige os campos do conteúdo, não é um PATCH parcial. Na edição, reenvie título, descrição e conteúdo desejados; campos omitidos podem ser substituídos por valores vazios. Um anexo já existente é preservado se não houver novo upload. Salvar um publicado como rascunho retira sua publicação até passar novamente pela revisão.
+
+Exemplo JSON de criação:
+
+```json
+{
+  "subject_id": 12,
+  "title": "Procedimento recebido pela integração",
+  "section_key": "documents",
+  "text_content": "<p>Conteúdo para revisão.</p>",
+  "workflow_action": "save_draft"
+}
+```
+
+Exemplo Bash, com uma chave de escrita no ambiente e IDs fictícios:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  -H "Authorization: Bearer $DOCGOV_API_KEY" \
+  -H 'Content-Type: application/json' \
+  --data '{"subject_id":12,"title":"Novo procedimento","section_key":"documents","text_content":"<p>Conteúdo</p>"}' \
+  "${DOCGOV_BASE_URL%/}/documents.php"
+
+# Para um anexo, substitua o caminho por um arquivo real.
+curl --fail-with-body --silent --show-error \
+  -H "Authorization: Bearer $DOCGOV_API_KEY" \
+  -F 'subject_id=12' -F 'title=Arquivo de referência' \
+  -F 'section_key=attachments' -F 'file=@/caminho/arquivo.pdf' \
+  "${DOCGOV_BASE_URL%/}/documents.php"
+```
+
+Criação retorna 201; edição retorna 200, no formato abaixo. Ao editar, acrescente `id` e `document_version` ao corpo. A versão ilustrativa não deve ser reutilizada em uma instalação real:
+
+```json
+{"success":true,"data":{"id":123,"title":"Novo procedimento","slug":"novo-procedimento","status":"draft","document_version":"2026-11-17 09:00:00.123456-03"}}
+```
+
+Uma versão antiga retorna 409 sem sobrescrever o documento. A rotina revalida as permissões dentro da transação e grava conteúdo e histórico editorial juntos. Anexos novos são removidos se a gravação falhar. Limites: 25 MB por arquivo, 50 MB por vídeo, 1 MB de código e 2 MB de HTML, respeitando limites menores do servidor. As escritas são auditadas com `channel=api`, `api_client_id` e `api_document_created` ou `api_document_updated`.
 
 ## Formato das respostas
 
@@ -206,8 +272,12 @@ Na lista, cada item tem os mesmos metadados, sem `content`.
 | HTTP | `code` | Situação |
 | --- | --- | --- |
 | 401 | `unauthorized` | Chave ausente ou não aceita |
+| 403 | `forbidden` | Escopo da chave ou permissão da conta não permite a operação |
 | 404 | `not_found`, `no_file`, `file_missing` | Recurso inexistente, fora do escopo ou sem arquivo |
-| 405 | `method_not_allowed` | Método diferente de GET/HEAD |
+| 405 | `method_not_allowed` | Método não permitido no endpoint; POST é exclusivo de `documents.php` |
+| 409 | `conflict` | Versão desatualizada ou tentativa de editar documento na lixeira |
+| 413 | `invalid_parameter` | Corpo/upload acima dos limites aceitos |
+| 415 | `unsupported_media_type` | Tipo do corpo não suportado na escrita |
 | 422 | `invalid_parameter` | Parâmetro fora do contrato |
 | 429 | `rate_limited` | Limite excedido; respeite `Retry-After` |
 | 503 | Sem `code`; `error = maintenance` | Manutenção com a área API afetada, tratada pelo runtime antes do bootstrap da API |
@@ -245,7 +315,7 @@ Despublicação, exclusão, mudança de visibilidade, alteração de permissões
 
 ## Implantação
 
-1. Aplique `database/migrations/029_api_clients.sql` na base existente (idempotente; cria `api_clients` e `api_client_rate_windows`).
+1. Aplique as migrações pendentes: `029_api_clients.sql` cria as tabelas de chaves e `030_api_write_scope.sql` amplia a constraint para `user_write`, sem alterar chaves existentes. Execute a 030 em transação curta com `lock_timeout` limitado; ela pode aguardar bloqueio de tabela. Para retornar ao contrato anterior, revogue e converta chaves `user_write` para `user` antes de restaurar a constraint antiga em uma nova migração. Não reaplique o schema.
 2. Publique o código e confirme que `api/v1/bootstrap.php` responde 404 quando acessado diretamente.
 3. Em Apache com PHP-FPM/CGI, o cabeçalho `Authorization` pode não chegar ao PHP; habilite `CGIPassAuth On` ou oriente os clientes a usar `X-API-Key`. No IIS, confira o repasse do cabeçalho.
 4. Para chamadas a partir de navegadores de outra origem, habilite o CORS em Configurações; os cabeçalhos `Authorization` e `X-API-Key` já são aceitos no preflight. Integrações servidor-a-servidor não precisam de CORS.
@@ -257,7 +327,7 @@ As chamadas de detalhe e download são registradas na auditoria de uso (`documen
 
 ## Limitações conhecidas
 
-- A API é somente leitura; criação e edição continuam pelo portal e pelo painel.
+- A criação e a edição exigem o terceiro escopo; aprovação/publicação, exclusão e mudanças na estrutura continuam pelo portal/painel. Chaves de leitura nunca ganham escrita automaticamente.
 - Imagens inseridas no corpo de artigos apontam para `document-media.php`, um gateway do portal fora da API v1. As imagens de documentos públicos são acessíveis anonimamente quando a entrada de visitantes está ligada; uma chave de API vinculada não autentica a entrega de imagens privadas por esse gateway.
 - Não há webhooks; use a sincronização incremental.
 - O limite por minuto é por chave, em janela fixa.
@@ -267,3 +337,5 @@ As chamadas de detalhe e download são registradas na auditoria de uso (`documen
 O contrato vem de [bootstrap.php](../../api/v1/bootstrap.php), [status.php](../../api/v1/status.php), [tree.php](../../api/v1/tree.php), [documents.php](../../api/v1/documents.php), [document-file.php](../../api/v1/document-file.php), [ApiClientService](../../services/ApiClientService.php) e [runtime de manutenção/CORS](../../config/app_runtime.php).
 
 As regressões `php scratch/test_api_v1.php` e `php scratch/test_guest_access.php` cobrem os fluxos locais de integração e visitantes. Consulte os pré-requisitos e a limpeza no [guia de testes](../desenvolvimento/testes.md); não execute sobre produção. Esses testes locais não comprovam conectividade de um consumidor externo, configuração de proxy, HTTPS ou CORS da implantação.
+
+Resultados e limites da funcionalidade de escrita estão no [registro de validação de 17/11/2026](../historico/validacoes/2026-11-17-api-escrita.md).

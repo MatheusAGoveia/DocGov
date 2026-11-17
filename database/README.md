@@ -71,7 +71,7 @@ O seed é opcional e contém contas/dados de demonstração. Leia seu conteúdo 
 
 Não reaplique o schema nem execute indiscriminadamente todos os SQLs por ordem alfabética. Há numerações históricas repetidas; `003_resource_permissions.sql` é um marcador legado e `003_permissions_model.sql` define o modelo consolidado.
 
-O executor [scratch/run_migrations.php](../scratch/run_migrations.php) contém uma lista explícita até **029** e transação por arquivo. Ele reaplica a lista; não mantém uma tabela de versões já executadas. Seu uso exige revisão do estado inicial e não substitui a identificação de pendências.
+O executor [scratch/run_migrations.php](../scratch/run_migrations.php) contém uma lista explícita até **030** e transação por arquivo. Ele reaplica a lista; não mantém uma tabela de versões já executadas. Seu uso exige revisão do estado inicial e não substitui a identificação de pendências.
 
 ## Migrações recentes
 
@@ -81,6 +81,7 @@ O executor [scratch/run_migrations.php](../scratch/run_migrations.php) contém u
 | [027_nested_groups.sql](migrations/027_nested_groups.sql) | Vínculos entre equipes e proteção contra ciclos | [Grupos aninhados](../docs/referencia/grupos-aninhados.md) |
 | [028_ad_domain_identity.sql](migrations/028_ad_domain_identity.sql) | Unicidade de login por domínio e de contas locais | [Identidades AD](../docs/referencia/identidades-ad-por-dominio.md) |
 | [029_api_clients.sql](migrations/029_api_clients.sql) | Chaves da API de integração (`api_clients`) e janelas de limite (`api_client_rate_windows`); idempotente, só cria tabelas | [API de integração](../docs/referencia/api-integracao.md#implantação) |
+| [030_api_write_scope.sql](migrations/030_api_write_scope.sql) | Amplia o escopo para leitura e escrita vinculada a conta, preservando as chaves existentes | [Criação e edição por integração](../docs/referencia/api-integracao.md#criação-e-edição-de-publicações) |
 
 A migração 028 cria os índices antes de remover `users_username_key`; não renomeia contas nem transfere permissões. E-mail e GUID continuam protegidos contra conflitos. Execute-a na transação descrita no procedimento da funcionalidade.
 

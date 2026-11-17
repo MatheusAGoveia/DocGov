@@ -4,12 +4,12 @@
 
 Guia para o administrador que libera uma integração e para a equipe que conecta outro sistema ao DocGov. O fluxo descrito corresponde à implementação disponível em 17/11/2026.
 
-A integração permite consultar a estrutura do acervo, pesquisar publicações, obter seu conteúdo e baixar arquivos. A API é **somente leitura**: não permite cadastrar usuários, criar, editar, publicar ou excluir documentos. A conexão com o sistema consumidor deve ser implementada pela equipe responsável por ele.
+A integração permite consultar a estrutura do acervo, pesquisar publicações, obter seu conteúdo e baixar arquivos. A opção **Ler e escrever com conta permitida** também permite criar e editar publicações nos assuntos que a conta pode editar, salvando rascunhos ou enviando para revisão. A API não cadastra usuários, não altera a estrutura, não aprova publicações e não exclui documentos. A conexão com o sistema consumidor deve ser implementada pela equipe responsável por ele.
 
 ## Antes de começar
 
 - O DocGov deve estar instalado e acessível ao servidor do sistema consumidor. Em produção, utilize HTTPS.
-- Uma base existente precisa ter a [migração 029](../../database/migrations/029_api_clients.sql) aplicada, além das migrações anteriores. A preparação do ambiente está em [instalação e operação](../operacao/instalacao-e-operacao.md).
+- Uma base existente precisa ter as migrações [029](../../database/migrations/029_api_clients.sql) e [030](../../database/migrations/030_api_write_scope.sql) aplicadas, além das anteriores. A 030 habilita o novo escopo sem mudar as chaves existentes. A preparação do ambiente está em [instalação e operação](../operacao/instalacao-e-operacao.md).
 - Um **Super Admin** precisa emitir a chave. Administração de assunto ou permissão de edição não permitem gerenciar integrações.
 - Defina quem mantém o consumidor, qual conteúdo ele precisa consultar e onde o segredo será armazenado.
 
@@ -29,12 +29,13 @@ Os domínios com `.exemplo` e os IDs usados neste guia são ilustrativos. Na má
 | --- | --- | --- |
 | **Somente documentos públicos** | Documentos publicados de assuntos públicos e hierarquia ativa | Site institucional, catálogo público e pesquisa de publicações |
 | **Leitura de uma conta** | Documentos publicados que a conta vinculada pode ler, incluindo privados autorizados | Intranet, pesquisa interna e sincronização de um acervo restrito |
+| **Ler e escrever com conta permitida** | Leitura da conta e criação/edição de publicações nos assuntos em que ela tem edição | Envio e atualização de conteúdo por outro sistema |
 
-No segundo caso, utilize uma conta de serviço já cadastrada, ativa e com as permissões necessárias. Informe o login exato. Se houver mais de uma conta ativa com esse login, a criação é recusada; o painel não oferece seleção de domínio para resolver essa ambiguidade.
+Nas opções vinculadas a conta, utilize uma conta de serviço já cadastrada, ativa e com as permissões necessárias. Informe o login exato. Se houver mais de uma conta ativa com esse login, a criação é recusada; o painel não oferece seleção de domínio para resolver essa ambiguidade.
 
 Contas de administrador global não podem ser vinculadas. A chave também deixa de autenticar se a conta for desativada ou promovida a administrador global. Mudanças nas permissões da conta afetam as consultas seguintes, sem exigir uma nova chave.
 
-Os dois escopos excluem rascunhos, documentos em revisão, inativos, itens na lixeira e conteúdo com categoria, subcategoria ou assunto inativo. Uma chave vinculada a editor continua permitindo somente leitura de documentos publicados.
+As duas opções de somente leitura continuam limitadas aos publicados. O escopo de escrita permite consultar também os detalhes de rascunhos, itens em revisão e inativos que a conta pode editar; a lista continua trazendo publicados por padrão, com `status=all` para incluir pendências autorizadas. Nenhum escopo permite ler a lixeira ou conteúdo com hierarquia inativa. Uma chave de escrita não concede edição à conta: ela precisa ter essa permissão previamente no DocGov.
 
 ## 2. Gerar a chave
 
@@ -46,8 +47,8 @@ Os dois escopos excluem rascunhos, documentos em revisão, inativos, itens na li
 | --- | --- |
 | Nome da integração | Entre 3 e 120 caracteres; identifique consumidor e ambiente, por exemplo `Portal institucional — homologação` |
 | Finalidade | Opcional, até 500 caracteres; informe objetivo e equipe responsável |
-| O que a chave pode ler | Escolha um dos escopos da seção anterior |
-| Login da conta vinculada | Obrigatório somente em **Leitura de uma conta** |
+| O que a chave pode fazer | Escolha um dos três escopos da seção anterior |
+| Login da conta vinculada | Obrigatório em **Leitura de uma conta** e **Ler e escrever com conta permitida** |
 | Expira em | Opcional; escolha uma data futura. Vazio significa sem expiração. A validade termina às 23:59:59 da data escolhida, no fuso configurado no DocGov |
 | Limite/minuto | De 10 a 1000 requisições por minuto; padrão de 120, compartilhado por todos os processos que usam a mesma chave |
 
@@ -150,7 +151,36 @@ Para sincronizações seguintes, use `updated_since` e salve o horário de iníc
 
 Para compartilhar uma publicação pública com uma pessoa, utilize o link do portal sem incluir a chave. Para copiar seu conteúdo para outro sistema, utilize a API.
 
-## 5. Acompanhar e substituir chaves
+## 5. Criar e editar publicações
+
+Gere uma chave na terceira opção e vincule uma conta que tenha edição no assunto. Criação e edição usam `POST api/v1/documents.php`, com JSON, formulário ou multipart para anexos. As duas opções antigas de chave retornam 403 em tentativas de escrita, mesmo quando a conta associada é editora.
+
+Exemplo PowerShell, reutilizando `$apiBase` e `$headers` com uma chave de escrita. Substitua 12 pelo assunto permitido:
+
+```powershell
+$payload = @{
+    subject_id = 12
+    title = 'Procedimento recebido pela integração'
+    section_key = 'documents'
+    text_content = '<p>Conteúdo para revisão.</p>'
+    workflow_action = 'save_draft'
+}
+$created = Invoke-RestMethod -Method Post -Uri "$apiBase/documents.php" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json))) -TimeoutSec 30
+
+# Reenvie os campos do conteúdo e a versão exata recebida para editar.
+$payload.id = $created.data.id
+$payload.document_version = $created.data.document_version
+$payload.title = 'Procedimento atualizado pela integração'
+$updated = Invoke-RestMethod -Method Post -Uri "$apiBase/documents.php" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json))) -TimeoutSec 30
+```
+
+A criação responde 201 e a edição responde 200. Ambas retornam `data.id`, `title`, `slug`, `status` e `document_version`. Guarde a versão sem converter seu formato; uma versão desatualizada retorna 409 e não salva nada. Consulte o detalhe atual e reveja as alterações antes de reenviar.
+
+As ações aceitas são `save_draft` (padrão) e `submit_review`. Aprovação e publicação continuam pelo portal. Ao editar um documento publicado e salvá-lo como rascunho, ele deixa de ser publicado até concluir novamente o fluxo editorial. A leitura de rascunhos e seus anexos exige a chave de escrita e edição no respectivo assunto.
+
+Para anexos, envie `multipart/form-data`, a seção e o arquivo em `file` (ou `video_file` para vídeo). Os limites são 25 MB para arquivos, 50 MB para vídeo, 1 MB para código e 2 MB para HTML; limites menores do PHP/servidor continuam prevalecendo. Os campos, formatos e exemplos cURL estão na [referência de escrita](../referencia/api-integracao.md#criação-e-edição-de-publicações).
+
+## 6. Acompanhar e substituir chaves
 
 Na lista **Chaves emitidas**, confira nome, finalidade, prefixo, escopo, situação, último uso, expiração e limite. O último uso é atualizado no máximo uma vez por minuto; não é um contador de chamadas nem uma confirmação de que uma sincronização terminou.
 
@@ -191,7 +221,7 @@ Se houver exposição do segredo, revogue a chave comprometida imediatamente e c
 
 ## Limites e referências
 
-Não há escrita pela API, webhooks ou eventos de exclusão. Faça reconciliação periódica para retirar do destino conteúdo removido, despublicado ou fora do escopo. Imagens inseridas em artigos usam gateways do portal: a API não fornece um endpoint autenticado por chave para imagens privadas embutidas.
+Não há exclusão pela API, webhooks ou eventos de remoção. A escrita fica restrita à terceira opção e às permissões da conta. Faça reconciliação periódica para retirar do destino conteúdo removido, despublicado ou fora do escopo. Imagens inseridas em artigos usam gateways do portal: a API não fornece um endpoint autenticado por chave para imagens privadas embutidas.
 
 Conexões entre servidores não exigem CORS. Para uma interface web, mantenha a chave no backend da aplicação consumidora e entregue ao navegador somente o que esse backend autoriza. Habilitar CORS não concede permissões nem protege uma chave exposta.
 

@@ -11,13 +11,14 @@ if ($documentId <= 0) {
 }
 
 $allowedSubjectIds = docgovApiSubjectIds($apiPermissions->getAccessibleResourceTree($apiViewerId));
+$publishedOnly = $apiClient['access_scope'] === ApiClientService::SCOPE_USER_WRITE ? '' : " AND d.status = 'published'";
 $stmt = $pdo->prepare("
     SELECT d.id, d.content_type, d.stored_filename, d.file_path, d.original_filename, d.mime_type
     FROM documents d
     JOIN subjects s ON s.id = d.subject_id
     JOIN subcategories sc ON sc.id = s.subcategory_id
     JOIN categories c ON c.id = sc.category_id
-    WHERE d.id = :id AND d.status = 'published' AND d.trashed_at IS NULL
+    WHERE d.id = :id {$publishedOnly} AND d.trashed_at IS NULL
       AND s.active = TRUE AND sc.active = TRUE AND c.active = TRUE
       AND d.subject_id = ANY(CAST(:allowed_subjects AS int[]))
 ");

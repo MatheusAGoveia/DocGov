@@ -21,6 +21,7 @@ A revisão profunda cita um plano de capacidade, um JSON de evidências e o asse
 | 02/09/2026 | [Homologação antes do lançamento](homologacoes/2026-09-02-pre-lancamento.md) | Resultado e condições da execução original |
 | Outubro–novembro/2026 | [Registro consolidado até 11/11](validacoes/registro-consolidado-2026-11-11.md) | Conteúdo preservado do antigo guia de testes, incluindo AD e grupos aninhados |
 | 13/11/2026 | [Organização modular do painel](validacoes/2026-11-13-modulos-administrativos.md) | Caracterização HTTP, navegador, regressões, revisão e isolamento da refatoração |
+| 17/11/2026 | [Integração com leitura e escrita](validacoes/2026-11-17-api-escrita.md) | Escopos de chave, permissões da conta, criação/edição de publicações, workflow e visitantes |
 
 As referências de funcionalidades também conservam seus registros específicos de teste. Consulte [testes](../desenvolvimento/testes.md) para escolher comandos de uma nova execução.
 

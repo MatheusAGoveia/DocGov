@@ -11,6 +11,12 @@ final class ApiClientService
 {
     public const SCOPE_PUBLIC = 'public';
     public const SCOPE_USER = 'user';
+    public const SCOPE_USER_WRITE = 'user_write';
+
+    public static function isUserScope(string $scope): bool
+    {
+        return in_array($scope, [self::SCOPE_USER, self::SCOPE_USER_WRITE], true);
+    }
 
     public const DEFAULT_RATE_LIMIT = 120;
     public const MIN_RATE_LIMIT = 10;
@@ -52,13 +58,13 @@ final class ApiClientService
         if (mb_strlen($description) > self::DESCRIPTION_MAX) {
             throw new InvalidArgumentException('A descrição deve ter até 500 caracteres.');
         }
-        if (!in_array($scope, [self::SCOPE_PUBLIC, self::SCOPE_USER], true)) {
+        if ($scope !== self::SCOPE_PUBLIC && !self::isUserScope($scope)) {
             throw new InvalidArgumentException('Escopo de acesso inválido.');
         }
         if ($rateLimit < self::MIN_RATE_LIMIT || $rateLimit > self::MAX_RATE_LIMIT) {
             throw new InvalidArgumentException('O limite deve ficar entre 10 e 1000 requisições por minuto.');
         }
-        $userId = $scope === self::SCOPE_USER ? $this->resolveActiveUserId((string)($input['username'] ?? '')) : null;
+        $userId = self::isUserScope($scope) ? $this->resolveActiveUserId((string)($input['username'] ?? '')) : null;
         $expiresAt = $this->parseExpiry($input['expires_on'] ?? null);
 
         $insert = $this->pdo->prepare('
@@ -281,7 +287,7 @@ final class ApiClientService
     {
         $expired = !empty($row['expires_at']) && strtotime((string)$row['expires_at']) <= time();
         $revoked = !empty($row['revoked_at']);
-        $userScoped = $row['access_scope'] === self::SCOPE_USER;
+        $userScoped = self::isUserScope((string)$row['access_scope']);
         $userInactive = $userScoped && !filter_var($row['user_active'], FILTER_VALIDATE_BOOLEAN);
         $userIsGlobalAdmin = $userScoped && in_array(strtolower(trim((string)($row['user_role'] ?? ''))), self::GLOBAL_ADMIN_ROLES, true);
         $status = match (true) {

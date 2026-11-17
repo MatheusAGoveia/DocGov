@@ -13,9 +13,8 @@ if (!is_array($apiClientNewToken) || time() - (int)($apiClientNewToken['created_
 }
 $apiClientFormInput = $apiClientFormInput ?? [];
 $apiFormValue = static fn(string $key, string $default = ''): string => htmlspecialchars((string)($apiClientFormInput[$key] ?? $default), ENT_QUOTES, 'UTF-8');
-$apiFormScope = ($apiClientFormInput['access_scope'] ?? ApiClientService::SCOPE_PUBLIC) === ApiClientService::SCOPE_USER
-    ? ApiClientService::SCOPE_USER
-    : ApiClientService::SCOPE_PUBLIC;
+$apiFormScope = (string)($apiClientFormInput['access_scope'] ?? ApiClientService::SCOPE_PUBLIC);
+if (!ApiClientService::isUserScope($apiFormScope)) $apiFormScope = ApiClientService::SCOPE_PUBLIC;
 $apiDate = static function (?string $value, bool $withTime = true): string {
     if ($value === null || $value === '') return '—';
     $timestamp = strtotime($value);
@@ -36,7 +35,7 @@ $apiTodayPlusOne = (new DateTimeImmutable('tomorrow'))->format('Y-m-d');
         <div>
             <p class="text-[10px] font-bold uppercase tracking-[.18em] text-slate-400">Somente Super Admin</p>
             <h1 class="mt-1 text-xl font-bold text-slate-900 dark:text-slate-100">Integrações (API)</h1>
-            <p class="mt-1 max-w-2xl text-xs text-slate-500 dark:text-slate-400">Chaves de acesso à API somente leitura em <code class="rounded bg-slate-100 px-1 dark:bg-[#2c2e33]">api/v1/</code>. Elas nunca permitem criar, alterar ou excluir conteúdo e enxergam apenas documentos publicados.</p>
+            <p class="mt-1 max-w-2xl text-xs text-slate-500 dark:text-slate-400">Chaves de acesso à API em <code class="rounded bg-slate-100 px-1 dark:bg-[#2c2e33]">api/v1/</code>. Escolha somente leitura ou leitura e escrita de publicações com uma conta autorizada. As permissões da conta e o fluxo de revisão continuam valendo.</p>
         </div>
         <a href="../api/v1/openapi.json" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 dark:border-[#565b68] dark:text-slate-200 dark:hover:bg-[#3e424e] text-decoration-none">Especificação OpenAPI &rarr;</a>
     </header>
@@ -63,11 +62,12 @@ $apiTodayPlusOne = (new DateTimeImmutable('tomorrow'))->format('Y-m-d');
                 <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Nome da integração *</span><input type="text" name="name" required minlength="3" maxlength="120" value="<?= $apiFormValue('name') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex.: Site da Prefeitura"></label>
                 <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Finalidade</span><textarea name="description" rows="2" maxlength="500" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Quem usa e para quê"><?= $apiFormValue('description') ?></textarea></label>
                 <fieldset>
-                    <legend class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">O que a chave pode ler</legend>
+                    <legend class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">O que a chave pode fazer</legend>
                     <label class="flex items-start gap-2 rounded-md border border-slate-200 p-2.5 text-xs dark:border-[#565b68]"><input type="radio" name="access_scope" value="public" class="mt-0.5" <?= $apiFormScope === 'public' ? 'checked' : '' ?> onchange="document.getElementById('api-username-field').classList.add('hidden')"><span><b class="text-slate-800 dark:text-slate-100">Somente documentos públicos</b><span class="block text-[11px] text-slate-500 dark:text-slate-400">Mesmo acervo que um visitante sem conta.</span></span></label>
                     <label class="mt-2 flex items-start gap-2 rounded-md border border-slate-200 p-2.5 text-xs dark:border-[#565b68]"><input type="radio" name="access_scope" value="user" class="mt-0.5" <?= $apiFormScope === 'user' ? 'checked' : '' ?> onchange="document.getElementById('api-username-field').classList.remove('hidden')"><span><b class="text-slate-800 dark:text-slate-100">Leitura de uma conta</b><span class="block text-[11px] text-slate-500 dark:text-slate-400">Mesmos documentos publicados que a conta pode ler. Use uma conta de serviço com permissões mínimas; administradores globais não são aceitos.</span></span></label>
+                    <label class="mt-2 flex items-start gap-2 rounded-md border border-slate-200 p-2.5 text-xs dark:border-[#565b68]"><input type="radio" name="access_scope" value="user_write" class="mt-0.5" <?= $apiFormScope === 'user_write' ? 'checked' : '' ?> onchange="document.getElementById('api-username-field').classList.remove('hidden')"><span><b class="text-slate-800 dark:text-slate-100">Ler e escrever com conta permitida</b><span class="block text-[11px] text-slate-500 dark:text-slate-400">Cria e edita publicações somente onde a conta tem permissão de edição. Salva rascunhos e envia para revisão, sem excluir conteúdo ou alterar a estrutura do acervo.</span></span></label>
                 </fieldset>
-                <label id="api-username-field" class="block <?= $apiFormScope === 'user' ? '' : 'hidden' ?>"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Login da conta vinculada</span><input type="text" name="username" maxlength="255" value="<?= $apiFormValue('username') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex.: svc.integracao" autocapitalize="none" spellcheck="false"></label>
+                <label id="api-username-field" class="block <?= ApiClientService::isUserScope($apiFormScope) ? '' : 'hidden' ?>"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Login da conta vinculada</span><input type="text" name="username" maxlength="255" value="<?= $apiFormValue('username') ?>" class="input-minimal w-full px-3 py-2 text-xs" placeholder="Ex.: svc.integracao" autocapitalize="none" spellcheck="false"></label>
                 <div class="grid grid-cols-2 gap-2">
                     <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Expira em</span><input type="date" name="expires_on" min="<?= $apiTodayPlusOne ?>" value="<?= $apiFormValue('expires_on') ?>" class="input-minimal w-full px-2 py-2 text-xs"><span class="mt-1 block text-[10px] text-slate-400">Vazio = sem expiração.</span></label>
                     <label class="block"><span class="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">Limite/minuto</span><input type="number" name="rate_limit_per_minute" min="<?= ApiClientService::MIN_RATE_LIMIT ?>" max="<?= ApiClientService::MAX_RATE_LIMIT ?>" required value="<?= $apiFormValue('rate_limit_per_minute', (string)ApiClientService::DEFAULT_RATE_LIMIT) ?>" class="input-minimal w-full px-2 py-2 text-xs"></label>
@@ -99,8 +99,9 @@ $apiTodayPlusOne = (new DateTimeImmutable('tomorrow'))->format('Y-m-d');
                                         <span class="mt-0.5 block text-[10px] text-slate-400">Criada em <?= $apiDate($apiClientRow['created_at']) ?><?= $apiClientRow['created_by_name'] ? ' por ' . htmlspecialchars((string)$apiClientRow['created_by_name'], ENT_QUOTES, 'UTF-8') : '' ?></span>
                                     </td>
                                     <td class="py-2.5 pr-3 align-top text-slate-600 dark:text-slate-300">
-                                        <?php if ($apiClientRow['access_scope'] === ApiClientService::SCOPE_USER): ?>
+                                        <?php if (ApiClientService::isUserScope($apiClientRow['access_scope'])): ?>
                                             Conta: <?= htmlspecialchars((string)($apiClientRow['user_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?> <span class="text-slate-400">(<?= htmlspecialchars((string)($apiClientRow['user_username'] ?? ''), ENT_QUOTES, 'UTF-8') ?>)</span>
+                                        <span class="block text-[10px] text-slate-400"><?= $apiClientRow['access_scope'] === ApiClientService::SCOPE_USER_WRITE ? 'Leitura e escrita' : 'Somente leitura' ?></span>
                                         <?php else: ?>
                                             Documentos públicos
                                         <?php endif; ?>

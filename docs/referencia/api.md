@@ -16,7 +16,7 @@ Referência das rotas internas do portal, originalmente revisada em 13/11/2026 p
 
 ## Convenções
 
-As APIs desta página usam **sessão PHP por cookie** e atendem o próprio portal. Para integrar outros sistemas, use a [API de integração v1](api-integracao.md) em `api/v1/`, somente leitura e autenticada por chave (`Authorization: Bearer`). CORS e autenticação são controles separados.
+As APIs desta página usam **sessão PHP por cookie** e atendem o próprio portal. Para integrar outros sistemas, use a [API de integração v1](api-integracao.md) em `api/v1/`, autenticada por chave (`Authorization: Bearer`) com escopo de leitura ou leitura e escrita autorizada de publicações. CORS e autenticação são controles separados.
 
 Nas APIs administrativas, envie o token CSRF da sessão em `X-CSRF-Token` ou `csrf_token`. As rotas de categorias, subcategorias, assuntos e documentos leem campos de formulário; use `application/x-www-form-urlencoded` ou `multipart/form-data` quando houver upload. `api/permissions.php` também aceita JSON, mesclado com os parâmetros da URL/formulário.
 

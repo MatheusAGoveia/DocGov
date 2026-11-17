@@ -28,7 +28,7 @@ Documentação do código e dos procedimentos do DocGov. Escolha um caminho conf
 | [Arquitetura](referencia/arquitetura.md) | Bootstrap, componentes, serviços, dados e fluxos |
 | [Mapa do painel administrativo](../admin/README.md) | Localização de ações, serviços e funções JavaScript por funcionalidade |
 | [APIs e rotas](referencia/api.md) | Sessão, CSRF, métodos, campos, respostas e autorização |
-| [API de integração v1](referencia/api-integracao.md) | Chaves, endpoints somente leitura, paginação, limites e implantação |
+| [API de integração v1](referencia/api-integracao.md) | Chaves de leitura/escrita, endpoints, paginação, limites e implantação |
 | [Configuração](referencia/configuracao.md) | Variáveis, precedência, sessão, limites e segredos |
 | [Banco de dados](../database/README.md) | Modelo atual, instalação e evolução do schema |
 | [Permissões e capacidades](referencia/permissoes.md) | Acesso efetivo, equipes, visibilidade e administração global |

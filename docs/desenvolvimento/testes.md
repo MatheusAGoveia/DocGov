@@ -71,7 +71,7 @@ O snapshot não contém cookies/tokens e registra o hash da entrada de origem. D
 | Hierarquia | `php scratch/test_hierarchy_resolution.php` | Casos com nomes repetidos em ramos diferentes |
 | Visibilidade | `php scratch/test_subject_visibility.php` | Conferir modos de preparação/limpeza e guardas locais |
 | Visitantes (motor) | `php scratch/test_guest_access.php` | Base local de desenvolvimento; transação revertida |
-| API de integração e visitantes (HTTP) | `php scratch/test_api_v1.php` | Base local com a migração 029; sobe servidor PHP em porta livre e remove fixtures, chaves, sessões e arquivos |
+| API de integração e visitantes (HTTP) | `php scratch/test_api_v1.php` | Base local com migrações 029/030; cobre leitura, escrita autorizada, conflito de versão, workflow, painel e visitantes; remove fixtures, chaves, sessões e arquivos |
 | Seções dinâmicas | `php scratch/test_dynamic_document_sections.php` | Schema atual e usuário ativo de teste |
 | Workflow documental | `php scratch/test_document_approval_workflow.php` | Fixtures editoriais em base exclusiva |
 | Processo do assunto | `php scratch/test_subject_workspace.php` | Fixtures criadas e removidas pelo teste |

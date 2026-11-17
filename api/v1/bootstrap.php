@@ -1,6 +1,6 @@
 <?php
 /**
- * api/v1/bootstrap.php — base comum da API de integração (somente leitura).
+ * api/v1/bootstrap.php — base comum da API de integração.
  *
  * Incluído pelos endpoints de api/v1; recusa acesso HTTP direto. A API é sem
  * estado: não inicia sessão PHP, não usa cookies e autentica cada requisição
@@ -115,8 +115,9 @@ require_once __DIR__ . '/../../services/ApiClientService.php';
 require_once __DIR__ . '/../../services/UsageAuditService.php';
 
 $requestMethod = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
-if (!in_array($requestMethod, ['GET', 'HEAD'], true)) {
-    docgovApiError(405, 'method_not_allowed', 'A API de integração é somente leitura: use GET.', ['Allow' => 'GET, HEAD']);
+$allowedMethods = defined('DOCGOV_API_ALLOWED_METHODS') ? DOCGOV_API_ALLOWED_METHODS : ['GET', 'HEAD'];
+if (!in_array($requestMethod, $allowedMethods, true)) {
+    docgovApiError(405, 'method_not_allowed', 'Método HTTP não permitido neste endpoint.', ['Allow' => implode(', ', $allowedMethods)]);
 }
 
 $apiClientService = new ApiClientService($pdo);
@@ -140,6 +141,6 @@ $apiClientService->touch($apiClient, isset($_SERVER['REMOTE_ADDR']) ? (string)$_
 
 // Chave pública lê como visitante, independentemente da opção de visitantes do
 // portal; chave vinculada lê com as permissões de leitura da conta associada.
-$apiViewerId = $apiClient['access_scope'] === ApiClientService::SCOPE_USER ? (int)$apiClient['user_id'] : 0;
+$apiViewerId = ApiClientService::isUserScope($apiClient['access_scope']) ? (int)$apiClient['user_id'] : 0;
 $apiPermissions = new PermissionService($pdo, true);
 $apiUsageAudit = new UsageAuditService($pdo);

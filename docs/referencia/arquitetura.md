@@ -95,7 +95,7 @@ O administrador global é identificado pelo papel armazenado no banco. O runtime
 
 Assuntos públicos acrescentam leitura a usuários autenticados e ativos e, com a entrada de visitantes ligada, a quem entra sem conta (`userId` 0), limitada ao conteúdo publicado e à hierarquia ativa. Essa leitura não libera edição, aprovação ou administração. Veja [visibilidade](assuntos-publicos-privados.md).
 
-A [API de integração](api-integracao.md) (`api/v1/`, `ApiClientService`) autentica cada requisição por chave e reutiliza o mesmo motor: chave pública lê como visitante; chave vinculada lê como a conta associada, sempre restrita a documentos publicados.
+A [API de integração](api-integracao.md) (`api/v1/`, `ApiClientService`) autentica cada requisição por chave e reutiliza o mesmo motor: chaves `public` e `user` leem publicados; `user_write` também cria/edita publicações e consulta pendências nos assuntos editáveis da conta. A rota de sessão e a integração compartilham `DocumentWriteService`, mantendo autorização, bloqueio por versão e workflow editorial.
 
 As capacidades `system.settings.manage`, `system.authentication.manage`, `system.directory.manage`, `system.audit.view` e `system.tags.manage` são separadas das permissões de conteúdo. Apenas o administrador global modifica as capacidades e a gestão de equipes.
 

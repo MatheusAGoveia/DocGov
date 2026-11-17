@@ -33,7 +33,7 @@ function apiAssert(bool $condition, string $message, string $detail = ''): void 
 }
 
 /** @return array{status:int, headers:array<string,string>, body:string, json:mixed} */
-function apiHttp(string $method, string $url, array $headers = [], ?string $body = null, ?string $cookieJar = null): array {
+function apiHttp(string $method, string $url, array $headers = [], string|array|null $body = null, ?string $cookieJar = null): array {
     $responseHeaders = [];
     $curl = curl_init($url);
     curl_setopt_array($curl, [
@@ -115,9 +115,12 @@ function apiFixture(PDO $pdo, string $token, string $pngBytes): array {
         $reader = (int)$user->fetchColumn();
         $user->execute(['Leitor inativo API ' . $token, 'api-inactive-' . $token, 'api-inactive-' . $token . '@example.invalid', 'true']);
         $inactiveReader = (int)$user->fetchColumn();
+        $user->execute(['Editor API ' . $token, 'api-writer-' . $token, 'api-writer-' . $token . '@example.invalid', 'true']);
+        $writer = (int)$user->fetchColumn();
         $grant = $pdo->prepare("INSERT INTO permissions (user_id, subject_id, permission_level, created_by) VALUES (?, ?, 'view', ?)");
         $grant->execute([$reader, $privateSubject, $actor]);
         $grant->execute([$inactiveReader, $privateSubject, $actor]);
+        $pdo->prepare("INSERT INTO permissions (user_id, subject_id, permission_level, created_by) VALUES (?, ?, 'edit', ?)")->execute([$writer, $privateSubject, $actor]);
 
         $doc = $pdo->prepare("INSERT INTO documents (subject_id, created_by, title, slug, description, content_type, section_key, status, text_content, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id");
         $documents = [];
@@ -157,6 +160,9 @@ function apiFixture(PDO $pdo, string $token, string $pngBytes): array {
     $clients = [];
     $clients['public'] = $service->create(['name' => 'API teste público ' . $token], $actor);
     $clients['reader'] = $service->create(['name' => 'API teste leitor ' . $token, 'access_scope' => 'user', 'username' => 'api-reader-' . $token], $actor);
+    $clients['writer'] = $service->create(['name' => 'API teste escrita ' . $token, 'access_scope' => 'user_write', 'username' => 'api-writer-' . $token], $actor);
+    $clients['writer_read'] = $service->create(['name' => 'API teste editor leitura ' . $token, 'access_scope' => 'user', 'username' => 'api-writer-' . $token], $actor);
+    $clients['reader_write'] = $service->create(['name' => 'API teste leitor escrita ' . $token, 'access_scope' => 'user_write', 'username' => 'api-reader-' . $token], $actor);
     $clients['revoked'] = $service->create(['name' => 'API teste revogada ' . $token], $actor);
     $service->revoke($clients['revoked']['client']['id'], $actor);
     $clients['expired'] = $service->create(['name' => 'API teste expirada ' . $token], $actor);
@@ -166,7 +172,7 @@ function apiFixture(PDO $pdo, string $token, string $pngBytes): array {
     $clients['limited'] = $service->create(['name' => 'API teste limite ' . $token], $actor);
     $pdo->prepare('UPDATE api_clients SET rate_limit_per_minute = 3 WHERE id = ?')->execute([$clients['limited']['client']['id']]);
 
-    return compact('actor', 'categoryId', 'subId', 'publicSubject', 'privateSubject', 'reader', 'inactiveReader', 'documents', 'storedName', 'clients');
+    return compact('actor', 'categoryId', 'subId', 'publicSubject', 'privateSubject', 'reader', 'inactiveReader', 'writer', 'documents', 'storedName', 'clients');
 }
 
 function apiCleanup(PDO $pdo, string $token): void {
@@ -175,6 +181,14 @@ function apiCleanup(PDO $pdo, string $token): void {
     $categoryIds = $pdo->prepare('SELECT id FROM categories WHERE slug = ?');
     $categoryIds->execute(['api-test-' . $token]);
     foreach ($categoryIds->fetchAll(PDO::FETCH_COLUMN) as $categoryId) {
+        $fixtureFiles = $pdo->prepare('SELECT d.stored_filename FROM documents d JOIN subjects s ON s.id = d.subject_id JOIN subcategories sc ON sc.id = s.subcategory_id WHERE sc.category_id = ?');
+        $fixtureFiles->execute([$categoryId]);
+        foreach ($fixtureFiles->fetchAll(PDO::FETCH_COLUMN) as $filename) {
+            if (is_string($filename) && preg_match('/^[a-f0-9]{32}\.[a-z0-9]{1,8}$/', $filename)) {
+                $file = API_TEST_ROOT . '/storage/documents/' . $filename;
+                if (is_file($file)) unlink($file);
+            }
+        }
         $pdo->prepare('DELETE FROM usage_audit_events WHERE resource_type = \'DOCUMENT\' AND resource_id IN (SELECT d.id FROM documents d JOIN subjects s ON s.id = d.subject_id JOIN subcategories sc ON sc.id = s.subcategory_id WHERE sc.category_id = ?)')->execute([$categoryId]);
         $pdo->prepare('DELETE FROM document_tags WHERE document_id IN (SELECT d.id FROM documents d JOIN subjects s ON s.id = d.subject_id JOIN subcategories sc ON sc.id = s.subcategory_id WHERE sc.category_id = ?)')->execute([$categoryId]);
         $pdo->prepare('DELETE FROM subject_workspace_history WHERE subject_id IN (SELECT s.id FROM subjects s JOIN subcategories sc ON sc.id = s.subcategory_id WHERE sc.category_id = ?)')->execute([$categoryId]);
@@ -186,7 +200,7 @@ function apiCleanup(PDO $pdo, string $token): void {
         $pdo->prepare('DELETE FROM categories WHERE id = ?')->execute([$categoryId]);
     }
     $pdo->prepare('DELETE FROM tags WHERE normalized_name IN (?, ?)')->execute(['tag-privada-' . $token, 'tag-publica-' . $token]);
-    $pdo->prepare('DELETE FROM users WHERE username IN (?, ?)')->execute(['api-reader-' . $token, 'api-inactive-' . $token]);
+    $pdo->prepare('DELETE FROM users WHERE username IN (?, ?, ?)')->execute(['api-reader-' . $token, 'api-inactive-' . $token, 'api-writer-' . $token]);
     $file = API_TEST_ROOT . '/storage/documents/apitest_' . $token . '.png';
     if (is_file($file)) unlink($file);
 }
@@ -205,6 +219,7 @@ try {
     // Sessões CLI precisam ser criadas antes de qualquer saída do teste.
     $adminSession = apiSession($sessionDir, $pdo, $f['actor'], true);
     $readerSession = apiSession($sessionDir, $pdo, $f['reader'], false);
+    $writerSession = apiSession($sessionDir, $pdo, $f['writer'], false);
     $port = apiFreePort();
     $base = "http://127.0.0.1:{$port}";
     // Aspas: caminhos curtos do Windows (MATHEU~1) contêm "~", operador no parser de INI.
@@ -237,7 +252,7 @@ try {
     $storedRow = $stored->fetch(PDO::FETCH_ASSOC);
     apiAssert($storedRow['token_hash'] === hash('sha256', $f['clients']['public']['token']) && !str_contains(json_encode($storedRow), $f['clients']['public']['token']), 'banco guarda só o hash do token');
     apiAssert($storedRow['last_used_at'] !== null, 'último uso é registrado');
-    apiAssert(apiHttp('POST', "{$api}/documents.php", $bearer('public'), 'title=x')['status'] === 405, 'métodos de escrita respondem 405');
+    apiAssert(apiHttp('POST', "{$api}/documents.php", $bearer('public'), 'title=x')['status'] === 403, 'chave pública não pode escrever');
     apiAssert(apiHttp('GET', "{$api}/bootstrap.php", $bearer('public'))['status'] === 404, 'bootstrap interno não é acessível diretamente');
 
     echo "\nEscopo público (visitante)\n";
@@ -303,6 +318,100 @@ try {
     $last = end($statuses);
     apiAssert($statuses[2]['status'] === 200 && $last['status'] === 429 && (int)($last['headers']['retry-after'] ?? 0) >= 1, 'quarta chamada acima do limite responde 429 com Retry-After');
 
+    echo "\nLeitura e escrita com conta permitida\n";
+    $create = ['subject_id' => $f['privateSubject'], 'title' => 'Criado pela API ' . $token,
+        'section_key' => 'documents', 'text_content' => '<p>Conteúdo <script>alert(1)</script><b>válido</b></p>'];
+    $writeHeaders = array_merge($bearer('writer'), ['Content-Type: application/json']);
+    $postJson = static fn(array $payload, ?array $headers = null): array => apiHttp('POST', "{$api}/documents.php", $headers ?? $writeHeaders, json_encode($payload));
+    $beforeWrites = (int)$pdo->query('SELECT COUNT(*) FROM documents')->fetchColumn();
+    foreach (['reader', 'writer_read', 'reader_write'] as $key) {
+        $response = $postJson($create, array_merge($bearer($key), ['Content-Type: application/json']));
+        apiAssert($response['status'] === 403, "{$key} não ganha permissão de escrita pela chave");
+    }
+    apiAssert($postJson(array_replace($create, ['subject_id' => $f['publicSubject']]))['status'] === 403, 'chave de escrita não cria fora dos assuntos editáveis');
+    apiAssert((int)$pdo->query('SELECT COUNT(*) FROM documents')->fetchColumn() === $beforeWrites, 'escritas recusadas não criam documentos');
+    $response = $postJson($create);
+    $created = $response['json']['data'] ?? [];
+    $createdId = (int)($created['id'] ?? 0);
+    apiAssert($response['status'] === 201 && $createdId > 0 && ($created['status'] ?? '') === 'draft' && !empty($created['document_version']), 'conta permitida cria rascunho e recebe versão');
+    apiAssert(!isset($response['headers']['set-cookie']), 'escrita por chave não cria sessão nem cookie');
+    if ($createdId <= 0) throw new RuntimeException('Criação do documento de teste falhou: ' . $response['body']);
+    $detail = apiHttp('GET', "{$api}/documents.php?id={$createdId}", $bearer('writer'));
+    apiAssert($detail['status'] === 200 && ($detail['json']['data']['status'] ?? '') === 'draft'
+        && !str_contains($detail['json']['data']['content']['html'] ?? '', '<script'), 'chave de escrita lê o rascunho editável com HTML sanitizado');
+    foreach (['public', 'reader', 'writer_read', 'reader_write'] as $key) {
+        apiAssert(apiHttp('GET', "{$api}/documents.php?id={$createdId}", $bearer($key))['status'] === 404, "{$key} não lê rascunho fora de seu escopo");
+    }
+    $edit = array_replace($create, ['id' => $createdId, 'title' => 'Atualizado pela API ' . $token, 'document_version' => $created['document_version']]);
+    $response = $postJson($edit);
+    $updated = $response['json']['data'] ?? [];
+    apiAssert($response['status'] === 200 && ($updated['title'] ?? '') === $edit['title'], 'conta permitida edita o documento com versão atual');
+    apiAssert($postJson($edit)['status'] === 409, 'versão antiga não sobrescreve edição concorrente');
+    $withoutVersion = $edit; unset($withoutVersion['document_version']);
+    apiAssert($postJson($withoutVersion)['status'] === 422, 'edição exige document_version');
+    apiAssert($postJson(array_replace($edit, ['id' => $f['documents']['public_text']]))['status'] === 403, 'chave de escrita não edita publicação fora do escopo');
+    apiAssert($postJson(array_replace($create, ['workflow_action' => 'approve_publish']))['status'] === 422, 'escrita não publica sem revisão pelo portal');
+    apiAssert($postJson(array_replace($create, ['status' => 'published']))['status'] === 422, 'campo status não contorna o workflow');
+    apiAssert($postJson(array_replace($create, ['created_by' => $f['actor']]))['status'] === 422, 'consumidor não pode forjar o autor');
+    apiAssert(apiHttp('POST', "{$api}/documents.php", $writeHeaders, '{invalido')['status'] === 422, 'JSON malformado é recusado');
+    apiAssert($postJson(array_replace($create, ['subject_id' => []]))['status'] === 422, 'ID estruturado é recusado');
+    apiAssert($postJson(array_replace($create, ['title' => 123]))['status'] === 422, 'campo textual numérico é recusado sem erro interno');
+    apiAssert(apiHttp('POST', "{$api}/documents.php", array_merge($bearer('writer'), ['Content-Type: text/plain']), 'x')['status'] === 415, 'tipo de corpo desconhecido é recusado');
+    apiAssert(apiHttp('DELETE', "{$api}/documents.php?id={$createdId}", $bearer('writer'))['status'] === 405, 'chave de escrita não exclui documentos');
+    apiAssert(apiHttp('POST', "{$api}/tree.php", $bearer('writer'), '')['status'] === 405, 'chave de escrita não altera a estrutura');
+    foreach (['categories' => $f['categoryId'], 'subcategories' => $f['subId'], 'subjects' => $f['privateSubject']] as $table => $id) {
+        $pdo->prepare("UPDATE {$table} SET active = FALSE WHERE id = ?")->execute([$id]);
+        apiAssert($postJson($create)['status'] === 403, "escrita não cria com {$table} inativo");
+        $pdo->prepare("UPDATE {$table} SET active = TRUE WHERE id = ?")->execute([$id]);
+    }
+    $review = array_replace($edit, ['document_version' => $updated['document_version'] ?? '', 'workflow_action' => 'submit_review']);
+    apiAssert(($postJson($review)['json']['data']['status'] ?? '') === 'review', 'integração envia o conteúdo para revisão');
+    $pending = apiHttp('GET', "{$api}/documents.php?subject_id={$f['privateSubject']}&status=all", $bearer('writer'));
+    apiAssert($pending['status'] === 200 && in_array($createdId, array_column($pending['json']['data'] ?? [], 'id'), true), 'escrita pode listar pendências somente nos assuntos editáveis');
+    apiAssert(apiHttp('GET', "{$api}/documents.php?status=all", $bearer('reader'))['status'] === 403, 'chave de leitura não lista pendências');
+    $pdo->prepare('UPDATE documents SET trashed_at = CURRENT_TIMESTAMP WHERE id = ?')->execute([$createdId]);
+    apiAssert($postJson($review)['status'] === 409, 'escrita não restaura nem edita itens na lixeira');
+    apiAssert(apiHttp('GET', "{$api}/documents.php?id={$createdId}", $bearer('writer'))['status'] === 404, 'chave de escrita não lê a lixeira');
+    $pdo->prepare('UPDATE documents SET trashed_at = NULL WHERE id = ?')->execute([$createdId]);
+    $upload = apiHttp('POST', "{$api}/documents.php", $bearer('writer'), ['subject_id' => $f['privateSubject'], 'title' => 'Arquivo da API ' . $token,
+        'section_key' => 'attachments', 'file' => new CURLFile(API_TEST_ROOT . '/storage/documents/' . $f['storedName'], 'image/png', 'arquivo.png')]);
+    $uploadId = (int)($upload['json']['data']['id'] ?? 0);
+    apiAssert($upload['status'] === 201 && $uploadId > 0, 'conta permitida cria publicação com arquivo multipart');
+    apiAssert($uploadId > 0 && apiHttp('GET', "{$api}/document-file.php?id={$uploadId}", $bearer('writer'))['body'] === $png, 'chave de escrita lê o anexo do rascunho editável');
+    $pdo->prepare("UPDATE permissions SET permission_level = 'view' WHERE user_id = ? AND subject_id = ?")->execute([$f['writer'], $f['privateSubject']]);
+    apiAssert($postJson($create)['status'] === 403, 'remover edição da conta bloqueia a escrita imediatamente');
+    apiAssert(apiHttp('GET', "{$api}/documents.php?id={$createdId}", $bearer('writer'))['status'] === 404, 'remover edição também fecha o rascunho');
+    $pdo->prepare("UPDATE permissions SET permission_level = 'edit' WHERE user_id = ? AND subject_id = ?")->execute([$f['writer'], $f['privateSubject']]);
+    $pdo->prepare("UPDATE users SET role = 'admin' WHERE id = ?")->execute([$f['writer']]);
+    apiAssert($postJson($create)['status'] === 401, 'promoção da conta a administradora bloqueia a chave de escrita');
+    $pdo->prepare("UPDATE users SET role = 'reader', active = FALSE WHERE id = ?")->execute([$f['writer']]);
+    apiAssert($postJson($create)['status'] === 401, 'conta desativada não escreve');
+    $pdo->prepare('UPDATE users SET active = TRUE WHERE id = ?')->execute([$f['writer']]);
+    $audit = $pdo->prepare("SELECT COUNT(*) FROM usage_audit_events WHERE resource_type = 'DOCUMENT' AND resource_id = ? AND metadata->>'action' = 'api_document_created' AND metadata->>'api_client_id' = ?");
+    $audit->execute([$createdId, (string)$f['clients']['writer']['client']['id']]);
+    apiAssert((int)$audit->fetchColumn() === 1, 'auditoria identifica a chave e a criação da publicação');
+
+    echo "\nCompatibilidade com a API de sessão e workflow\n";
+    $legacyHeaders = ['Cookie: PHPSESSID=' . $writerSession['id'], 'Content-Type: application/x-www-form-urlencoded'];
+    $legacyInput = array_replace($create, ['title' => 'API de sessão ' . $token, 'csrf_token' => $writerSession['csrf']]);
+    $legacy = apiHttp('POST', "{$base}/api/documents.php", $legacyHeaders, http_build_query($legacyInput));
+    apiAssert($legacy['status'] === 200 && ($legacy['json']['success'] ?? false) && !empty($legacy['json']['id']), 'API interna mantém criação autenticada por sessão e resposta original');
+    $legacyInput['id'] = (int)($legacy['json']['id'] ?? 0);
+    $legacyInput['document_version'] = $legacy['json']['document_version'] ?? '';
+    $legacyInput['workflow_action'] = 'submit_review';
+    $legacy = apiHttp('POST', "{$base}/api/documents.php", $legacyHeaders, http_build_query($legacyInput));
+    apiAssert(($legacy['json']['status'] ?? '') === 'review', 'API interna mantém envio para revisão');
+    $legacyInput['csrf_token'] = $adminSession['csrf'];
+    foreach (['review_document' => 'review', 'approve_publish' => 'published'] as $action => $expectedStatus) {
+        $legacyInput['document_version'] = $legacy['json']['document_version'] ?? '';
+        $legacyInput['workflow_action'] = $action;
+        $legacyInput['workflow_note'] = 'Revisão de integração validada.';
+        $legacy = apiHttp('POST', "{$base}/api/documents.php", ['Cookie: PHPSESSID=' . $adminSession['id'], 'Content-Type: application/x-www-form-urlencoded'], http_build_query($legacyInput));
+        apiAssert(($legacy['json']['status'] ?? '') === $expectedStatus, "API interna mantém transição {$action} com administrador autorizado");
+    }
+    apiAssert(apiHttp('POST', "{$base}/api/documents.php", $legacyHeaders, http_build_query(array_replace($legacyInput, ['csrf_token' => 'invalido'])))['status'] === 419, 'extração do salvamento preserva CSRF nas rotas de sessão');
+    apiAssert(apiHttp('POST', "{$api}/documents.php", ['Cookie: PHPSESSID=' . $adminSession['id'], 'Content-Type: application/json'], json_encode($create))['status'] === 401, 'cookie administrativo não substitui chave na API externa');
+
     echo "\nEntrada de visitantes no portal\n";
     $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('guest_access_enabled', 'true'::jsonb, ?) ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value")->execute([$f['actor']]);
     $publicDoc = $f['documents']['public_text'];
@@ -366,10 +475,11 @@ try {
     $adminCookie = ['Cookie: PHPSESSID=' . $adminSession['id']];
     $response = apiHttp('GET', "{$base}/admin/index.php?tab=integracoes", $adminCookie);
     apiAssert($response['status'] === 200 && str_contains($response['body'], 'data-api-client-form') && str_contains($response['body'], 'API teste público ' . $token), 'Super Admin vê a aba e as chaves emitidas');
+    apiAssert(str_contains($response['body'], 'value="user_write"') && str_contains($response['body'], 'Ler e escrever com conta permitida'), 'painel exibe a terceira opção de leitura e escrita');
     apiAssert(!str_contains($response['body'], $f['clients']['public']['token']), 'lista nunca exibe o token completo');
     $settingsPage = apiHttp('GET', "{$base}/admin/index.php?tab=configuracoes", $adminCookie)['body'];
     apiAssert(str_contains($settingsPage, 'name="guest_access_enabled"'), 'Configurações exibem o interruptor de visitantes');
-    $form = http_build_query(['api_client_action' => 'create', 'csrf_token' => $adminSession['csrf'], 'name' => 'API teste painel ' . $token, 'access_scope' => 'public', 'rate_limit_per_minute' => '60']);
+    $form = http_build_query(['api_client_action' => 'create', 'csrf_token' => $adminSession['csrf'], 'name' => 'API teste painel ' . $token, 'access_scope' => 'user_write', 'username' => 'api-writer-' . $token, 'rate_limit_per_minute' => '60']);
     $response = apiHttp('POST', "{$base}/admin/index.php?tab=integracoes", array_merge($adminCookie, ['Content-Type: application/x-www-form-urlencoded']), $form);
     apiAssert($response['status'] === 302 && str_contains($response['headers']['location'] ?? '', 'msg=api_client_created'), 'criação redireciona após salvar');
     $page = apiHttp('GET', "{$base}/admin/index.php?tab=integracoes&msg=api_client_created", $adminCookie)['body'];
@@ -378,12 +488,15 @@ try {
     $panelToken = $tokenMatch[1] ?? '';
     apiAssert(!str_contains(apiHttp('GET', "{$base}/admin/index.php?tab=integracoes", $adminCookie)['body'], $panelToken), 'token não reaparece em uma segunda visita');
     apiAssert(apiHttp('GET', "{$api}/status.php", ['Authorization: Bearer ' . $panelToken])['status'] === 200, 'chave criada pelo painel funciona na API');
+    $panelWrite = $postJson($create, ['Authorization: Bearer ' . $panelToken, 'Content-Type: application/json']);
+    apiAssert($panelWrite['status'] === 201, 'terceira opção criada pelo painel realmente permite escrita autorizada');
     $panelClientId = (int)$pdo->query("SELECT id FROM api_clients WHERE name = " . $pdo->quote('API teste painel ' . $token))->fetchColumn();
     $badCsrf = http_build_query(['api_client_action' => 'revoke', 'csrf_token' => 'invalido', 'api_client_id' => $panelClientId]);
     apiAssert(apiHttp('POST', "{$base}/admin/index.php?tab=integracoes", array_merge($adminCookie, ['Content-Type: application/x-www-form-urlencoded']), $badCsrf)['status'] === 419, 'revogação sem CSRF válido é recusada');
     $revoke = http_build_query(['api_client_action' => 'revoke', 'csrf_token' => $adminSession['csrf'], 'api_client_id' => $panelClientId]);
     apiAssert(apiHttp('POST', "{$base}/admin/index.php?tab=integracoes", array_merge($adminCookie, ['Content-Type: application/x-www-form-urlencoded']), $revoke)['status'] === 302, 'Super Admin revoga a chave');
     apiAssert(apiHttp('GET', "{$api}/status.php", ['Authorization: Bearer ' . $panelToken])['status'] === 401, 'chave revogada perde o acesso imediatamente');
+    apiAssert($postJson($create, ['Authorization: Bearer ' . $panelToken, 'Content-Type: application/json'])['status'] === 401, 'revogação bloqueia também a escrita');
     $before = (int)$pdo->query('SELECT COUNT(*) FROM api_clients')->fetchColumn();
     $readerForm = http_build_query(['api_client_action' => 'create', 'csrf_token' => $readerSession['csrf'], 'name' => 'API teste intruso ' . $token, 'access_scope' => 'public']);
     apiHttp('POST', "{$base}/admin/index.php?tab=integracoes", ['Cookie: PHPSESSID=' . $readerSession['id'], 'Content-Type: application/x-www-form-urlencoded'], $readerForm);

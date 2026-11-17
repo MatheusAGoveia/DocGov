@@ -640,7 +640,7 @@ CREATE TABLE api_clients (
     CONSTRAINT uk_api_clients_token_hash UNIQUE (token_hash),
     CONSTRAINT chk_api_clients_scope CHECK (
         (access_scope = 'public' AND user_id IS NULL)
-        OR (access_scope = 'user' AND user_id IS NOT NULL)
+        OR (access_scope IN ('user', 'user_write') AND user_id IS NOT NULL)
     ),
     CONSTRAINT chk_api_clients_rate_limit CHECK (rate_limit_per_minute BETWEEN 1 AND 10000)
 );
